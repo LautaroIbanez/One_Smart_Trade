@@ -1,0 +1,126 @@
+.recommendation-card {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.recommendation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.recommendation-header h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.signal-badge {
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+}
+
+.signal-buy {
+  background-color: var(--accent-success);
+  color: white;
+}
+
+.signal-hold {
+  background-color: var(--accent-warning);
+  color: white;
+}
+
+.signal-sell {
+  background-color: var(--accent-danger);
+  color: white;
+}
+
+.recommendation-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.price-info,
+.entry-range,
+.confidence {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.label {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.value {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.value.success {
+  color: var(--accent-success);
+}
+
+.value.danger {
+  color: var(--accent-danger);
+}
+
+.sl-tp {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.sl-tp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.analysis {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.analysis h3 {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-secondary);
+}
+
+.analysis p {
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.loading,
+.error {
+  text-align: center;
+  padding: 3rem;
+}
+
+.loading-spinner {
+  color: var(--text-secondary);
+}
+
+.error button {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--accent-primary);
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+

@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: latest
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+      - name: Install dependencies
+        run: |
+          cd backend
+          poetry install
+      - name: Lint with ruff
+        run: |
+          cd backend
+          poetry run ruff check .
+      - name: Type check with mypy
+        run: |
+          cd backend
+          poetry run mypy app || true
+      - name: Test with pytest
+        run: |
+          cd backend
+          poetry run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+      - name: Install dependencies
+        run: |
+          cd frontend
+          pnpm install
+      - name: Lint with ESLint
+        run: |
+          cd frontend
+          pnpm run lint
+      - name: Format check with Prettier
+        run: |
+          cd frontend
+          pnpm run format --check || true
+      - name: Test with Vitest
+        run: |
+          cd frontend
+          pnpm run test
+      - name: Build
+        run: |
+          cd frontend
+          pnpm run build
+
