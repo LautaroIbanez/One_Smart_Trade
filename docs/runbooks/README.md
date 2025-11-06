@@ -2,11 +2,37 @@
 
 Runbooks para operación y resolución de incidentes comunes.
 
+## Scripts CLI Disponibles
+
+El proyecto incluye scripts CLI para operaciones manuales comunes:
+
+- **`python -m app.scripts.backfill`**: Backfill de datos históricos
+  - `--interval {15m|30m|1h|4h|1d|1w|all}`: Intervalo a backfillear (default: all)
+  - `--days N`: Número de días a backfillear (default: 30)
+
+- **`python -m app.scripts.check_gaps`**: Verificar gaps en datos
+  - `--interval {15m|30m|1h|4h|1d|1w|all}`: Intervalo a verificar (default: all)
+  - `--days N`: Número de días a verificar (default: 30)
+
+- **`python -m app.scripts.curate`**: Regenerar datos curados
+  - `--interval {15m|30m|1h|4h|1d|1w|all}`: Intervalo a curar (default: all)
+
+- **`python -m app.scripts.regenerate_signal`**: Regenerar señal manualmente
+  - Sin parámetros
+
+**Ejemplo de uso:**
+```bash
+cd /opt/one-smart-trade/backend
+poetry run python -m app.scripts.backfill --interval 1d --days 30
+poetry run python -m app.scripts.check_gaps --interval all --days 7
+poetry run python -m app.scripts.regenerate_signal
+```
+
 ## Índice
 
-1. [Binance API Down](#binance-api-down)
-2. [Datos Incompletos](#datos-incompletos)
-3. [Cálculo de Recomendación Fallido](#cálculo-de-recomendación-fallido)
+1. [Binance API Down](binance_down.md)
+2. [Datos Incompletos](data_incomplete.md)
+3. [Cálculo de Recomendación Fallido](calc_failure.md)
 4. [Latencia Excesiva](#latencia-excesiva)
 5. [Base de Datos Corrupta](#base-de-datos-corrupta)
 
@@ -50,21 +76,40 @@ tail -f backend/logs/app.log | grep -i binance
 ```bash
 # Verificar gaps en datos
 cd backend
-poetry run python -m app.data.check_gaps
+python -c "
+from app.data.ingestion import DataIngestion
+from datetime import datetime, timedelta
+di = DataIngestion()
+gaps = di.check_gaps('1h', datetime.utcnow() - timedelta(days=30), datetime.utcnow())
+print(gaps)
+"
 
 # Revisar última ingesta
-poetry run python -m app.data.last_ingestion_status
+curl -s http://localhost:8000/api/v1/diagnostics/last-run
 ```
 
 ### Solución
 1. Identificar timeframe afectado
 2. Ejecutar ingesta manual para timeframe:
    ```bash
-   poetry run python -m app.data.ingest --timeframe 1h --backfill
+   cd backend
+   python -c "
+   import asyncio
+   from app.data.ingestion import DataIngestion
+   from datetime import datetime, timedelta
+   di = DataIngestion()
+   end = datetime.utcnow()
+   start = end - timedelta(days=30)
+   asyncio.run(di.ingest_timeframe('1h', start, end))
+   "
    ```
-3. Recalcular indicadores:
+3. Regenerar datos curados:
    ```bash
-   poetry run python -m app.indicators.recalculate --timeframe 1h
+   python -c "
+   from app.data.curation import DataCuration
+   dc = DataCuration()
+   dc.curate_timeframe('1h')
+   "
    ```
 4. Regenerar recomendación si necesario
 
@@ -92,11 +137,23 @@ curl http://localhost:8000/api/v1/diagnostics/last-run
 ### Solución
 1. Identificar error específico en logs
 2. Verificar disponibilidad de datos:
-   - Todos los timeframes tienen datos recientes
-   - Indicadores calculados correctamente
+   ```bash
+   python -c "
+   from app.data.curation import DataCuration
+   dc = DataCuration()
+   df_1d = dc.get_latest_curated('1d')
+   df_1h = dc.get_latest_curated('1h')
+   print(f'1d: {len(df_1d) if df_1d is not None else 0} rows')
+   print(f'1h: {len(df_1h) if df_1h is not None else 0} rows')
+   "
+   ```
 3. Recalcular manualmente:
    ```bash
-   poetry run python -m app.services.recommendation_service.generate_today
+   python -c "
+   import asyncio
+   from app.main import job_generate_signal
+   asyncio.run(job_generate_signal())
+   "
    ```
 4. Si persiste, revisar configuración y datos de entrada
 

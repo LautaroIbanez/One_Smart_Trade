@@ -24,6 +24,7 @@ class RecommendationORM(Base):
     indicators: Mapped[dict] = mapped_column(JSON)
     risk_metrics: Mapped[dict] = mapped_column(JSON)
     factors: Mapped[dict] = mapped_column(JSON, default={})
+    analysis: Mapped[str] = mapped_column(String(2000), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

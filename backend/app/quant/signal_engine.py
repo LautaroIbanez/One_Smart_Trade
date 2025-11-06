@@ -112,6 +112,32 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
     agreement = max(votes.values()) / len(signals)
     final_conf = float(min(95.0, 0.6 * base_conf + 0.4 * mc_conf) * (0.8 + 0.2 * agreement))
 
+    # Calculate risk metrics
+    rr_ratio = abs((levels["take_profit"] - entry["optimal"]) / (entry["optimal"] - levels["stop_loss"])) if entry["optimal"] != levels["stop_loss"] else 0.0
+    sl_prob = 100.0 - mc_conf  # Simplified: inverse of TP probability
+    tp_prob = mc_conf
+    expected_dd = abs(entry["optimal"] - levels["stop_loss"])
+    vol = float(ind.realized_volatility(df_1d).iloc[-1]) if not ind.realized_volatility(df_1d).empty else 0.0
+
+    risk_metrics = {
+        "risk_reward_ratio": round(rr_ratio, 2),
+        "sl_probability": round(sl_prob, 1),
+        "tp_probability": round(tp_prob, 1),
+        "expected_drawdown": round(expected_dd, 2),
+        "volatility": round(vol, 2),
+    }
+
+    # Prepare indicators dict (extract last values from Series)
+    indicators_dict = {}
+    for k, v in ind_1d.items():
+        if isinstance(v, pd.Series) and not v.empty:
+            try:
+                indicators_dict[k] = float(v.iloc[-1])
+            except (ValueError, IndexError):
+                pass
+        elif isinstance(v, (int, float)):
+            indicators_dict[k] = float(v)
+
     return {
         "signal": final_signal,
         "entry_range": entry,
@@ -119,7 +145,8 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
         "confidence": round(final_conf, 1),
         "current_price": round(price, 2),
         "factors": factors,
-        "indicators": {k: float(v.iloc[-1]) if isinstance(v, pd.Series) else float(v) for k, v in {**ind_1d}.items() if hasattr(v, "iloc")},
+        "indicators": indicators_dict,
+        "risk_metrics": risk_metrics,
         "votes": votes,
         "signals": signals,
     }

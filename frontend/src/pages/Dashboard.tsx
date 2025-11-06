@@ -10,16 +10,20 @@ import { useInvalidateAll, useTodayRecommendation, useMarketData } from '../api/
 import './Dashboard.css'
 
 function Dashboard() {
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const invalidateAll = useInvalidateAll()
-  const { data } = useTodayRecommendation()
+  const { data, refetch: refetchRecommendation } = useTodayRecommendation()
+  const { data: marketData, refetch: refetchMarket } = useMarketData('1h')
 
   const handleRefresh = async () => {
-    await invalidateAll()
-    setRefreshKey((prev) => prev + 1)
+    setIsRefreshing(true)
+    try {
+      await invalidateAll()
+      await Promise.all([refetchRecommendation(), refetchMarket()])
+    } finally {
+      setIsRefreshing(false)
+    }
   }
-
-  const { data: marketData } = useMarketData('1h')
   
   const levels = data
     ? {
@@ -27,6 +31,8 @@ function Dashboard() {
         entry_max: data.entry_range?.max,
         stop_loss: data.stop_loss_take_profit?.stop_loss,
         take_profit: data.stop_loss_take_profit?.take_profit,
+        support: marketData?.support,
+        resistance: marketData?.resistance,
       }
     : undefined
 
@@ -36,6 +42,15 @@ function Dashboard() {
       open_time: new Date(item.open_time || item.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
       close: item.close || item.current_price,
     }))
+  }, [marketData])
+
+  const marketLevels = useMemo(() => {
+    if (!marketData) return undefined
+    return {
+      support: marketData.support,
+      resistance: marketData.resistance,
+      current_price: marketData.current_price,
+    }
   }, [marketData])
 
   return (
@@ -48,13 +63,14 @@ function Dashboard() {
             className="refresh-button"
             aria-label="Refrescar datos"
             type="button"
+            disabled={isRefreshing}
           >
-            Refrescar
+            {isRefreshing ? 'Refrescando...' : 'Refrescar'}
           </button>
         </header>
         <main className="dashboard-content">
-          <RecommendationCard key={refreshKey} />
-          <PriceLevelsChart data={chartData} levels={levels} />
+          <RecommendationCard />
+          <PriceLevelsChart data={chartData} levels={levels} marketData={marketLevels} />
           <div className="dashboard-grid">
             <IndicatorsPanel />
             <RiskPanel risk={data?.risk_metrics} />

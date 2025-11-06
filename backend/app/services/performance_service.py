@@ -46,14 +46,22 @@ class PerformanceService:
         try:
             result = self.engine.run_backtest(start_date, end_date)
             if "error" in result:
-                return {"status": "error", "message": result["error"], "metrics": {}}
+                error_type = result.get("error_type", "UNKNOWN")
+                error_details = result.get("details", result.get("error", "Unknown error"))
+                return {
+                    "status": "error",
+                    "message": result["error"],
+                    "error_type": error_type,
+                    "details": error_details,
+                    "metrics": {}
+                }
 
             metrics = calculate_metrics(result)
 
-            # Generate report
+            # Generate report (this also writes to docs/backtest-report.md)
             report_data = generate_report(result, self.reports_dir)
 
-            # Persist to DB
+            # Persist to DB with versioning
             with SessionLocal() as db:
                 save_backtest_result(
                     db,
@@ -71,6 +79,15 @@ class PerformanceService:
                     "end": result["end_date"],
                 },
                 "report_path": report_data["report_path"],
+                "version": __version__,
             }
         except Exception as e:
-            return {"status": "error", "message": str(e), "metrics": {}}
+            import traceback
+            error_trace = traceback.format_exc()
+            return {
+                "status": "error",
+                "message": str(e),
+                "error_type": "EXCEPTION",
+                "details": error_trace,
+                "metrics": {}
+            }

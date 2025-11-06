@@ -11,22 +11,12 @@
 ### 1. Verificar gaps en datos
 ```bash
 cd /opt/one-smart-trade/backend
-python -c "
-from app.data.curation import DataCuration
-from datetime import datetime, timedelta
-dc = DataCuration()
-df = dc.get_latest_curated('1d')
-if df.empty:
-    print('No data available')
-else:
-    print(f'Data range: {df.iloc[0][\"open_time\"]} to {df.iloc[-1][\"open_time\"]}')
-    print(f'Total rows: {len(df)}')
-    # Check for gaps
-    df['date'] = pd.to_datetime(df['open_time']).dt.date
-    expected_days = (df['date'].max() - df['date'].min()).days
-    actual_days = len(df['date'].unique())
-    print(f'Expected days: {expected_days}, Actual: {actual_days}')
-"
+poetry run python -m app.scripts.check_gaps --interval all --days 30
+```
+
+O para un intervalo específico:
+```bash
+poetry run python -m app.scripts.check_gaps --interval 1d --days 30
 ```
 
 ### 2. Verificar logs de ingesta
@@ -44,22 +34,11 @@ curl -s http://localhost:8000/metrics | grep ost_data_gaps_total
 ### Paso 1: Backfill manual
 ```bash
 cd /opt/one-smart-trade/backend
-python -c "
-import asyncio
-from app.data.ingestion import DataIngestion
-from datetime import datetime, timedelta
+# Backfill todos los intervalos (últimos 30 días por defecto)
+poetry run python -m app.scripts.backfill --interval all --days 30
 
-async def backfill():
-    di = DataIngestion()
-    # Backfill last 30 days
-    end = datetime.utcnow()
-    start = end - timedelta(days=30)
-    for tf in ['15m', '30m', '1h', '4h', '1d', '1w']:
-        print(f'Backfilling {tf}...')
-        await di.ingest_timeframe(tf, start, end)
-
-asyncio.run(backfill())
-"
+# O para un intervalo específico
+poetry run python -m app.scripts.backfill --interval 1d --days 30
 ```
 
 ### Paso 2: Verificar datos raw
@@ -71,13 +50,12 @@ ls -lh data/raw/*/
 
 ### Paso 3: Regenerar datos curados
 ```bash
-python -c "
-from app.data.curation import DataCuration
-dc = DataCuration()
-for tf in ['15m', '30m', '1h', '4h', '1d', '1w']:
-    print(f'Curating {tf}...')
-    dc.curate_timeframe(tf)
-"
+cd /opt/one-smart-trade/backend
+# Curar todos los intervalos
+poetry run python -m app.scripts.curate --interval all
+
+# O para un intervalo específico
+poetry run python -m app.scripts.curate --interval 1d
 ```
 
 ### Paso 4: Si gaps persisten

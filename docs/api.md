@@ -231,26 +231,39 @@ For validation errors:
 ### If ingestion job fails:
 1. Check last run: `GET /api/v1/diagnostics/last-run`
 2. Manually trigger ingestion:
-```python
+```bash
+cd backend
+python -c "
 import asyncio
 from app.data.ingestion import DataIngestion
-asyncio.run(DataIngestion().ingest_all_timeframes())
+di = DataIngestion()
+result = asyncio.run(di.ingest_all_timeframes())
+print(result)
+"
 ```
 3. Check Binance API status: `curl https://api.binance.com/api/v3/ping`
 
 ### If signal generation fails:
 1. Verify curated data exists:
-```python
+```bash
+cd backend
+python -c "
 from app.data.curation import DataCuration
 dc = DataCuration()
-print(dc.get_latest_curated("1d") is not None)
+df_1d = dc.get_latest_curated('1d')
+df_1h = dc.get_latest_curated('1h')
+print(f'1d available: {df_1d is not None and not df_1d.empty}')
+print(f'1h available: {df_1h is not None and not df_1h.empty}')
+"
 ```
 2. Manually generate signal:
-```python
-from app.data.curation import DataCuration
-from app.quant.signal_engine import generate_signal
-dc = DataCuration()
-sig = generate_signal(dc.get_latest_curated("1h"), dc.get_latest_curated("1d"))
+```bash
+cd backend
+python -c "
+import asyncio
+from app.main import job_generate_signal
+asyncio.run(job_generate_signal())
+"
 ```
 
 ### If scheduler jobs are not running:

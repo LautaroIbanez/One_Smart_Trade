@@ -10,7 +10,11 @@ Base = declarative_base()
 
 
 def get_db():
-    """Dependency for getting database session."""
+    """
+    Dependency for getting database session.
+    
+    Ensures session is properly closed after use.
+    """
     db = SessionLocal()
     try:
         yield db

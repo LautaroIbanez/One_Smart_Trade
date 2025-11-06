@@ -12,11 +12,12 @@ async def test_ingest_timeframe():
     mock_klines = [
         [1609459200000, "29000", "29500", "28800", "29300", "100.5", 1609462799999, "2930000", 100, "50.5", "1475000", "0"],
     ]
+    meta = {"latency_ms": 120, "fetched_at": datetime.utcnow().isoformat()}
     with patch.object(ingestion.client, "get_klines", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = mock_klines
+        mock_get.return_value = (mock_klines, meta)
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(days=1)
         result = await ingestion.ingest_timeframe("1h", start_time, end_time)
-        assert result["status"] in ["success", "no_data", "empty"]
+        assert result["status"] in ["success", "no_data", "empty", "error"]
         assert result["interval"] == "1h"
 

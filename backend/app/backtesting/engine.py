@@ -9,6 +9,7 @@ from app.data.curation import DataCuration
 from app.quant.signal_engine import generate_signal
 from app.quant.strategies import momentum_strategy, mean_reversion_strategy, breakout_strategy, volatility_strategy
 from app.quant import indicators as ind
+from app.core.logging import logger
 
 
 class BacktestEngine:
@@ -67,25 +68,44 @@ class BacktestEngine:
         initial_capital: float = 10000.0,
         position_size_pct: float = 1.0,
     ) -> Dict[str, Any]:
-        """Run backtest over date range (supports 5+ years of data)."""
-        df_1d = self.curation.get_latest_curated("1d")
-        if df_1d is None or df_1d.empty:
-            return {"error": "No data available"}
-
-        # Filter to date range
-        df_1d = df_1d[df_1d["open_time"] >= start_date]
-        df_1d = df_1d[df_1d["open_time"] <= end_date].copy()
+        """
+        Run backtest over date range (supports 5+ years of data).
         
+        Args:
+            start_date: Start date for backtest
+            end_date: End date for backtest
+            initial_capital: Starting capital
+            position_size_pct: Position size as percentage of capital
+            
+        Returns:
+            Dict with trades, equity_curve, and metadata, or error dict
+        """
+        # Load historical data for the date range
+        df_1d = self.curation.get_historical_curated("1d", start_date=start_date, end_date=end_date)
+        if df_1d is None or df_1d.empty:
+            return {
+                "error": "No historical data available",
+                "error_type": "NO_DATA",
+                "details": f"No curated 1d data found for range {start_date.date()} to {end_date.date()}"
+            }
+
         # Ensure we have enough data (at least 200 days for indicators)
         if len(df_1d) < 200:
-            return {"error": f"Insufficient data: only {len(df_1d)} days available, need at least 200"}
+            return {
+                "error": f"Insufficient data: only {len(df_1d)} days available, need at least 200",
+                "error_type": "INSUFFICIENT_DATA",
+                "details": f"Found {len(df_1d)} rows, minimum 200 required for reliable indicators"
+            }
 
-        if df_1d.empty:
-            return {"error": "No data in date range"}
-
-        df_1h = self.curation.get_latest_curated("1h")
+        # Load 1h data for signal generation (use historical if available, otherwise latest)
+        df_1h = self.curation.get_historical_curated("1h", start_date=start_date, end_date=end_date)
         if df_1h is None or df_1h.empty:
-            df_1h = df_1d
+            # Fallback to latest curated 1h data
+            df_1h = self.curation.get_latest_curated("1h")
+            if df_1h is None or df_1h.empty:
+                # Last resort: use 1d data
+                df_1h = df_1d.copy()
+                logger.warning("Using 1d data as fallback for 1h signals")
 
         trades: List[Dict[str, Any]] = []
         equity_curve: List[float] = [initial_capital]
@@ -102,7 +122,8 @@ class BacktestEngine:
 
             try:
                 signal_data = generate_signal(df_h_slice, df_slice)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Error generating signal at index {i}: {e}")
                 continue
 
             signal = signal_data["signal"]
@@ -188,6 +209,10 @@ class BacktestEngine:
                 }
             )
 
+        # Store first and last prices for Buy & Hold calculation
+        first_price = float(df_1d.iloc[0]["close"]) if not df_1d.empty else 0.0
+        last_price = float(df_1d.iloc[-1]["close"]) if not df_1d.empty else 0.0
+
         return {
             "trades": trades,
             "equity_curve": equity_curve,
@@ -195,5 +220,7 @@ class BacktestEngine:
             "initial_capital": initial_capital,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
+            "first_price": first_price,  # For Buy & Hold calculation
+            "last_price": last_price,    # For Buy & Hold calculation
         }
 

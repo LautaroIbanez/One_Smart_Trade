@@ -49,12 +49,12 @@ class RequestMetricsMiddleware(BaseHTTPMiddleware):
         start = time.time()
         try:
             response = await call_next(request)
+            status_code = response.status_code
+            REQUEST_COUNT.labels(method=method, path=path, status=str(status_code)).inc()
             return response
         finally:
             latency = time.time() - start
-            status = getattr(request.state, 'status_code', 200)
             REQUEST_LATENCY.labels(method=method, path=path).observe(latency)
-            REQUEST_COUNT.labels(method=method, path=path, status=str(status)).inc()
 
 
 metrics_router = APIRouter()

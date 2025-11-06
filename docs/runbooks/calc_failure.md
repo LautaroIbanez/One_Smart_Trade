@@ -27,14 +27,10 @@ with SessionLocal() as db:
 
 ### 2. Verificar datos curados disponibles
 ```bash
-python -c "
-from app.data.curation import DataCuration
-dc = DataCuration()
-df_1d = dc.get_latest_curated('1d')
-df_1h = dc.get_latest_curated('1h')
-print(f'1d data: {len(df_1d)} rows, latest: {df_1d.iloc[-1][\"open_time\"] if not df_1d.empty else \"None\"}')
-print(f'1h data: {len(df_1h)} rows, latest: {df_1h.iloc[-1][\"open_time\"] if not df_1h.empty else \"None\"}')
-"
+cd /opt/one-smart-trade/backend
+# Verificar gaps en datos (indica si hay datos disponibles)
+poetry run python -m app.scripts.check_gaps --interval 1d --days 7
+poetry run python -m app.scripts.check_gaps --interval 1h --days 7
 ```
 
 ### 3. Revisar logs de errores
@@ -44,20 +40,9 @@ journalctl -u one-smart-trade-backend -n 500 --no-pager | grep -i "signal\|calcu
 
 ### 4. Probar generación manual
 ```bash
-python -c "
-from app.data.curation import DataCuration
-from app.quant.signal_engine import generate_signal
-dc = DataCuration()
-df_1d = dc.get_latest_curated('1d')
-df_1h = dc.get_latest_curated('1h')
-try:
-    signal = generate_signal(df_1h, df_1d)
-    print(f'Signal generated: {signal[\"signal\"]}')
-except Exception as e:
-    print(f'Error: {type(e).__name__}: {e}')
-    import traceback
-    traceback.print_exc()
-"
+cd /opt/one-smart-trade/backend
+# Regenerar señal manualmente
+poetry run python -m app.scripts.regenerate_signal
 ```
 
 ## Mitigación
@@ -68,11 +53,7 @@ Si datos faltan, seguir runbook de "Datos Incompletos"
 ### Paso 2: Regenerar señal manualmente
 ```bash
 cd /opt/one-smart-trade/backend
-python -c "
-import asyncio
-from app.main import job_generate_signal
-asyncio.run(job_generate_signal())
-"
+poetry run python -m app.scripts.regenerate_signal
 ```
 
 ### Paso 3: Si error persiste

@@ -99,9 +99,34 @@
   color: var(--text-secondary);
 }
 
-.analysis p {
+.analysis-text {
   line-height: 1.6;
   color: var(--text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.analysis-empty {
+  line-height: 1.6;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.recommendation-disclaimer {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--accent-danger);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.recommendation-disclaimer strong {
+  color: var(--accent-danger);
+  display: block;
+  margin-bottom: 0.5rem;
 }
 
 .loading,
@@ -122,11 +147,17 @@
   border: none;
   border-radius: 0.5rem;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, opacity 0.2s;
+  font-weight: 500;
 }
 
-.error button:hover {
+.error button:hover:not(:disabled) {
   background-color: #2563eb;
+}
+
+.error button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .error button:focus-visible {

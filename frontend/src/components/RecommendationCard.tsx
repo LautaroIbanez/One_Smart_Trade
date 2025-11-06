@@ -1,14 +1,28 @@
+import { useState } from 'react'
 import { useInvalidateAll, useTodayRecommendation } from '../api/hooks'
 import './RecommendationCard.css'
 
 function RecommendationCard() {
-  const { data, isLoading, error, refetch } = useTodayRecommendation()
+  const [isRetrying, setIsRetrying] = useState(false)
+  const { data, isLoading, error, refetch, isRefetching } = useTodayRecommendation()
   const invalidateAll = useInvalidateAll()
 
-  if (isLoading) {
+  const handleRetry = async () => {
+    setIsRetrying(true)
+    try {
+      await invalidateAll()
+      await refetch()
+    } finally {
+      setIsRetrying(false)
+    }
+  }
+
+  if (isLoading || isRefetching || isRetrying) {
     return (
-      <div className="recommendation-card loading">
-        <div className="loading-spinner">Cargando recomendación...</div>
+      <div className="recommendation-card loading" role="status" aria-live="polite">
+        <div className="loading-spinner">
+          {isRetrying ? 'Reintentando...' : 'Cargando recomendación...'}
+        </div>
       </div>
     )
   }
@@ -17,8 +31,13 @@ function RecommendationCard() {
     return (
       <div className="recommendation-card error" role="alert" aria-live="assertive">
         <p>Error al cargar recomendación</p>
-        <button onClick={() => invalidateAll()} type="button" aria-label="Reintentar carga">
-          Reintentar
+        <button 
+          onClick={handleRetry} 
+          type="button" 
+          aria-label="Reintentar carga"
+          disabled={isRetrying}
+        >
+          {isRetrying ? 'Reintentando...' : 'Reintentar'}
         </button>
       </div>
     )
@@ -67,8 +86,19 @@ function RecommendationCard() {
         </div>
         <div className="analysis">
           <h3>Análisis</h3>
-          <p>{data.analysis}</p>
+          {data.analysis && data.analysis.trim() ? (
+            <p className="analysis-text">{data.analysis}</p>
+          ) : (
+            <p className="analysis-empty" role="status" aria-live="polite">
+              Análisis no disponible. Los datos están siendo procesados.
+            </p>
+          )}
         </div>
+        {data.disclaimer && (
+          <div className="recommendation-disclaimer" role="note" aria-label="Disclaimer legal">
+            <strong>⚠️ Aviso Legal:</strong> {data.disclaimer}
+          </div>
+        )}
       </div>
     </div>
   )

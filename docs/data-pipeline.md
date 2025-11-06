@@ -44,20 +44,26 @@ Binance API → BinanceClient (httpx, backoff, rate limit)
 ## Operación y Backfill Manual
 ```bash
 # Ingesta de 1h últimos 7 días
-python - << 'PY'
+cd backend
+python -c "
 import asyncio
 from datetime import datetime, timedelta
 from app.data.ingestion import DataIngestion
 
 di = DataIngestion()
-asyncio.run(di.ingest_timeframe('1h', datetime.utcnow()-timedelta(days=7), datetime.utcnow()))
-PY
+end = datetime.utcnow()
+start = end - timedelta(days=7)
+result = asyncio.run(di.ingest_timeframe('1h', start, end))
+print(result)
+"
 
 # Curación de 1h
-python - << 'PY'
+python -c "
 from app.data.curation import DataCuration
-print(DataCuration().curate_timeframe('1h'))
-PY
+dc = DataCuration()
+result = dc.curate_timeframe('1h')
+print(f'Curated: {result}')
+"
 ```
 
 ## Observabilidad

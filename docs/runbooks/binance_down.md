@@ -54,12 +54,11 @@ sudo systemctl start one-smart-trade-backend
 Esperar 5-15 minutos y probar manualmente:
 ```bash
 cd /opt/one-smart-trade/backend
-source .venv/bin/activate  # o poetry shell
-python -c "
-import asyncio
-from app.data.ingestion import DataIngestion
-asyncio.run(DataIngestion().ingest_all_timeframes())
-"
+# Reintentar ingesta de todos los intervalos
+poetry run python -m app.scripts.backfill --interval all --days 1
+
+# O para un intervalo específico
+poetry run python -m app.scripts.backfill --interval 1d --days 1
 ```
 
 ### Paso 3: Si persiste >30 minutos
@@ -73,13 +72,9 @@ python scripts/alerts/webhook_alert.py
 ### Paso 4: Usar datos en cache
 El sistema puede operar con datos en cache por varias horas. Verificar:
 ```bash
-# Verificar datos disponibles
-python -c "
-from app.data.curation import DataCuration
-dc = DataCuration()
-df = dc.get_latest_curated('1d')
-print(f'Latest data: {df.iloc[-1][\"open_time\"] if not df.empty else \"No data\"}')
-"
+cd /opt/one-smart-trade/backend
+# Verificar datos disponibles usando script de gaps
+poetry run python -m app.scripts.check_gaps --interval 1d --days 7
 ```
 
 ## Criterios de Salida

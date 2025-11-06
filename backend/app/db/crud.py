@@ -8,7 +8,16 @@ from app.db.models import RecommendationORM, RunLogORM, BacktestResultORM
 
 
 def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
+    """Create recommendation with analysis text."""
+    from app.quant.narrative import build_narrative
+    
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    
+    # Generate analysis text if not provided
+    analysis = payload.get("analysis", "")
+    if not analysis:
+        analysis = build_narrative(payload)
+    
     rec = RecommendationORM(
         date=date_str,
         signal=payload["signal"],
@@ -24,6 +33,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         indicators=payload.get("indicators", {}),
         risk_metrics=payload.get("risk_metrics", {}),
         factors=payload.get("factors", {}),
+        analysis=analysis,
     )
     db.add(rec)
     db.commit()
