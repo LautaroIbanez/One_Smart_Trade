@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.data.curation import DataCuration
 from app.data.ingestion import DataIngestion
+from app.observability.metrics import record_data_gap
 from app.core.logging import logger
 
 
@@ -35,6 +36,8 @@ def check_gaps(interval: str, days: int = 30):
         logger.warning(f"Found {len(gaps)} gap(s) in {interval}:")
         for gap in gaps:
             logger.warning(f"  - {gap}")
+            # Record gap in metrics
+            record_data_gap(interval)
     else:
         logger.info(f"✓ No gaps found in {interval}")
     

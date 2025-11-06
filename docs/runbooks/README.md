@@ -74,44 +74,39 @@ tail -f backend/logs/app.log | grep -i binance
 
 ### Diagnóstico
 ```bash
-# Verificar gaps en datos
+# Verificar gaps en datos usando script CLI
 cd backend
-python -c "
-from app.data.ingestion import DataIngestion
-from datetime import datetime, timedelta
-di = DataIngestion()
-gaps = di.check_gaps('1h', datetime.utcnow() - timedelta(days=30), datetime.utcnow())
-print(gaps)
-"
+poetry run python -m app.scripts.check_gaps --interval 1h --days 30
+
+# O verificar todos los intervalos
+poetry run python -m app.scripts.check_gaps --interval all --days 30
 
 # Revisar última ingesta
 curl -s http://localhost:8000/api/v1/diagnostics/last-run
+
+# Verificar métricas de Prometheus
+curl -s http://localhost:8000/metrics | grep ost_last_ingestion_timestamp_seconds
 ```
 
 ### Solución
-1. Identificar timeframe afectado
-2. Ejecutar ingesta manual para timeframe:
+1. Identificar timeframe afectado usando `check_gaps`
+2. Ejecutar backfill manual para timeframe:
    ```bash
    cd backend
-   python -c "
-   import asyncio
-   from app.data.ingestion import DataIngestion
-   from datetime import datetime, timedelta
-   di = DataIngestion()
-   end = datetime.utcnow()
-   start = end - timedelta(days=30)
-   asyncio.run(di.ingest_timeframe('1h', start, end))
-   "
+   poetry run python -m app.scripts.backfill --interval 1h --days 30
    ```
 3. Regenerar datos curados:
    ```bash
-   python -c "
-   from app.data.curation import DataCuration
-   dc = DataCuration()
-   dc.curate_timeframe('1h')
-   "
+   poetry run python -m app.scripts.curate --interval 1h
    ```
-4. Regenerar recomendación si necesario
+4. Verificar que los gaps se resolvieron:
+   ```bash
+   poetry run python -m app.scripts.check_gaps --interval 1h --days 30
+   ```
+5. Regenerar recomendación si necesario:
+   ```bash
+   poetry run python -m app.scripts.regenerate_signal
+   ```
 
 ### Prevención
 - Validación de gaps en pipeline
@@ -135,10 +130,14 @@ curl http://localhost:8000/api/v1/diagnostics/last-run
 ```
 
 ### Solución
-1. Identificar error específico en logs
+1. Identificar error específico en logs:
+   ```bash
+   tail -f backend/logs/app.log | grep -i error
+   ```
 2. Verificar disponibilidad de datos:
    ```bash
-   python -c "
+   cd backend
+   poetry run python -c "
    from app.data.curation import DataCuration
    dc = DataCuration()
    df_1d = dc.get_latest_curated('1d')
@@ -147,15 +146,25 @@ curl http://localhost:8000/api/v1/diagnostics/last-run
    print(f'1h: {len(df_1h) if df_1h is not None else 0} rows')
    "
    ```
-3. Recalcular manualmente:
+3. Si faltan datos, regenerar:
    ```bash
-   python -c "
-   import asyncio
-   from app.main import job_generate_signal
-   asyncio.run(job_generate_signal())
-   "
+   # Backfill si es necesario
+   poetry run python -m app.scripts.backfill --interval 1d --days 7
+   poetry run python -m app.scripts.backfill --interval 1h --days 7
+   
+   # Curar datos
+   poetry run python -m app.scripts.curate --interval 1d
+   poetry run python -m app.scripts.curate --interval 1h
    ```
-4. Si persiste, revisar configuración y datos de entrada
+4. Recalcular señal manualmente:
+   ```bash
+   poetry run python -m app.scripts.regenerate_signal
+   ```
+5. Verificar que la señal se generó:
+   ```bash
+   curl http://localhost:8000/api/v1/recommendation/today
+   ```
+6. Si persiste, revisar configuración y datos de entrada
 
 ### Prevención
 - Validación exhaustiva de inputs

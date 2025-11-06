@@ -10,12 +10,29 @@ class MarketService:
         self.curation = DataCuration()
 
     async def get_market_data(self, interval: str) -> Dict[str, Any]:
-        """Get market data for interval."""
+        """Get market data for interval with chart-ready data."""
         df = self.curation.get_latest_curated(interval)
         if df is None or df.empty:
-            return {"interval": interval, "data": [], "status": "no_data"}
+            return {
+                "interval": interval,
+                "data": [],
+                "status": "no_data",
+                "current_price": 0.0,
+                "support": 0.0,
+                "resistance": 0.0,
+            }
 
         latest = df.iloc[-1]
+        
+        # Calculate support/resistance from recent data (last 100 candles)
+        recent = df.tail(100) if len(df) >= 100 else df
+        support = float(recent["low"].min()) if not recent.empty else float(latest.get("support", 0))
+        resistance = float(recent["high"].max()) if not recent.empty else float(latest.get("resistance", 0))
+        
+        # Use curated support/resistance if available, otherwise use calculated
+        support = float(latest.get("support", support)) if latest.get("support", 0) > 0 else support
+        resistance = float(latest.get("resistance", resistance)) if latest.get("resistance", 0) > 0 else resistance
+        
         return {
             "interval": interval,
             "status": "success",
@@ -24,8 +41,8 @@ class MarketService:
             "vwap": float(latest.get("vwap", latest["close"])),
             "atr": float(latest.get("atr", 0)),
             "volatility": float(latest.get("realized_volatility", 0)),
-            "support": float(latest.get("support", 0)),
-            "resistance": float(latest.get("resistance", 0)),
+            "support": support,
+            "resistance": resistance,
             "timestamp": latest["open_time"].isoformat(),
         }
 

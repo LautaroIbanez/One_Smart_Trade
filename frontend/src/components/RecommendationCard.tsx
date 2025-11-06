@@ -10,8 +10,12 @@ function RecommendationCard() {
   const handleRetry = async () => {
     setIsRetrying(true)
     try {
+      // Invalidate all queries first to clear cache
       await invalidateAll()
+      // Then refetch the current query
       await refetch()
+    } catch (err) {
+      console.error('Error retrying recommendation:', err)
     } finally {
       setIsRetrying(false)
     }
@@ -90,7 +94,7 @@ function RecommendationCard() {
             <p className="analysis-text">{data.analysis}</p>
           ) : (
             <p className="analysis-empty" role="status" aria-live="polite">
-              Análisis no disponible. Los datos están siendo procesados.
+              Análisis no disponible. Los datos están siendo procesados. Intenta refrescar en unos momentos.
             </p>
           )}
         </div>

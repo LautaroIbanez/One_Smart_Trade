@@ -100,12 +100,21 @@ class BacktestEngine:
         # Load 1h data for signal generation (use historical if available, otherwise latest)
         df_1h = self.curation.get_historical_curated("1h", start_date=start_date, end_date=end_date)
         if df_1h is None or df_1h.empty:
+            logger.warning("No historical 1h data found, attempting to use latest curated data")
             # Fallback to latest curated 1h data
             df_1h = self.curation.get_latest_curated("1h")
             if df_1h is None or df_1h.empty:
-                # Last resort: use 1d data
-                df_1h = df_1d.copy()
+                # Last resort: use 1d data resampled
                 logger.warning("Using 1d data as fallback for 1h signals")
+                df_1h = df_1d.copy()
+                # Ensure we have enough data points for indicators
+                if len(df_1h) < 200:
+                    logger.error(f"Insufficient 1h data: only {len(df_1h)} rows available")
+                    return {
+                        "error": "Insufficient 1h data for signal generation",
+                        "error_type": "INSUFFICIENT_DATA",
+                        "details": f"Only {len(df_1h)} rows available, need at least 200 for reliable indicators"
+                    }
 
         trades: List[Dict[str, Any]] = []
         equity_curve: List[float] = [initial_capital]
@@ -118,12 +127,24 @@ class BacktestEngine:
 
             # Generate signal for previous day
             df_slice = df_1d.iloc[:i]
-            df_h_slice = df_1h[df_1h["open_time"] <= prev_row["open_time"]]
+            # Filter 1h data up to previous day's timestamp
+            df_h_slice = df_1h[df_1h["open_time"] <= prev_row["open_time"]].copy()
+            
+            # Ensure we have enough data for indicators (at least 200 rows)
+            if len(df_slice) < 200 or len(df_h_slice) < 200:
+                # Skip early days when we don't have enough historical data
+                equity_curve.append(capital)
+                continue
 
             try:
                 signal_data = generate_signal(df_h_slice, df_slice)
-            except Exception as e:
+            except (ValueError, KeyError, IndexError) as e:
                 logger.debug(f"Error generating signal at index {i}: {e}")
+                equity_curve.append(capital)
+                continue
+            except Exception as e:
+                logger.warning(f"Unexpected error generating signal at index {i}: {e}")
+                equity_curve.append(capital)
                 continue
 
             signal = signal_data["signal"]

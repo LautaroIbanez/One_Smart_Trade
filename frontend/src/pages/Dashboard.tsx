@@ -18,8 +18,12 @@ function Dashboard() {
   const handleRefresh = async () => {
     setIsRefreshing(true)
     try {
+      // Invalidate all queries first
       await invalidateAll()
+      // Then refetch all active queries
       await Promise.all([refetchRecommendation(), refetchMarket()])
+    } catch (err) {
+      console.error('Error refreshing data:', err)
     } finally {
       setIsRefreshing(false)
     }

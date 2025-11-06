@@ -13,10 +13,20 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
     
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     
-    # Generate analysis text if not provided
+    # Generate analysis text if not provided or empty
     analysis = payload.get("analysis", "")
-    if not analysis:
-        analysis = build_narrative(payload)
+    if not analysis or not analysis.strip():
+        # Ensure all required fields are present for narrative
+        narrative_payload = {
+            "signal": payload.get("signal", "HOLD"),
+            "confidence": payload.get("confidence", 50.0),
+            "indicators": payload.get("indicators", {}),
+            "factors": payload.get("factors", {}),
+            "risk_metrics": payload.get("risk_metrics", {}),
+            "entry_range": payload.get("entry_range", {}),
+            "stop_loss_take_profit": payload.get("stop_loss_take_profit", {}),
+        }
+        analysis = build_narrative(narrative_payload)
     
     rec = RecommendationORM(
         date=date_str,

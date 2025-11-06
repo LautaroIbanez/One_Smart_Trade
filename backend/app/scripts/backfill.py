@@ -8,23 +8,40 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.data.ingestion import DataIngestion
+from app.observability.metrics import record_ingestion
 from app.core.logging import logger
+import time
 
 
 async def backfill_interval(interval: str, days: int = 30):
-    """Backfill data for a specific interval."""
+    """Backfill data for a specific interval with metrics recording."""
     di = DataIngestion()
     end = datetime.utcnow()
     start = end - timedelta(days=days)
     
     logger.info(f"Backfilling {interval} from {start.date()} to {end.date()}")
-    result = await di.ingest_timeframe(interval, start, end)
+    start_time = time.time()
     
-    if result.get("status") == "success":
-        logger.info(f"✓ Successfully backfilled {interval}: {result.get('rows', 0)} rows")
-        return True
-    else:
-        logger.error(f"✗ Failed to backfill {interval}: {result.get('error', 'Unknown error')}")
+    try:
+        result = await di.ingest_timeframe(interval, start, end)
+        duration = time.time() - start_time
+        
+        if result.get("status") == "success":
+            logger.info(f"✓ Successfully backfilled {interval}: {result.get('rows', 0)} rows")
+            # Record successful ingestion with correct timeframe
+            record_ingestion(interval, duration, True)
+            return True
+        else:
+            error_msg = result.get('error', 'Unknown error')
+            logger.error(f"✗ Failed to backfill {interval}: {error_msg}")
+            # Record failed ingestion with correct timeframe
+            record_ingestion(interval, duration, False, error_msg)
+            return False
+    except Exception as e:
+        duration = time.time() - start_time
+        error_msg = str(e)
+        logger.error(f"✗ Exception during backfill {interval}: {error_msg}", exc_info=True)
+        record_ingestion(interval, duration, False, type(e).__name__)
         return False
 
 

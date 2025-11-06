@@ -9,13 +9,11 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, time
-from app.core.database import engine, Base
+from app.core.database import engine, Base, SessionLocal
 from app.data.ingestion import DataIngestion
 from app.data.curation import DataCuration
 from app.quant.signal_engine import generate_signal
-from app.core.config import settings
 from app.db import models
-from app.core.database import SessionLocal
 from app.db.crud import create_recommendation, log_run
 
 # Initialize logging
@@ -67,22 +65,40 @@ scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
 
 
 async def job_ingest_all():
+    """Scheduled job to ingest data for all timeframes."""
     from app.observability.metrics import record_ingestion
     from app.core.logging import logger
+    from app.data.curation import DataCuration
     import time
     import httpx
     
     di = DataIngestion()
+    dc = DataCuration()
     start_time = time.time()
+    
     try:
         logger.info("Starting scheduled ingestion job")
         results = await di.ingest_all_timeframes()
         duration = time.time() - start_time
         
-        # Check for failures in results
-        failed = [r for r in results if r.get("status") == "error"]
+        # Check for failures in results and record metrics per timeframe
+        failed = [r for r in results if r.get("status") in ("error", "no_data", "empty")]
+        
+        # Record metrics for each individual timeframe
+        for result in results:
+            interval = result.get("interval", "unknown")
+            if interval != "unknown":
+                # Calculate individual duration (approximate, since we don't track per-interval)
+                individual_duration = duration / len(results)
+                if result.get("status") == "success":
+                    record_ingestion(interval, individual_duration, True)
+                else:
+                    error_reason = result.get("error", result.get("status", "unknown"))
+                    record_ingestion(interval, individual_duration, False, error_reason)
+        
         if failed:
-            reason = f"{len(failed)} timeframes failed"
+            failed_intervals = [r.get("interval", "unknown") for r in failed]
+            reason = f"{len(failed)} timeframes failed: {', '.join(failed_intervals)}"
             logger.warning(f"Ingestion completed with {len(failed)} failures", extra={"failed": failed})
             record_ingestion("all", duration, False, reason)
             db = SessionLocal()
@@ -93,6 +109,14 @@ async def job_ingest_all():
         else:
             logger.info(f"Ingestion completed successfully in {duration:.2f}s", extra={"duration": duration})
             record_ingestion("all", duration, True)
+            
+            # Curate data after successful ingestion
+            try:
+                for interval in ["15m", "30m", "1h", "4h", "1d", "1w"]:
+                    dc.curate_timeframe(interval)
+            except Exception as curation_error:
+                logger.warning(f"Error during curation after ingestion: {curation_error}")
+            
             db = SessionLocal()
             try:
                 log_run(db, "ingestion", "success")
@@ -125,6 +149,7 @@ async def job_ingest_all():
 
 
 async def job_generate_signal():
+    """Scheduled job to generate daily trading signal."""
     from app.observability.metrics import record_signal_generation
     from app.core.logging import logger
     import time
@@ -133,13 +158,26 @@ async def job_generate_signal():
     try:
         logger.info("Starting scheduled signal generation job")
         dc = DataCuration()
+        
+        # Try to get curated data, curate if missing
         df_1d = dc.get_latest_curated("1d")
+        if df_1d is None or df_1d.empty:
+            logger.info("No 1d curated data found, attempting to curate...")
+            curation_result = dc.curate_timeframe("1d")
+            if curation_result.get("status") == "success":
+                df_1d = dc.get_latest_curated("1d")
+        
         df_1h = dc.get_latest_curated("1h")
+        if df_1h is None or df_1h.empty:
+            logger.info("No 1h curated data found, attempting to curate...")
+            curation_result = dc.curate_timeframe("1h")
+            if curation_result.get("status") == "success":
+                df_1h = dc.get_latest_curated("1h")
         
         if df_1d is None or df_1d.empty:
             duration = time.time() - start_time
             reason = "NoData_1d"
-            logger.warning("Signal generation failed: no 1d curated data available")
+            logger.warning("Signal generation failed: no 1d curated data available after curation attempt")
             record_signal_generation(duration, False, reason)
             db = SessionLocal()
             try:
@@ -152,6 +190,7 @@ async def job_generate_signal():
             logger.warning("No 1h data available, using 1d data as fallback")
             df_1h = df_1d
         
+        # Generate signal with validated data
         payload = generate_signal(df_1h, df_1d)
         duration = time.time() - start_time
         

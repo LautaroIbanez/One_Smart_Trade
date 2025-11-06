@@ -269,12 +269,17 @@ Este backtest es solo para fines educativos. El rendimiento pasado no garantiza 
     # Write to both output_dir and docs/backtest-report.md
     report_path = output_dir / "backtest-report.md"
     report_path.write_text(md_content, encoding="utf-8")
+    logger.info(f"Backtest report written to {report_path}")
     
     # Also write to docs/backtest-report.md (project root)
-    docs_path = Path(__file__).parent.parent.parent.parent / "docs" / "backtest-report.md"
+    # Find project root by going up from backend/app/backtesting/report.py
+    current_file = Path(__file__).resolve()
+    # Go up: backend/app/backtesting -> backend/app -> backend -> project root
+    project_root = current_file.parent.parent.parent.parent
+    docs_path = project_root / "docs" / "backtest-report.md"
     docs_path.parent.mkdir(parents=True, exist_ok=True)
     docs_path.write_text(md_content, encoding="utf-8")
-    logger.info(f"Backtest report written to {report_path} and {docs_path}")
+    logger.info(f"Backtest report also written to {docs_path}")
 
     return {
         "metrics": metrics,

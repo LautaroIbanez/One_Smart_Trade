@@ -54,6 +54,7 @@ export const usePerformanceSummary = () => {
 export const useInvalidateAll = () => {
   const qc = useQueryClient()
   return async () => {
+    // Invalidate all queries to force refetch
     await Promise.all([
       qc.invalidateQueries({ queryKey: ['recommendation'] }),
       qc.invalidateQueries({ queryKey: ['market'] }),

@@ -81,6 +81,22 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
 
 
 def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
+    """Generate trading signal from 1h and 1d dataframes."""
+    # Validate inputs
+    if df_1d is None or df_1d.empty:
+        raise ValueError("df_1d is required and cannot be empty")
+    if df_1h is None or df_1h.empty:
+        df_1h = df_1d  # Fallback to 1d data
+    
+    # Ensure required columns exist
+    required_cols = ["open", "high", "low", "close", "volume"]
+    for col in required_cols:
+        if col not in df_1d.columns:
+            raise ValueError(f"Missing required column '{col}' in df_1d")
+        if col not in df_1h.columns:
+            raise ValueError(f"Missing required column '{col}' in df_1h")
+    
+    # Calculate indicators
     ind_1d = ind.calculate_all(df_1d)
     ind_1h = ind.calculate_all(df_1h)
     factors = cross_timeframe(df_1h, df_1d, ind_1h, ind_1d)
@@ -127,18 +143,33 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
         "volatility": round(vol, 2),
     }
 
-    # Prepare indicators dict (extract last values from Series)
+    # Prepare indicators dict (extract last values from Series, handling NaN)
+    import math
     indicators_dict = {}
     for k, v in ind_1d.items():
         if isinstance(v, pd.Series) and not v.empty:
             try:
-                indicators_dict[k] = float(v.iloc[-1])
-            except (ValueError, IndexError):
+                val = float(v.iloc[-1])
+                # Skip NaN and Inf values
+                if not (math.isnan(val) or math.isinf(val)):
+                    indicators_dict[k] = val
+            except (ValueError, IndexError, TypeError):
                 pass
         elif isinstance(v, (int, float)):
-            indicators_dict[k] = float(v)
+            val = float(v)
+            if not (math.isnan(val) or math.isinf(val)):
+                indicators_dict[k] = val
 
-    return {
+    # Add volume to indicators for narrative
+    if "volume" in df_1d.columns and not df_1d["volume"].empty:
+        try:
+            vol_val = float(df_1d["volume"].iloc[-1])
+            if not (math.isnan(vol_val) or math.isinf(vol_val)):
+                indicators_dict["volume"] = vol_val
+        except (ValueError, IndexError, TypeError):
+            pass
+    
+    payload = {
         "signal": final_signal,
         "entry_range": entry,
         "stop_loss_take_profit": levels,
@@ -150,5 +181,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
         "votes": votes,
         "signals": signals,
     }
+    
+    return payload
 
 

@@ -14,8 +14,10 @@ def build_narrative(signal_payload: Dict[str, Any]) -> str:
     Returns:
         Professional analysis text
     """
-    s = signal_payload["signal"]
-    conf = signal_payload["confidence"]
+    import math
+    
+    s = signal_payload.get("signal", "HOLD")
+    conf = float(signal_payload.get("confidence", 50.0))
     ind = signal_payload.get("indicators", {})
     fac = signal_payload.get("factors", {})
     risk = signal_payload.get("risk_metrics", {})
@@ -32,11 +34,18 @@ def build_narrative(signal_payload: Dict[str, Any]) -> str:
     else:
         parts.append("Contexto neutral; priorizar paciencia y gestión de riesgo. ")
 
-    # Key indicators
-    rsi = ind.get("rsi", 50)
-    macd_val = ind.get("macd", 0)
-    atr_val = ind.get("atr", 0)
-    vol = ind.get("realized_vol", 0)
+    # Key indicators - use safe defaults if missing or NaN
+    def safe_float(val, default=0.0):
+        try:
+            fval = float(val)
+            return fval if not (math.isnan(fval) or math.isinf(fval)) else default
+        except (ValueError, TypeError):
+            return default
+    
+    rsi = safe_float(ind.get("rsi"), 50.0)
+    macd_val = safe_float(ind.get("macd"), 0.0)
+    atr_val = safe_float(ind.get("atr"), 0.0)
+    vol = safe_float(ind.get("realized_vol", ind.get("realized_volatility")), 0.0)
     parts.append(f"Confianza {conf:.1f}%. RSI {rsi:.1f}, MACD {macd_val:.4f}, ATR {atr_val:.2f}, Vol. {vol:.2f}. ")
 
     # Cross-timeframe factors
@@ -47,38 +56,39 @@ def build_narrative(signal_payload: Dict[str, Any]) -> str:
     else:
         parts.append("Momentum 1h/1d desalineado; considerar esperar mejor entrada. ")
     
-    if regime_d == 2:
+    regime_val = int(regime_d) if regime_d is not None else 1
+    if regime_val == 2:
         parts.append("Régimen de volatilidad alto; ajustar tamaño de posición. ")
-    elif regime_d == 0:
+    elif regime_val == 0:
         parts.append("Régimen de volatilidad bajo; condiciones favorables. ")
     else:
         parts.append("Régimen de volatilidad medio. ")
 
     # Risk metrics
-    rr = risk.get("risk_reward_ratio", 0)
+    rr = safe_float(risk.get("risk_reward_ratio"), 0.0)
     if rr > 0:
         parts.append(f"Ratio riesgo/recompensa {rr:.2f}. ")
     
-    sl_prob = risk.get("sl_probability", 0)
-    tp_prob = risk.get("tp_probability", 0)
+    sl_prob = safe_float(risk.get("sl_probability"), 0.0)
+    tp_prob = safe_float(risk.get("tp_probability"), 0.0)
     if sl_prob > 0 and tp_prob > 0:
         parts.append(f"Probabilidad SL {sl_prob:.1f}%, TP {tp_prob:.1f}%. ")
 
     # Entry and levels
     if entry:
-        opt = entry.get("optimal", 0)
+        opt = safe_float(entry.get("optimal"), 0.0)
         if opt > 0:
             parts.append(f"Entrada óptima ${opt:,.2f}. ")
     
     if sl_tp:
-        sl = sl_tp.get("stop_loss", 0)
-        tp = sl_tp.get("take_profit", 0)
+        sl = safe_float(sl_tp.get("stop_loss"), 0.0)
+        tp = safe_float(sl_tp.get("take_profit"), 0.0)
         if sl > 0 and tp > 0:
             parts.append(f"Stop Loss ${sl:,.2f}, Take Profit ${tp:,.2f}. ")
 
     # Liquidity assessment
-    volume_24h = ind.get("volume", 0)
-    if isinstance(volume_24h, (int, float)) and volume_24h > 0:
+    volume_24h = safe_float(ind.get("volume"), 0.0)
+    if volume_24h > 0:
         parts.append("Liquidez adecuada detectada. ")
     else:
         parts.append("Monitorear liquidez antes de ejecutar. ")

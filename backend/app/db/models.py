@@ -21,10 +21,10 @@ class RecommendationORM(Base):
     take_profit_pct: Mapped[float] = mapped_column(Float)
     confidence: Mapped[float] = mapped_column(Float)
     current_price: Mapped[float] = mapped_column(Float)
-    indicators: Mapped[dict] = mapped_column(JSON)
-    risk_metrics: Mapped[dict] = mapped_column(JSON)
+    indicators: Mapped[dict] = mapped_column(JSON, default={})
+    risk_metrics: Mapped[dict] = mapped_column(JSON, default={})
     factors: Mapped[dict] = mapped_column(JSON, default={})
-    analysis: Mapped[str] = mapped_column(String(2000), default="")
+    analysis: Mapped[str] = mapped_column(String(5000), default="")  # Increased for longer analysis text
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
