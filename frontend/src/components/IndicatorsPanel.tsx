@@ -1,18 +1,32 @@
-import { useQuery } from '@tanstack/react-query'
-import { getTodayRecommendation } from '../services/api'
+import { useTodayRecommendation } from '../api/hooks'
 import './IndicatorsPanel.css'
 
 function IndicatorsPanel() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['recommendation', 'today'],
-    queryFn: getTodayRecommendation,
-  })
+  const { data, isLoading, error } = useTodayRecommendation()
 
-  if (isLoading || error || !data) {
+  if (isLoading) {
+    return (
+      <div className="indicators-panel" role="status" aria-live="polite">
+        <h2>Indicadores Clave</h2>
+        <div className="loading">Cargando indicadores...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="indicators-panel" role="alert">
+        <h2>Indicadores Clave</h2>
+        <div className="error">Error al cargar indicadores</div>
+      </div>
+    )
+  }
+
+  if (!data) {
     return (
       <div className="indicators-panel">
         <h2>Indicadores Clave</h2>
-        <div className="loading">Cargando indicadores...</div>
+        <div className="empty">No hay datos disponibles</div>
       </div>
     )
   }

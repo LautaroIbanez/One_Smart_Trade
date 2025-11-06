@@ -49,6 +49,52 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
     plt.savefig(dd_path, dpi=150, bbox_inches="tight")
     plt.close()
 
+    # Returns distribution
+    if trades:
+        df_trades = pd.DataFrame(trades)
+        returns = df_trades["return_pct"].values
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.hist(returns, bins=30, color="#3b82f6", alpha=0.7, edgecolor="black")
+        ax.axvline(np.mean(returns), color="#ef4444", linestyle="--", label=f"Mean: {np.mean(returns):.2f}%")
+        ax.set_xlabel("Return (%)")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Returns Distribution")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        dist_path = output_dir / "returns_distribution.png"
+        plt.savefig(dist_path, dpi=150, bbox_inches="tight")
+        plt.close()
+    else:
+        dist_path = None
+
+    # Buy & Hold comparison
+    buy_hold_return = 0.0
+    if trades and len(equity_curve) > 1:
+        df_trades = pd.DataFrame(trades)
+        if not df_trades.empty:
+            first_price = df_trades.iloc[0]["entry_price"]
+            last_price = df_trades.iloc[-1]["exit_price"]
+            buy_hold_return = ((last_price - first_price) / first_price) * 100
+
+            strategy_return = metrics.get("total_return", 0.0)
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            bars = ax.bar(["Strategy", "Buy & Hold"], [strategy_return, buy_hold_return], color=["#3b82f6", "#10b981"])
+            ax.set_ylabel("Total Return (%)")
+            ax.set_title("Strategy vs Buy & Hold")
+            ax.grid(True, alpha=0.3, axis="y")
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', ha='center', va='bottom')
+            bh_path = output_dir / "buy_hold_comparison.png"
+            plt.savefig(bh_path, dpi=150, bbox_inches="tight")
+            plt.close()
+        else:
+            bh_path = None
+    else:
+        bh_path = None
+
     # Generate markdown report
     md_content = f"""# Backtest Report - One Smart Trade
 
@@ -87,6 +133,20 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
 ### Drawdown
 
 ![Drawdown](drawdown.png)
+
+### Returns Distribution
+
+![Returns Distribution](returns_distribution.png)
+
+### Strategy vs Buy & Hold
+
+![Buy & Hold Comparison](buy_hold_comparison.png)
+
+## Comparativa vs Buy & Hold
+
+- **Strategy Return:** {metrics['total_return']:.2f}%
+- **Buy & Hold Return:** {buy_hold_return:.2f}%
+- **Outperformance:** {metrics['total_return'] - buy_hold_return:.2f}%
 
 ## Disclaimer
 

@@ -14,6 +14,20 @@ async def get_market_data(interval: Interval):
     """Get market data for a specific interval."""
     try:
         data = await market_service.get_market_data(interval)
+        # Add recent candles for charting if available
+        df = market_service.curation.get_latest_curated(interval)
+        if df is not None and not df.empty:
+            recent = df.tail(50)
+            data["data"] = [
+                {
+                    "open_time": row["open_time"].isoformat(),
+                    "close": float(row["close"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "volume": float(row["volume"]),
+                }
+                for _, row in recent.iterrows()
+            ]
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -40,12 +40,24 @@ export const useMarketData = (interval: Interval) => {
   })
 }
 
+export const usePerformanceSummary = () => {
+  return useQuery({
+    queryKey: ['performance', 'summary'],
+    queryFn: async () => {
+      const { data } = await api.get('/api/v1/performance/summary')
+      return data
+    },
+    staleTime: 300_000, // 5 minutes
+  })
+}
+
 export const useInvalidateAll = () => {
   const qc = useQueryClient()
   return async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ['recommendation'] }),
       qc.invalidateQueries({ queryKey: ['market'] }),
+      qc.invalidateQueries({ queryKey: ['performance'] }),
     ])
   }
 }

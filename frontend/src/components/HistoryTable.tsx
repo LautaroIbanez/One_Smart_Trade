@@ -27,33 +27,39 @@ function HistoryTable() {
   return (
     <div className="history-table-container">
       <h2>Historial Reciente</h2>
-      {recommendations.length === 0 ? (
+      {isLoading ? (
+        <div className="loading" role="status" aria-live="polite">Cargando historial...</div>
+      ) : error ? (
+        <div className="error" role="alert">Error al cargar historial</div>
+      ) : recommendations.length === 0 ? (
         <div className="empty">No hay historial disponible</div>
       ) : (
-        <table className="history-table">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Señal</th>
-              <th>Precio</th>
-              <th>Confianza</th>
-            </tr>
-          </thead>
-          <tbody>
-            {recommendations.map((rec: any, index: number) => (
-              <tr key={index}>
-                <td>{new Date(rec.timestamp).toLocaleDateString()}</td>
-                <td>
-                  <span className={`signal-badge signal-${rec.signal.toLowerCase()}`}>
-                    {rec.signal}
-                  </span>
-                </td>
-                <td>${rec.current_price.toLocaleString()}</td>
-                <td>{rec.confidence.toFixed(1)}%</td>
+        <div className="table-wrapper">
+          <table className="history-table" aria-label="Historial de recomendaciones">
+            <thead>
+              <tr>
+                <th scope="col">Fecha</th>
+                <th scope="col">Señal</th>
+                <th scope="col">Precio</th>
+                <th scope="col">Confianza</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {recommendations.map((rec: any, index: number) => (
+                <tr key={rec.timestamp || index}>
+                  <td>{new Date(rec.timestamp).toLocaleDateString('es-ES')}</td>
+                  <td>
+                    <span className={`signal-badge signal-${rec.signal.toLowerCase()}`} aria-label={`Señal: ${rec.signal}`}>
+                      {rec.signal}
+                    </span>
+                  </td>
+                  <td>${rec.current_price.toLocaleString()}</td>
+                  <td>{rec.confidence.toFixed(1)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

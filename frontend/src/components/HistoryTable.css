@@ -3,6 +3,11 @@
   border: 1px solid var(--border-color);
   border-radius: 1rem;
   padding: 2rem;
+  margin-top: 2rem;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .history-table-container h2 {

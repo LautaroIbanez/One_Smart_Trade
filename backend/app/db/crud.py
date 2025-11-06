@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import select, desc
-from app.db.models import RecommendationORM, RunLogORM
+from app.db.models import RecommendationORM, RunLogORM, BacktestResultORM
 
 
 def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
@@ -59,3 +59,21 @@ def get_last_run(db: Session, run_type: str | None = None) -> RunLogORM | None:
     return db.execute(stmt).scalars().first()
 
 
+def save_backtest_result(db: Session, version: str, start_date: str, end_date: str, metrics: dict) -> BacktestResultORM:
+    """Save versioned backtest result."""
+    result = BacktestResultORM(
+        version=version,
+        start_date=start_date,
+        end_date=end_date,
+        metrics=metrics,
+    )
+    db.add(result)
+    db.commit()
+    db.refresh(result)
+    return result
+
+
+def get_latest_backtest_result(db: Session) -> BacktestResultORM | None:
+    """Get latest backtest result."""
+    stmt = select(BacktestResultORM).order_by(desc(BacktestResultORM.created_at)).limit(1)
+    return db.execute(stmt).scalars().first()

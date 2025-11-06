@@ -67,13 +67,18 @@ class BacktestEngine:
         initial_capital: float = 10000.0,
         position_size_pct: float = 1.0,
     ) -> Dict[str, Any]:
-        """Run backtest over date range."""
+        """Run backtest over date range (supports 5+ years of data)."""
         df_1d = self.curation.get_latest_curated("1d")
         if df_1d is None or df_1d.empty:
             return {"error": "No data available"}
 
+        # Filter to date range
         df_1d = df_1d[df_1d["open_time"] >= start_date]
         df_1d = df_1d[df_1d["open_time"] <= end_date].copy()
+        
+        # Ensure we have enough data (at least 200 days for indicators)
+        if len(df_1d) < 200:
+            return {"error": f"Insufficient data: only {len(df_1d)} days available, need at least 200"}
 
         if df_1d.empty:
             return {"error": "No data in date range"}

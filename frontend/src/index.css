@@ -11,6 +11,21 @@
   --border-color: #333333;
 }
 
+/* Accessibility: Ensure sufficient contrast */
+@media (prefers-contrast: high) {
+  :root {
+    --text-primary: #ffffff;
+    --text-secondary: #cccccc;
+    --border-color: #555555;
+  }
+}
+
+/* Focus styles for accessibility */
+*:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
 body {
   background-color: var(--bg-primary);
   color: var(--text-primary);

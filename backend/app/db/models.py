@@ -37,3 +37,12 @@ class RunLogORM(Base):
     finished_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BacktestResultORM(Base):
+    """Store versioned backtest results."""
+    __tablename__ = "backtest_results"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(String(20), index=True)  # e.g., "0.1.0"
+    start_date: Mapped[str] = mapped_column(String(20))
+    end_date: Mapped[str] = mapped_column(String(20))
+    metrics: Mapped[dict] = mapped_column(JSON)  # All calculated metrics
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

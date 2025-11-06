@@ -17,7 +17,9 @@ function RecommendationCard() {
     return (
       <div className="recommendation-card error" role="alert" aria-live="assertive">
         <p>Error al cargar recomendación</p>
-        <button onClick={() => invalidateAll()}>Reintentar</button>
+        <button onClick={() => invalidateAll()} type="button" aria-label="Reintentar carga">
+          Reintentar
+        </button>
       </div>
     )
   }

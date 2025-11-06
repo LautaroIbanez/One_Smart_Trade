@@ -81,6 +81,10 @@ def calculate_metrics(backtest_result: Dict[str, Any]) -> Dict[str, float]:
     # Calmar Ratio
     calmar = (cagr / max_drawdown) if max_drawdown > 0 else 0.0
 
+    # Rolling metrics (monthly and quarterly)
+    rolling_monthly = _calculate_rolling_metrics(df_trades, equity_curve, window_days=30)
+    rolling_quarterly = _calculate_rolling_metrics(df_trades, equity_curve, window_days=90)
+
     return {
         "cagr": round(cagr, 2),
         "sharpe": round(sharpe, 2),
@@ -94,5 +98,37 @@ def calculate_metrics(backtest_result: Dict[str, Any]) -> Dict[str, float]:
         "total_trades": total_trades,
         "winning_trades": winning_trades,
         "losing_trades": losing_trades,
+        "rolling_monthly": rolling_monthly,
+        "rolling_quarterly": rolling_quarterly,
+    }
+
+
+def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: List[float], window_days: int) -> Dict[str, Any]:
+    """Calculate rolling metrics over a window."""
+    if trades_df.empty or len(equity_curve) < 2:
+        return {"avg_return": 0.0, "avg_sharpe": 0.0, "max_dd": 0.0}
+
+    # Simplified: use last N trades as proxy for window
+    window_trades = min(window_days // 7, len(trades_df))  # Approximate
+    if window_trades < 1:
+        return {"avg_return": 0.0, "avg_sharpe": 0.0, "max_dd": 0.0}
+
+    recent_trades = trades_df.tail(window_trades)
+    recent_returns = recent_trades["return_pct"].values if len(recent_trades) > 0 else np.array([])
+
+    avg_return = float(np.mean(recent_returns)) if len(recent_returns) > 0 else 0.0
+    std_return = float(np.std(recent_returns)) if len(recent_returns) > 1 else 0.0
+    avg_sharpe = (avg_return / std_return * np.sqrt(252)) if std_return > 0 else 0.0
+
+    recent_equity = equity_curve[-window_trades:] if len(equity_curve) >= window_trades else equity_curve
+    equity_series = pd.Series(recent_equity)
+    running_max = equity_series.expanding().max()
+    drawdown = ((equity_series - running_max) / running_max) * 100
+    max_dd = abs(float(drawdown.min())) if not drawdown.empty else 0.0
+
+    return {
+        "avg_return": round(avg_return, 2),
+        "avg_sharpe": round(avg_sharpe, 2),
+        "max_dd": round(max_dd, 2),
     }
 

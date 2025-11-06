@@ -51,10 +51,21 @@ One Smart Trade es un sistema cuantitativo diseñado para generar recomendacione
 
 ### 3. Factores Cross-Timeframe
 
-- **Momentum Multi-Timeframe:** Comparación de momentum entre timeframes
-- **Divergencias:** Detección de divergencias alcistas/bajistas
-- **Slope de Medias:** Pendiente de medias móviles
+- **Momentum Multi-Timeframe:** Comparación de momentum entre timeframes (1h vs 1d)
+  - Umbral: Alineación cuando signos coinciden (1.0) o no (0.0)
+  - Normalización: Porcentaje de cambio en ventana de 10 períodos
+  
+- **Divergencias:** Detección de divergencias alcistas/bajistas (MACD/RSI vs precio)
+  - Ventana: 14 períodos (ajustable por timeframe)
+  - Retorna: +1 (bullish), -1 (bearish), 0 (ninguna)
+  
+- **Slope de Medias:** Pendiente de medias móviles (EMA21)
+  - Ventana: 20 períodos para regresión lineal
+  - Normalización: Coeficiente de pendiente (precio/tiempo)
+  
 - **Régimen de Volatilidad:** Identificación de regímenes (alta/baja volatilidad)
+  - Umbrales: Alto > 0.5 (50% anualizada), Bajo < 0.2 (20% anualizada)
+  - Normalización: Volatilidad realizada anualizada (√252 × std de returns)
 
 ### 4. Estrategias Combinadas
 
@@ -142,12 +153,16 @@ El análisis textual incluye:
 
 ## Limitaciones
 
-1. **Datos Históricos:** Limitado a datos disponibles de Binance
-2. **Slippage:** No considera slippage real en ejecución
-3. **Comisiones:** Considera comisiones estándar pero puede variar
-4. **Condiciones de Mercado:** Puede fallar en mercados extremos
-5. **Latencia:** No diseñado para trading de alta frecuencia
-6. **Liquidez:** Asume liquidez suficiente en BTC/USDT
+1. **Datos Históricos:** Limitado a datos disponibles de Binance (máximo ~5 años de datos completos)
+2. **Slippage:** Modelado como 0.05% fijo; en realidad puede variar según condiciones de mercado
+3. **Comisiones:** Considera 0.1% por trade (Binance spot); puede variar según volumen y exchange
+4. **Condiciones de Mercado:** Puede fallar en mercados extremos (flash crashes, eventos black swan)
+5. **Latencia:** No diseñado para trading de alta frecuencia; señales son diarias
+6. **Liquidez:** Asume liquidez suficiente en BTC/USDT; puede no aplicarse a otros pares
+7. **Overfitting:** Riesgo de sobreajuste en backtesting; validación out-of-sample recomendada
+8. **Regime Changes:** Cambios de régimen de mercado pueden degradar performance
+9. **Correlaciones:** No considera correlaciones con otros activos o factores macro
+10. **Ejecución:** Asume ejecución perfecta de SL/TP; en realidad puede haber slippage adicional
 
 ## Disclaimers Legales
 

@@ -20,12 +20,24 @@ def slope(series: pd.Series, window: int = 10) -> pd.Series:
 
 
 def regime_volatility(realized_vol: pd.Series, high: float = 0.5, low: float = 0.2) -> pd.Series:
-    """Map realized vol to regimes: 2=high,1=mid,0=low."""
+    """
+    Map realized vol to regimes: 2=high,1=mid,0=low.
+    
+    Thresholds:
+    - high: 0.5 (50% annualized volatility) - above this is high vol regime
+    - low: 0.2 (20% annualized volatility) - below this is low vol regime
+    Normalization: Annualized volatility (252 trading days).
+    """
     return pd.Series(np.where(realized_vol > high, 2, np.where(realized_vol < low, 0, 1)), index=realized_vol.index)
 
 
 def divergence(price: pd.Series, osc: pd.Series, window: int = 14) -> pd.Series:
-    """Simple divergence detector: price higher high but osc lower high (bear) / opposite (bull)."""
+    """
+    Simple divergence detector: price higher high but osc lower high (bear) / opposite (bull).
+    
+    Returns: 1 for bullish divergence, -1 for bearish divergence, 0 for none.
+    Window: 14 periods default (adjustable based on timeframe).
+    """
     hh_price = price.rolling(window).apply(np.nanmax)
     hh_osc = osc.rolling(window).apply(np.nanmax)
     ll_price = price.rolling(window).apply(np.nanmin)

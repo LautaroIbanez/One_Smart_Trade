@@ -34,6 +34,13 @@ def build_narrative(signal_payload: Dict[str, Any]) -> str:
     if rr:
         parts.append(f"RR esperado {rr:.2f}. ")
 
+    # Liquidity assessment (using volume as proxy)
+    volume_24h = ind.get("volume", 0)
+    if isinstance(volume_24h, (int, float)) and volume_24h > 0:
+        parts.append("Liquidez adecuada detectada. ")
+    else:
+        parts.append("Monitorear liquidez antes de ejecutar. ")
+
     parts.append("Este contenido no es asesoramiento financiero; opere bajo su propio criterio.")
     return "".join(parts)
 

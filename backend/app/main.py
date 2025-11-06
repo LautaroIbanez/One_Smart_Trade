@@ -2,6 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.exception_handler import ExceptionHandlerMiddleware
 from app.observability.metrics import RequestMetricsMiddleware, metrics_router
 from app.api.v1 import recommendation, diagnostics, market, performance
 from app.core.config import settings
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ExceptionHandlerMiddleware)
 app.add_middleware(RateLimitMiddleware, requests_per_minute=300)
 app.add_middleware(RequestMetricsMiddleware)
 app.include_router(metrics_router)
@@ -65,26 +67,52 @@ scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
 
 
 async def job_ingest_all():
+    from app.observability.metrics import record_ingestion
+    import time
+    
     di = DataIngestion()
+    start_time = time.time()
     try:
         await di.ingest_all_timeframes()
+        duration = time.time() - start_time
+        record_ingestion("all", duration, True)
         with SessionLocal() as db:
             log_run(db, "ingestion", "success")
     except Exception as e:
+        duration = time.time() - start_time
+        reason = type(e).__name__
+        record_ingestion("all", duration, False, reason)
         with SessionLocal() as db:
             log_run(db, "ingestion", "error", str(e))
 
 
 async def job_generate_signal():
-    dc = DataCuration()
-    df_1d = dc.get_latest_curated("1d")
-    df_1h = dc.get_latest_curated("1h")
-    if df_1d is None or df_1h is None or df_1d.empty or df_1h.empty:
-        return
-    payload = generate_signal(df_1h, df_1d)
-    with SessionLocal() as db:
-        create_recommendation(db, payload)
-        log_run(db, "signal", "success")
+    from app.observability.metrics import record_signal_generation
+    import time
+    
+    start_time = time.time()
+    try:
+        dc = DataCuration()
+        df_1d = dc.get_latest_curated("1d")
+        df_1h = dc.get_latest_curated("1h")
+        if df_1d is None or df_1h is None or df_1d.empty or df_1h.empty:
+            duration = time.time() - start_time
+            record_signal_generation(duration, False, "NoData")
+            with SessionLocal() as db:
+                log_run(db, "signal", "error", "No curated data available")
+            return
+        payload = generate_signal(df_1h, df_1d)
+        duration = time.time() - start_time
+        record_signal_generation(duration, True)
+        with SessionLocal() as db:
+            create_recommendation(db, payload)
+            log_run(db, "signal", "success")
+    except Exception as e:
+        duration = time.time() - start_time
+        reason = type(e).__name__
+        record_signal_generation(duration, False, reason)
+        with SessionLocal() as db:
+            log_run(db, "signal", "error", str(e))
 
 
 @app.on_event("startup")
