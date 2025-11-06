@@ -1,10 +1,10 @@
 # Backtest Report - One Smart Trade
 
-> **Nota:** Este reporte será generado después de implementar el motor de backtesting (Epic 6).
+> **Nota:** Este reporte es generado automáticamente por el motor de backtesting. Los resultados se actualizan periódicamente.
 
 ## Resumen Ejecutivo
 
-[Pendiente de implementación]
+Este reporte presenta los resultados del backtesting del sistema One Smart Trade sobre datos históricos de BTC/USDT. El backtesting incluye modelado de comisiones (0.1%) y slippage (0.05%) para simular condiciones realistas de ejecución.
 
 ## Período de Backtesting
 

@@ -1,0 +1,8 @@
+.app-layout { min-height: 100vh; background: var(--bg-primary); color: var(--text-primary); }
+.app-header { padding: 1.5rem 2rem; border-bottom: 1px solid var(--border-color); }
+.app-main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+.app-footer { padding: 1.5rem 2rem; border-top: 1px solid var(--border-color); display: flex; flex-direction: column; gap: .75rem; color: var(--text-secondary); }
+.footer-links { display: flex; gap: 1rem; }
+.footer-links a { color: var(--text-secondary); text-decoration: underline; }
+.disclaimer { font-size: .875rem; line-height: 1.4; }
+

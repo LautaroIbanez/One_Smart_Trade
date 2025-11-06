@@ -166,6 +166,20 @@ El análisis textual incluye:
 
 **Próxima Recalibración:** Según performance y condiciones de mercado
 
+### Plan de Recalibración
+
+El modelo se recalibrará cuando:
+1. **Performance degradada:** Sharpe < 0.5 o Max Drawdown > 40% en rolling 6 meses
+2. **Cambio de régimen:** Volatilidad promedio cambia > 50% vs. baseline
+3. **Actualización trimestral:** Revisión de parámetros cada 3 meses
+4. **Eventos macro:** Ajustes post-eventos significativos (halving, regulaciones)
+
+Proceso de recalibración:
+- Re-backtesting con datos actualizados
+- Ajuste de pesos de estrategias según performance reciente
+- Validación out-of-sample antes de despliegue
+- Documentación de cambios en CHANGELOG
+
 ## Referencias
 
 - Binance API Documentation

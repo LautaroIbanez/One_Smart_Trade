@@ -1,0 +1,7 @@
+.risk-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 1rem; padding: 1.5rem; }
+.risk-panel h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+.risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
+.risk-item { background: var(--bg-tertiary); padding: 1rem; border-radius: .5rem; display: flex; flex-direction: column; gap: .25rem; }
+.risk-label { color: var(--text-secondary); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
+.risk-value { font-weight: 600; }
+

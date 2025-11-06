@@ -69,7 +69,7 @@ format-backend:
 	@cd backend && poetry run ruff format .
 
 format-frontend:
-	@cd frontend && pnpm run format
+	@cd frontend && pnpm run format:check
 
 clean:
 	@echo "Cleaning build artifacts..."

@@ -1,12 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
-import { getRecommendationHistory } from '../services/api'
+import { useRecommendationHistory } from '../api/hooks'
 import './HistoryTable.css'
 
 function HistoryTable() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['recommendation', 'history'],
-    queryFn: () => getRecommendationHistory(10),
-  })
+  const { data, isLoading, error } = useRecommendationHistory(10)
 
   if (isLoading) {
     return (

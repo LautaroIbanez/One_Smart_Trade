@@ -53,11 +53,20 @@ cp .env.example .env
 nano .env
 ```
 
-**Variables de entorno importantes:**
+**Variables de entorno importantes (backend/.env):**
 - `DATABASE_URL`: URL de la base de datos (por defecto SQLite)
 - `BINANCE_API_BASE_URL`: URL base de la API de Binance
 - `LOG_LEVEL`: Nivel de logging (INFO, DEBUG, etc.)
 - `RECOMMENDATION_UPDATE_TIME`: Hora de actualización diaria (formato HH:MM)
+
+Ejemplo:
+```env
+DATABASE_URL=sqlite:///./data/trading.db
+BINANCE_API_BASE_URL=https://api.binance.com/api/v3
+LOG_LEVEL=INFO
+SCHEDULER_TIMEZONE=UTC
+RECOMMENDATION_UPDATE_TIME=12:00
+```
 
 ### 3. Configurar Frontend
 
@@ -111,6 +120,20 @@ poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 cd frontend
 pnpm run build
 pnpm run preview
+```
+
+### Windows (PowerShell)
+
+Backend:
+```powershell
+cd backend
+poetry run uvicorn app.main:app --reload --port 8000
+```
+
+Frontend:
+```powershell
+cd frontend
+pnpm run dev
 ```
 
 O servir con nginx/apache los archivos en `frontend/dist/`.

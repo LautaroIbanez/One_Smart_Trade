@@ -1,0 +1,99 @@
+"""Indicator calculations using pandas over parquet-backed dataframes."""
+from __future__ import annotations
+
+from typing import Dict, Any
+import pandas as pd
+import numpy as np
+
+
+def ema(df: pd.DataFrame, period: int, column: str = "close") -> pd.Series:
+    return df[column].ewm(span=period, adjust=False).mean()
+
+
+def sma(df: pd.DataFrame, period: int, column: str = "close") -> pd.Series:
+    return df[column].rolling(window=period, min_periods=period).mean()
+
+
+def macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, pd.Series]:
+    fast_ = ema(df, fast)
+    slow_ = ema(df, slow)
+    macd_line = fast_ - slow_
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return {"macd": macd_line, "signal": signal_line, "histogram": histogram}
+
+
+def rsi(df: pd.DataFrame, period: int = 14, column: str = "close") -> pd.Series:
+    delta = df[column].diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    out = 100 - (100 / (1 + rs))
+    return out.fillna(method="bfill").fillna(50)
+
+
+def stoch_rsi(df: pd.DataFrame, rsi_period: int = 14, stoch_period: int = 14) -> pd.Series:
+    r = rsi(df, rsi_period)
+    r_min = r.rolling(stoch_period).min()
+    r_max = r.rolling(stoch_period).max()
+    return ((r - r_min) / (r_max - r_min)).clip(0, 1) * 100
+
+
+def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0, column: str = "close") -> Dict[str, pd.Series]:
+    mid = sma(df, period, column)
+    std = df[column].rolling(period).std()
+    return {"upper": mid + std_dev * std, "middle": mid, "lower": mid - std_dev * std}
+
+
+def keltner(df: pd.DataFrame, period: int = 20, mult: float = 2.0) -> Dict[str, pd.Series]:
+    mid = ema(df, period)
+    a = atr(df, period)
+    return {"upper": mid + mult * a, "middle": mid, "lower": mid - mult * a}
+
+
+def vwap(df: pd.DataFrame) -> pd.Series:
+    pv = (df["close"] * df["volume"]).cumsum()
+    vv = df["volume"].cumsum().replace(0, np.nan)
+    return (pv / vv).fillna(method="ffill")
+
+
+def realized_volatility(df: pd.DataFrame, window: int = 20) -> pd.Series:
+    returns = df["close"].pct_change()
+    return (returns.rolling(window).std() * np.sqrt(252)).fillna(0)
+
+
+def calculate_all(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    out: Dict[str, pd.Series] = {}
+    out["ema_9"] = ema(df, 9)
+    out["ema_21"] = ema(df, 21)
+    out["ema_50"] = ema(df, 50)
+    out["sma_100"] = sma(df, 100)
+    out["sma_200"] = sma(df, 200)
+    m = macd(df)
+    out["macd"] = m["macd"]
+    out["macd_signal"] = m["signal"]
+    out["macd_histogram"] = m["histogram"]
+    out["rsi"] = rsi(df)
+    out["stoch_rsi"] = stoch_rsi(df)
+    bb = bollinger(df)
+    out["bb_upper"] = bb["upper"]
+    out["bb_middle"] = bb["middle"]
+    out["bb_lower"] = bb["lower"]
+    kc = keltner(df)
+    out["kc_upper"] = kc["upper"]
+    out["kc_middle"] = kc["middle"]
+    out["kc_lower"] = kc["lower"]
+    out["atr"] = atr(df)
+    out["vwap"] = vwap(df)
+    out["realized_vol"] = realized_volatility(df)
+    return out
+
+

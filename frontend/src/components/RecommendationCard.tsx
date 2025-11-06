@@ -1,12 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
-import { getTodayRecommendation } from '../services/api'
+import { useInvalidateAll, useTodayRecommendation } from '../api/hooks'
 import './RecommendationCard.css'
 
 function RecommendationCard() {
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['recommendation', 'today'],
-    queryFn: getTodayRecommendation,
-  })
+  const { data, isLoading, error, refetch } = useTodayRecommendation()
+  const invalidateAll = useInvalidateAll()
 
   if (isLoading) {
     return (
@@ -18,9 +15,9 @@ function RecommendationCard() {
 
   if (error) {
     return (
-      <div className="recommendation-card error">
+      <div className="recommendation-card error" role="alert" aria-live="assertive">
         <p>Error al cargar recomendación</p>
-        <button onClick={() => refetch()}>Reintentar</button>
+        <button onClick={() => invalidateAll()}>Reintentar</button>
       </div>
     )
   }
@@ -37,7 +34,7 @@ function RecommendationCard() {
 
   return (
     <div className="recommendation-card">
-      <div className="recommendation-header">
+      <div className="recommendation-header" aria-label="Señal actual">
         <h2>Recomendación de Hoy</h2>
         <span className={`signal-badge ${signalClass}`}>{data.signal}</span>
       </div>

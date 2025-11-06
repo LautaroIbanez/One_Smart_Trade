@@ -14,6 +14,13 @@ jobs:
         python-version: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
+      - name: Cache Poetry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('backend/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ runner.os }}-${{ matrix.python-version }}-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -35,7 +42,7 @@ jobs:
       - name: Type check with mypy
         run: |
           cd backend
-          poetry run mypy app || true
+          poetry run mypy app
       - name: Test with pytest
         run: |
           cd backend
@@ -52,14 +59,23 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
       - name: Install pnpm
         uses: pnpm/action-setup@v2
         with:
           version: latest
+          run_install: false
+      - name: Set up pnpm store cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ matrix.node-version }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-${{ matrix.node-version }}-
       - name: Install dependencies
         run: |
           cd frontend
-          pnpm install
+          pnpm install --frozen-lockfile
       - name: Lint with ESLint
         run: |
           cd frontend
@@ -67,11 +83,15 @@ jobs:
       - name: Format check with Prettier
         run: |
           cd frontend
-          pnpm run format --check || true
+          pnpm run format:check
+      - name: Type check
+        run: |
+          cd frontend
+          pnpm run typecheck
       - name: Test with Vitest
         run: |
           cd frontend
-          pnpm run test
+          pnpm run test:ci
       - name: Build
         run: |
           cd frontend
