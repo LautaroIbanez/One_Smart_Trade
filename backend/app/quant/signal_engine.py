@@ -77,31 +77,24 @@ def _sl_tp(df: pd.DataFrame, signal: str, entry: float) -> dict[str, float]:
     }
 
 
-def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials: int = 500) -> float:
-    """Very simple Monte Carlo using recent log-returns to estimate hit probabilities."""
-    rets = np.log(df["close"]).diff().dropna().tail(500)
-    if rets.empty:
+def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials: int = 2000) -> float:
+    rets = np.log(df["close"]).diff().dropna().tail(750)
+    if len(rets) < 50:
         return 50.0
-    mu = float(rets.mean())
-    sigma = float(rets.std())
-    price = float(df["close"].iloc[-1])
-    horizon = 48  # steps (~2 days on 1h equivalent)
-    wins = 0
-    for _ in range(trials):
-        p = price
-        hit_tp = False
-        hit_sl = False
-        for _ in range(horizon):
-            p *= float(np.exp(np.random.normal(mu, sigma)))
-            if p >= tp:
-                hit_tp = True
-                break
-            if p <= sl:
-                hit_sl = True
-                break
-        if hit_tp and not hit_sl:
-            wins += 1
-    return float(wins / trials * 100)
+    drift = float(rets.mean())
+    vol = float(rets.std())
+    dt = 1.0 / 24.0
+    steps = 72
+    shocks = np.random.normal(drift * dt, vol * np.sqrt(dt), size=(trials, steps))
+    price_paths = entry * np.exp(np.cumsum(shocks, axis=1))
+    price_paths = np.concatenate([np.full((trials, 1), entry), price_paths], axis=1)
+    hit_tp = (price_paths >= tp).cummax(axis=1)[:, -1]
+    hit_sl = (price_paths <= sl).cummax(axis=1)[:, -1]
+    wins = np.logical_and(hit_tp, np.logical_not(hit_sl)).sum()
+    exp_return = np.mean((price_paths[:, -1] - entry) / entry)
+    win_prob = wins / trials
+    adjusted = 0.7 * win_prob + 0.3 * max(0.0, exp_return)
+    return float(np.clip(adjusted * 100.0, 5.0, 95.0))
 
 
 def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
@@ -131,26 +124,43 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
     s4 = volatility_strategy(df_1d, ind_1d)
     signals = [s1, s2, s3, s4]
 
-    votes = {"BUY": 0, "SELL": 0, "HOLD": 0}
-    conf_sum = 0.0
-    for s in signals:
-        votes[s["signal"]] += 1
-        conf_sum += s.get("confidence", 0.0)
-    if votes["BUY"] > max(votes["SELL"], votes["HOLD"]):
+    strat_labels = ["momentum", "mean_reversion", "breakout", "volatility"]
+    signal_vectors = []
+    for label, strat in zip(strat_labels, signals):
+        direction = {"BUY": 1.0, "SELL": -1.0}.get(strat["signal"], 0.0)
+        strength = strat.get("confidence", 0.0) / 100.0
+        quality = 0.7 if "missing" in strat.get("reason", "") else 1.0
+        bias = 0.0
+        if label == "momentum":
+            bias = 0.2 * np.tanh(factors.get("mom_1d", 0.0) * 6)
+        elif label == "mean_reversion":
+            bias = -0.15 * factors.get("momentum_alignment", 0.0)
+        elif label == "breakout":
+            bias = 0.1 * np.tanh(factors.get("slope_1d", 0.0) * 50)
+        elif label == "volatility":
+            regime = factors.get("vol_regime_1d", 1)
+            bias = 0.1 if regime == 2 else (-0.05 if regime == 0 else 0.0)
+        signal_vectors.append(direction * (strength * quality + bias))
+
+    aggregate_score = float(np.sum(signal_vectors))
+    if aggregate_score > 0.2:
         final_signal = "BUY"
-    elif votes["SELL"] > max(votes["BUY"], votes["HOLD"]):
+    elif aggregate_score < -0.2:
         final_signal = "SELL"
     else:
         final_signal = "HOLD"
+
+    base_conf = min(95.0, abs(aggregate_score) * 140.0)
+    agreement = np.clip(np.mean([abs(s) for s in signal_vectors]) * 100.0, 0.0, 100.0)
+
+    votes = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    for strat in signals:
+        votes[strat["signal"]] += 1
 
     price = float(df_1d["close"].iloc[-1])
     entry = _entry_range(df_1d, final_signal, price)
     levels = _sl_tp(df_1d, final_signal, entry["optimal"])
     mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"])
-
-    base_conf = min(conf_sum / len(signals), 90.0)
-    agreement = max(votes.values()) / len(signals)
-    final_conf = float(min(95.0, 0.6 * base_conf + 0.4 * mc_conf) * (0.8 + 0.2 * agreement))
 
     # Calculate risk metrics
     rr_ratio = abs((levels["take_profit"] - entry["optimal"]) / (entry["optimal"] - levels["stop_loss"])) if entry["optimal"] != levels["stop_loss"] else 0.0
@@ -173,6 +183,9 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         "expected_drawdown": round(expected_dd, 2),
         "volatility": round(vol, 2),
     }
+
+    rr_boost = np.clip(risk_metrics["risk_reward_ratio"] / 3.0, 0.7, 1.3) if risk_metrics["risk_reward_ratio"] else 0.7
+    final_conf = float(np.clip((0.5 * base_conf + 0.5 * mc_conf) * rr_boost, 5.0, 97.0))
 
     # Prepare indicators dict (extract last values from Series, handling NaN)
     import math
@@ -199,6 +212,14 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
                 indicators_dict["volume"] = vol_val
         except (ValueError, IndexError, TypeError):
             pass
+
+    # Alias curated-friendly keys for narrative/analytics
+    if "rsi" in indicators_dict and "rsi_14" not in indicators_dict:
+        indicators_dict["rsi_14"] = indicators_dict["rsi"]
+    if "atr" in indicators_dict and "atr_14" not in indicators_dict:
+        indicators_dict["atr_14"] = indicators_dict["atr"]
+    if "realized_vol" in indicators_dict and "volatility_30" not in indicators_dict:
+        indicators_dict["volatility_30"] = indicators_dict["realized_vol"]
 
     payload = {
         "signal": final_signal,

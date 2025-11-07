@@ -32,14 +32,38 @@ function Dashboard() {
   
   const chartData = useMemo<MarketPoint[]>(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
-    return marketData.data.slice(-50).map((item: Record<string, unknown>) => {
+    return marketData.data.slice(-80).map((item: Record<string, unknown>, index, arr) => {
       const rawTime = item.timestamp ?? item.open_time
-      const timestamp = typeof rawTime === 'string' ? rawTime : rawTime instanceof Date ? rawTime.toISOString() : String(rawTime ?? '')
-      const price = typeof item.price === 'number' ? item.price : typeof item.close === 'number' ? item.close : typeof item.current_price === 'number' ? item.current_price : 0
-      return {
-        timestamp,
-        price,
+      const timestamp =
+        typeof rawTime === 'string'
+          ? rawTime
+          : rawTime instanceof Date
+          ? rawTime.toISOString()
+          : String(rawTime ?? '')
+
+      const open = Number(item.open ?? item.o ?? item.price ?? 0)
+      const high = Number(item.high ?? item.h ?? open)
+      const low = Number(item.low ?? item.l ?? open)
+      const close = Number(item.close ?? item.c ?? item.price ?? open)
+      const volume = Number(item.volume ?? item.v ?? 0)
+
+      let projection: number | undefined
+      if (index >= arr.length - 10) {
+        const window = arr.slice(index - 4 < 0 ? 0 : index - 4, index + 1)
+        const xs = window.map((_, i) => i)
+        const ys = window.map((row) => Number(row.close ?? row.price ?? close))
+        const n = xs.length
+        if (n >= 3) {
+          const meanX = xs.reduce((a, b) => a + b, 0) / n
+          const meanY = ys.reduce((a, b) => a + b, 0) / n
+          const slope =
+            xs.reduce((acc, x, i) => acc + (x - meanX) * (ys[i] - meanY), 0) /
+            xs.reduce((acc, x) => acc + (x - meanX) ** 2, 0)
+          projection = close + slope
+        }
       }
+
+      return { timestamp, open, high, low, close, volume, projection }
     })
   }, [marketData])
 
@@ -68,6 +92,11 @@ function Dashboard() {
                 stopLoss={data.stop_loss_take_profit.stop_loss}
                 takeProfit={data.stop_loss_take_profit.take_profit}
                 entryRange={[data.entry_range.min, data.entry_range.max]}
+                tpProbability={
+                  typeof data.risk_metrics?.tp_probability === 'number'
+                    ? data.risk_metrics.tp_probability
+                    : undefined
+                }
               />
             </section>
           ) : (
