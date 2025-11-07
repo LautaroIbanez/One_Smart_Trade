@@ -79,11 +79,23 @@ class DataIngestion:
             "ignore",
         ]
         df = pd.DataFrame(klines, columns=columns)
-        numeric = ["open", "high", "low", "close", "volume", "quote_asset_volume", "taker_buy_base", "taker_buy_quote"]
+        numeric = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_asset_volume",
+            "taker_buy_base",
+            "taker_buy_quote",
+        ]
         for col in numeric:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["number_of_trades"] = pd.to_numeric(df["number_of_trades"], errors="coerce").fillna(0).astype("int64")
+        df[numeric] = df[numeric].fillna(method="ffill").fillna(method="bfill")
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
         df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
         df = df.sort_values("open_time").reset_index(drop=True)
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+        df.drop(columns=["ignore"], inplace=True, errors="ignore")
         return df

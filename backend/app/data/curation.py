@@ -42,6 +42,29 @@ class DataCuration:
                 "error": "Raw dataframe empty",
             }
 
+        numeric_columns = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_asset_volume",
+            "taker_buy_base",
+            "taker_buy_quote",
+        ]
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "number_of_trades" in df.columns:
+            df["number_of_trades"] = (
+                pd.to_numeric(df["number_of_trades"], errors="coerce")
+                .fillna(0)
+                .astype("int64")
+            )
+        df.drop(columns=[c for c in ["ignore"] if c in df.columns], inplace=True)
+
+        df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+
         df = self._add_indicators(df)
         df["interval"] = interval
         output = CURATED_ROOT / interval / "latest.parquet"

@@ -22,8 +22,9 @@ class StrategyEnsemble:
 
     def consolidate_signals(self, df: pd.DataFrame, indicators: dict[str, Any]) -> dict[str, Any]:
         """Consolidate signals from all strategies."""
-        signals = []
-        total_confidence = 0.0
+        signals: list[dict[str, Any]] = []
+        weighted_confidence = 0.0
+        valid_weight_total = 0.0
 
         for strategy in self.strategies:
             try:
@@ -37,7 +38,12 @@ class StrategyEnsemble:
                     }
                 )
                 weight = self.strategy_weights.get(strategy.name, 0.0)
-                total_confidence += signal_data.get("confidence", 0.0) * weight
+                reason = signal_data.get("reason", "").lower()
+                confidence = float(signal_data.get("confidence", 0.0))
+                is_valid = confidence > 0.0 and "missing" not in reason
+                if is_valid:
+                    weighted_confidence += confidence * weight
+                    valid_weight_total += weight
             except Exception:
                 continue
 
@@ -56,7 +62,11 @@ class StrategyEnsemble:
             consolidated_signal = "HOLD"
 
         agreement = max(buy_votes, sell_votes, hold_votes) / len(signals) if signals else 0.0
-        final_confidence = min(total_confidence * (1 + agreement), 95.0)
+        base_confidence = (
+            weighted_confidence / valid_weight_total if valid_weight_total > 0 else 0.0
+        )
+        integrity_factor = max(min(valid_weight_total, 1.0), 0.0)
+        final_confidence = min(base_confidence * agreement * (0.6 + 0.4 * integrity_factor), 90.0)
 
         return {
             "signal": consolidated_signal,

@@ -88,8 +88,8 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
     shocks = np.random.normal(drift * dt, vol * np.sqrt(dt), size=(trials, steps))
     price_paths = entry * np.exp(np.cumsum(shocks, axis=1))
     price_paths = np.concatenate([np.full((trials, 1), entry), price_paths], axis=1)
-    hit_tp = (price_paths >= tp).cummax(axis=1)[:, -1]
-    hit_sl = (price_paths <= sl).cummax(axis=1)[:, -1]
+    hit_tp = np.maximum.accumulate((price_paths >= tp).astype(int), axis=1)[:, -1].astype(bool)
+    hit_sl = np.maximum.accumulate((price_paths <= sl).astype(int), axis=1)[:, -1].astype(bool)
     wins = np.logical_and(hit_tp, np.logical_not(hit_sl)).sum()
     exp_return = np.mean((price_paths[:, -1] - entry) / entry)
     win_prob = wins / trials

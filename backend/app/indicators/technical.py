@@ -1,6 +1,7 @@
 """Technical indicators calculation."""
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -121,7 +122,21 @@ class TechnicalIndicators:
         return indicators
 
     @staticmethod
-    def get_latest_values(indicators: dict[str, pd.Series]) -> dict[str, float]:
-        """Get latest values from indicator series."""
-        return {key: float(series.iloc[-1]) if not series.empty and not pd.isna(series.iloc[-1]) else 0.0 for key, series in indicators.items()}
+    def get_latest_values(indicators: dict[str, Any]) -> dict[str, float]:
+        """Extract the most recent finite value for each indicator."""
+        latest: dict[str, float] = {}
+        for key, series in indicators.items():
+            if isinstance(series, (int, float)):
+                if not np.isnan(series) and not np.isinf(series):
+                    latest[key] = float(series)
+                continue
+            if not isinstance(series, pd.Series) or series.empty:
+                continue
+
+            cleaned = series.replace([pd.NA, np.nan], np.nan).dropna()
+            cleaned = cleaned[np.isfinite(cleaned)]
+            if cleaned.empty:
+                continue
+            latest[key] = float(cleaned.iloc[-1])
+        return latest
 
