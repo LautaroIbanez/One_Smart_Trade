@@ -47,7 +47,10 @@ lerna-debug.log*
 .env.*.local
 
 # Data
+# Allow tracked source package under backend/app/data while ignoring runtime outputs.
 data/
+!backend/app/data/
+!backend/app/data/**
 *.db
 *.parquet
 

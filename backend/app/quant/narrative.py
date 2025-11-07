@@ -5,22 +5,22 @@ from typing import Any
 
 TEMPLATE = """Contexto:
 - Señal consolidada: {signal}
-- Confianza: {confidence:.1f}%
-- Rango de entrada: {entry_min:.2f} – {entry_max:.2f} (óptimo {entry_opt:.2f})
-- Stop-loss / Take-profit: {sl:.2f} / {tp:.2f}
+- Confianza histórica: {confidence:.1f}%
+- Rango de entrada sugerido: {entry_min:.2f} – {entry_max:.2f} (óptimo {entry_opt:.2f})- Stop-loss / Take-profit: {sl:.2f} / {tp:.2f}
 
 Indicadores clave:
 - RSI(14): {rsi:.2f}
 - ATR(14): {atr:.2f}
-- Volatilidad 30 días: {vol:.2%}
-- Volumen reciente: {volume:.0f}
+- Volatilidad 30d: {volatility:.2%}
+- VWAP: {vwap:.2f}
 
 Riesgo:
-- Prob. tocar SL: {sl_prob:.1f}%
-- Prob. tocar TP: {tp_prob:.1f}%
-- Drawdown esperado: {dd:.2f}
+- Prob. tocar SL: {prob_sl:.1f}%
+- Prob. tocar TP: {prob_tp:.1f}%
+- Drawdown esperado: {drawdown:.2f}
 
-Generado {timestamp} UTC."""
+Última actualización: {timestamp} UTC.
+"""
 
 
 def build_narrative(payload: dict[str, Any]) -> str:
@@ -39,11 +39,11 @@ def build_narrative(payload: dict[str, Any]) -> str:
         tp=sltp.get("take_profit", 0.0),
         rsi=indicators.get("rsi_14", 0.0),
         atr=indicators.get("atr_14", 0.0),
-        vol=indicators.get("volatility_30", 0.0),
-        volume=indicators.get("volume", 0.0),
-        sl_prob=risk.get("sl_probability", 0.0),
-        tp_prob=risk.get("tp_probability", 0.0),
-        dd=risk.get("expected_drawdown", 0.0),
+        volatility=indicators.get("volatility_30", 0.0),
+        vwap=indicators.get("vwap", 0.0),
+        prob_sl=risk.get("sl_probability", 0.0),
+        prob_tp=risk.get("tp_probability", 0.0),
+        drawdown=risk.get("expected_drawdown", 0.0),
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
     )
 

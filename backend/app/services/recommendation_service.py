@@ -23,15 +23,24 @@ class RecommendationService:
         """Generate a new recommendation using curated datasets."""
         from app.quant.narrative import build_narrative
 
-        latest_daily = self.curation.get_latest_curated("1d")
-        latest_hourly = self.curation.get_latest_curated("1h")
+        try:
+            latest_daily = self.curation.get_latest_curated("1d")
+        except FileNotFoundError:
+            logger.warning("Cannot generate recommendation: no 1d curated data available")
+            return None
+
+        try:
+            latest_hourly = self.curation.get_latest_curated("1h")
+        except FileNotFoundError:
+            logger.warning("No 1h data available, using 1d as fallback")
+            latest_hourly = latest_daily
 
         if latest_daily is None or latest_daily.empty:
             logger.warning("Cannot generate recommendation: no 1d curated data available")
             return None
 
         if latest_hourly is None or latest_hourly.empty:
-            logger.warning("No 1h data available, using 1d as fallback")
+            logger.warning("1h dataset empty, using 1d as fallback")
             latest_hourly = latest_daily
 
         signal = generate_signal(latest_hourly, latest_daily)
@@ -83,15 +92,24 @@ class RecommendationService:
         # Generate on-demand if not present
         logger.info("Generating recommendation on-demand")
         dc = DataCuration()
-        df_1d = dc.get_latest_curated("1d")
-        df_1h = dc.get_latest_curated("1h")
+        try:
+            df_1d = dc.get_latest_curated("1d")
+        except FileNotFoundError:
+            logger.warning("Cannot generate recommendation: no 1d curated data available")
+            return None
+
+        try:
+            df_1h = dc.get_latest_curated("1h")
+        except FileNotFoundError:
+            logger.warning("No 1h data available, using 1d as fallback")
+            df_1h = df_1d
 
         if df_1d is None or df_1d.empty:
             logger.warning("Cannot generate recommendation: no 1d curated data available")
             return None
 
         if df_1h is None or df_1h.empty:
-            logger.warning("No 1h data available, using 1d as fallback")
+            logger.warning("1h dataset empty, using 1d as fallback")
             df_1h = df_1d
 
         try:

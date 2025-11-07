@@ -28,7 +28,13 @@ class MarketService:
             }
 
         latest = df.iloc[-1]
-
+        chart_points = [
+            {
+                "timestamp": row["open_time"].isoformat(),
+                "price": float(row["close"]),
+            }
+            for _, row in df.tail(200).iterrows()
+        ]
         # Calculate support/resistance from recent data (last 100 candles)
         recent = df.tail(100) if len(df) >= 100 else df
         support = float(recent["low"].min()) if not recent.empty else float(latest.get("support", 0))
@@ -49,5 +55,6 @@ class MarketService:
             "support": support,
             "resistance": resistance,
             "timestamp": latest["open_time"].isoformat(),
+            "data": chart_points,
         }
 

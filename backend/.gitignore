@@ -41,7 +41,10 @@ poetry.lock
 .env.local
 
 # Data
+# Runtime data files (allow source package under app/data)
 data/
+!app/data/
+!app/data/**
 *.db
 *.parquet
 
