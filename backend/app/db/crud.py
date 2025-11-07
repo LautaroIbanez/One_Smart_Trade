@@ -1,6 +1,7 @@
 """CRUD helpers."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from sqlalchemy import desc, select
@@ -10,41 +11,31 @@ from app.db.models import BacktestResultORM, RecommendationORM, RunLogORM
 
 
 def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
-    """Create recommendation with analysis text."""
+    """Create recommendation with persisted analysis."""
     from app.quant.narrative import build_narrative
 
+    data = payload
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
-    # Generate analysis text if not provided or empty
-    analysis = payload.get("analysis", "")
-    if not analysis or not analysis.strip():
-        # Ensure all required fields are present for narrative
-        narrative_payload = {
-            "signal": payload.get("signal", "HOLD"),
-            "confidence": payload.get("confidence", 50.0),
-            "indicators": payload.get("indicators", {}),
-            "factors": payload.get("factors", {}),
-            "risk_metrics": payload.get("risk_metrics", {}),
-            "entry_range": payload.get("entry_range", {}),
-            "stop_loss_take_profit": payload.get("stop_loss_take_profit", {}),
-        }
-        analysis = build_narrative(narrative_payload)
+    analysis = data.get("analysis")
+    if not analysis:
+        analysis = build_narrative(data)
 
     rec = RecommendationORM(
         date=date_str,
-        signal=payload["signal"],
-        entry_min=payload["entry_range"]["min"],
-        entry_max=payload["entry_range"]["max"],
-        entry_optimal=payload["entry_range"]["optimal"],
-        stop_loss=payload["stop_loss_take_profit"]["stop_loss"],
-        take_profit=payload["stop_loss_take_profit"]["take_profit"],
-        stop_loss_pct=payload["stop_loss_take_profit"]["stop_loss_pct"],
-        take_profit_pct=payload["stop_loss_take_profit"]["take_profit_pct"],
-        confidence=payload["confidence"],
-        current_price=payload["current_price"],
-        indicators=payload.get("indicators", {}),
-        risk_metrics=payload.get("risk_metrics", {}),
-        factors=payload.get("factors", {}),
+        signal=data["signal"],
+        entry_min=data["entry_range"]["min"],
+        entry_max=data["entry_range"]["max"],
+        entry_optimal=data["entry_range"]["optimal"],
+        stop_loss=data["stop_loss_take_profit"]["stop_loss"],
+        take_profit=data["stop_loss_take_profit"]["take_profit"],
+        stop_loss_pct=data["stop_loss_take_profit"]["stop_loss_pct"],
+        take_profit_pct=data["stop_loss_take_profit"]["take_profit_pct"],
+        confidence=data["confidence"],
+        current_price=data["current_price"],
+        indicators=data.get("indicators", {}),
+        factors=data.get("factors", {}),
+        risk_metrics=data["risk_metrics"],
         analysis=analysis,
     )
     db.add(rec)
@@ -63,9 +54,17 @@ def get_recommendation_history(db: Session, limit: int = 30) -> list[Recommendat
     return list(db.execute(stmt).scalars().all())
 
 
-def log_run(db: Session, run_type: str, status: str, message: str = "") -> RunLogORM:
+def log_run(db: Session, run_type: str, status: str, message: str = "", details: dict | None = None) -> RunLogORM:
     now = datetime.utcnow()
-    rl = RunLogORM(run_type=run_type, status=status, message=message, started_at=now, finished_at=now)
+    formatted_message = message
+    if details:
+        try:
+            details_json = json.dumps(details, default=str)
+        except TypeError:
+            details_json = str(details)
+        formatted_message = f"{message} | details={details_json}" if message else details_json
+
+    rl = RunLogORM(run_type=run_type, status=status, message=formatted_message, started_at=now, finished_at=now)
     db.add(rl)
     db.commit()
     db.refresh(rl)

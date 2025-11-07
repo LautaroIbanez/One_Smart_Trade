@@ -2,7 +2,7 @@
 
 ## Síntomas
 - Gaps en datos históricos
-- Métricas `ost_data_gaps_total` incrementando
+- Métricas `data_gaps_total` incrementando
 - Señales no generadas por falta de datos
 - Logs muestran "Insufficient data" o "No data in date range"
 
@@ -26,7 +26,7 @@ journalctl -u one-smart-trade-backend -n 500 --no-pager | grep -i "gap\|incomple
 
 ### 3. Verificar métricas
 ```bash
-curl -s http://localhost:8000/metrics | grep ost_data_gaps_total
+curl -s http://localhost:8000/metrics | grep data_gaps_total
 ```
 
 ## Mitigación
@@ -35,11 +35,11 @@ curl -s http://localhost:8000/metrics | grep ost_data_gaps_total
 ```bash
 cd /opt/one-smart-trade/backend
 # Backfill para un intervalo específico desde una fecha
-poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
 
 # O para otros intervalos
-poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
-poetry run python -m app.scripts.backfill --interval 4h --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1h --since 2024-01-01
+poetry run python -m app.scripts.backfill --interval 4h --since 2024-01-01
 ```
 
 ### Paso 2: Verificar datos raw
@@ -69,7 +69,7 @@ poetry run python -m app.scripts.curate --interval 1d
 - ✅ Datos completos para últimos 30 días
 - ✅ No gaps detectados en validación
 - ✅ Señales se generan correctamente
-- ✅ Métricas `ost_data_gaps_total` estables
+- ✅ Métricas `data_gaps_total` estables
 
 ## Prevención
 - Validación de gaps en pipeline de ingesta

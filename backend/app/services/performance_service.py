@@ -3,10 +3,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
 from app import __version__
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.metrics import calculate_metrics
-from app.backtesting.report import generate_report
+from app.backtesting.report import write_report
+from app.backtesting.schemas import BacktestSummary
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.crud import get_latest_backtest_result, save_backtest_result
@@ -19,6 +26,9 @@ class PerformanceService:
         self.engine = BacktestEngine()
         self.reports_dir = Path(settings.DATA_DIR) / "backtest_reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.project_root = Path(__file__).resolve().parents[3]
+        self.docs_assets_dir = self.project_root / "docs" / "assets"
+        self.docs_assets_dir.mkdir(parents=True, exist_ok=True)
 
     async def get_summary(self, use_cache: bool = True) -> dict[str, Any]:
         """Get performance summary from latest backtest."""
@@ -58,9 +68,9 @@ class PerformanceService:
                 }
 
             metrics = calculate_metrics(result)
-
-            # Generate report (this also writes to docs/backtest-report.md)
-            report_data = generate_report(result, self.reports_dir)
+            charts = self._generate_charts(result)
+            summary = self._build_summary(result, metrics)
+            write_report(summary)
 
             # Persist to DB with versioning
             with SessionLocal() as db:
@@ -79,7 +89,8 @@ class PerformanceService:
                     "start": result["start_date"],
                     "end": result["end_date"],
                 },
-                "report_path": report_data["report_path"],
+                "report_path": str((self.project_root / "docs" / "backtest-report.md").resolve()),
+                "charts": charts,
                 "version": __version__,
             }
         except Exception as e:
@@ -92,3 +103,86 @@ class PerformanceService:
                 "details": error_trace,
                 "metrics": {}
             }
+
+    def _generate_charts(self, backtest_result: dict[str, Any]) -> dict[str, str]:
+        charts: dict[str, str] = {}
+        equity_curve = backtest_result.get("equity_curve", [])
+        trades = backtest_result.get("trades", [])
+
+        def _save_chart(fig: plt.Figure, filename: str) -> str:
+            local_path = self.reports_dir / filename
+            docs_path = self.docs_assets_dir / filename
+            fig.savefig(local_path, dpi=150, bbox_inches="tight")
+            fig.savefig(docs_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            return str(docs_path.resolve())
+
+        if equity_curve:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(equity_curve, color="#1d4ed8", label="Equity")
+            ax.set_title("Equity Curve")
+            ax.set_xlabel("Trade #")
+            ax.set_ylabel("Capital ($)")
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            charts["equity_curve"] = _save_chart(fig, "equity_curve.png")
+
+            series = pd.Series(equity_curve, dtype=float)
+            running_max = series.cummax()
+            drawdown = ((series - running_max) / running_max) * 100
+            drawdown = drawdown.fillna(0.0)
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.fill_between(range(len(drawdown)), drawdown, color="#ef4444", alpha=0.3)
+            ax.plot(drawdown, color="#ef4444", label="Drawdown %")
+            ax.set_title("Drawdown")
+            ax.set_xlabel("Trade #")
+            ax.set_ylabel("Drawdown (%)")
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            charts["drawdown"] = _save_chart(fig, "drawdown.png")
+
+        if trades:
+            df = pd.DataFrame(trades)
+            wins = int((df["pnl"] > 0).sum())
+            losses = int((df["pnl"] <= 0).sum())
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.bar(["Ganadoras", "Perdedoras"], [wins, losses], color=["#22c55e", "#ef4444"], alpha=0.8)
+            ax.set_title("Distribución de Trades")
+            ax.set_ylabel("Número de operaciones")
+            ax.grid(axis="y", alpha=0.2)
+            charts["win_rate"] = _save_chart(fig, "win_rate.png")
+
+        return charts
+
+    def _build_summary(self, backtest_result: dict[str, Any], metrics: dict[str, Any]) -> BacktestSummary:
+        start_dt = pd.to_datetime(backtest_result["start_date"]).to_pydatetime()
+        end_dt = pd.to_datetime(backtest_result["end_date"]).to_pydatetime()
+        trading_days = max((end_dt - start_dt).days, 0)
+        duration_years = trading_days / 365.25 if trading_days else 0.0
+
+        first_price = float(backtest_result.get("first_price", 0.0) or 0.0)
+        last_price = float(backtest_result.get("last_price", 0.0) or 0.0)
+
+        if first_price > 0 and last_price > 0 and duration_years > 0:
+            bh_cagr = (last_price / first_price) ** (1 / duration_years) - 1
+        else:
+            bh_cagr = 0.0
+
+        slippage_bps = int((self.engine.COMMISSION_RATE + self.engine.SLIPPAGE_RATE) * 10000)
+
+        return BacktestSummary(
+            start_date=start_dt,
+            end_date=end_dt,
+            trading_days=trading_days,
+            cagr=(metrics.get("cagr", 0.0) or 0.0) / 100.0,
+            sharpe=metrics.get("sharpe", 0.0) or 0.0,
+            sortino=metrics.get("sortino", 0.0) or 0.0,
+            profit_factor=metrics.get("profit_factor", 0.0) or 0.0,
+            max_drawdown=(metrics.get("max_drawdown", 0.0) or 0.0) / 100.0,
+            bh_cagr=bh_cagr,
+            bh_sharpe=0.0,
+            bh_sortino=0.0,
+            bh_max_drawdown=0.0,
+            slippage_bps=slippage_bps,
+        )

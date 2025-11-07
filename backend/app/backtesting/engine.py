@@ -77,11 +77,10 @@ class BacktestEngine:
         Returns:
             Dict with trades, equity_curve, and metadata, or error dict
         """
-        # Load historical data using curated datasets
         curation = DataCuration()
         df_1d = curation.get_historical_curated("1d", days=365 * 5)
-        if df_1d is None or df_1d.empty:
-            raise RuntimeError("Historical dataset empty; run ingestion + curation first.")
+        if df_1d.empty:
+            raise RuntimeError("Historical dataset empty. Run ingestion and curation first.")
 
         # Filter by date range if provided
         if start_date:

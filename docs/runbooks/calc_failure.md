@@ -2,7 +2,7 @@
 
 ## Síntomas
 - Señal no generada en horario esperado
-- Métricas `ost_signal_generation_failures_total` incrementando
+- Métricas `signal_generation_failure_total` incrementando
 - Logs muestran excepciones en `signal_engine.py` o `strategies.py`
 - Endpoint `/api/v1/recommendation/today` retorna 404
 
@@ -59,8 +59,8 @@ poetry run python -m app.scripts.regenerate_signal
 ### Paso 3: Si faltan datos, regenerar
 ```bash
 # Backfill si es necesario
-poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
-poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
+poetry run python -m app.scripts.backfill --interval 1h --since 2024-01-01
 
 # Curar datos (se hace automáticamente en backfill, pero se puede hacer manualmente)
 poetry run python -m app.scripts.curate --interval 1d
@@ -90,7 +90,7 @@ with SessionLocal() as db:
 - ✅ Señal generada exitosamente
 - ✅ Endpoint `/api/v1/recommendation/today` retorna 200
 - ✅ Logs no muestran errores
-- ✅ Métricas `ost_signal_generation_failures_total` no incrementan
+- ✅ Métricas `signal_generation_failure_total` no incrementan
 
 ## Escalación
 - **Primera falla:** Reintentar manualmente

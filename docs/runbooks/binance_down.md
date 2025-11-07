@@ -3,7 +3,7 @@
 ## Síntomas
 - Errores 5xx o timeouts desde Binance
 - Ingesta falla repetidamente
-- Métricas `ost_ingestion_failures_total` incrementando
+- Métricas `ingestion_failure_total` incrementando
 - Logs muestran `ConnectionError`, `TimeoutError`, o `HTTPStatusError`
 
 ## Diagnóstico
@@ -30,10 +30,7 @@ journalctl -u one-smart-trade-backend -n 500 --no-pager | grep -i "error\|except
 ### 3. Verificar métricas Prometheus
 ```bash
 # Consultar métricas de fallos
-curl -s http://localhost:8000/metrics | grep ost_ingestion_failures_total
-
-# Ver última ingesta exitosa
-curl -s http://localhost:8000/metrics | grep ost_last_ingestion_timestamp_seconds
+curl -s http://localhost:8000/metrics | grep ingestion_failure_total
 ```
 
 ## Mitigación
@@ -55,10 +52,10 @@ Esperar 5-15 minutos y probar manualmente:
 ```bash
 cd /opt/one-smart-trade/backend
 # Reintentar ingesta para un intervalo específico
-poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
 
 # O para otros intervalos
-poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1h --since 2024-01-01
 ```
 
 ### Paso 3: Si persiste >30 minutos
@@ -80,7 +77,7 @@ poetry run python -m app.scripts.check_gaps --interval 1d --days 7
 ## Criterios de Salida
 - ✅ Binance API responde a `/ping`
 - ✅ Ingesta manual exitosa
-- ✅ Métricas `ost_ingestion_failures_total` no incrementan
+- ✅ Métricas `ingestion_failure_total` no incrementan
 - ✅ Logs muestran ingesta exitosa
 
 ## Escalación

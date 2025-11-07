@@ -3,10 +3,11 @@ import RecommendationCard from '../components/RecommendationCard'
 import HistoryTable from '../components/HistoryTable'
 import IndicatorsPanel from '../components/IndicatorsPanel'
 import RiskPanel from '../components/RiskPanel'
-import PriceLevelsChart from '../components/PriceLevelsChart'
+import { PriceLevelsChart } from '../components/PriceLevelsChart'
 import PerformanceSummary from '../components/PerformanceSummary'
 import AppLayout from '../components/AppLayout'
 import { useInvalidateAll, useTodayRecommendation, useMarketData } from '../api/hooks'
+import type { MarketPoint } from '@/types'
 import './Dashboard.css'
 
 function Dashboard() {
@@ -29,36 +30,17 @@ function Dashboard() {
     }
   }
   
-  const levels = data
-    ? {
-        entry_min: data.entry_range?.min,
-        entry_max: data.entry_range?.max,
-        stop_loss: data.stop_loss_take_profit?.stop_loss,
-        take_profit: data.stop_loss_take_profit?.take_profit,
-        support: marketData?.support,
-        resistance: marketData?.resistance,
-      }
-    : undefined
-
-  const chartData = useMemo(() => {
+  const chartData = useMemo<MarketPoint[]>(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
     return marketData.data.slice(-50).map((item: Record<string, unknown>) => {
-      const timeValue = item.open_time || item.timestamp
-      const timeStr = typeof timeValue === 'string' ? timeValue : timeValue instanceof Date ? timeValue.toISOString() : String(timeValue)
+      const rawTime = item.timestamp ?? item.open_time
+      const timestamp = typeof rawTime === 'string' ? rawTime : rawTime instanceof Date ? rawTime.toISOString() : String(rawTime ?? '')
+      const price = typeof item.price === 'number' ? item.price : typeof item.close === 'number' ? item.close : typeof item.current_price === 'number' ? item.current_price : 0
       return {
-        timestamp: new Date(timeStr).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-        price: (item.close as number) || (item.current_price as number) || (item.price as number) || 0,
+        timestamp,
+        price,
       }
     })
-  }, [marketData])
-
-  const marketLevels = useMemo(() => {
-    if (!marketData) return undefined
-    return {
-      support: marketData.support,
-      resistance: marketData.resistance,
-      current_price: marketData.current_price,
-    }
   }, [marketData])
 
   return (
@@ -78,14 +60,22 @@ function Dashboard() {
         </header>
         <main className="dashboard-content">
           <RecommendationCard />
-          <PriceLevelsChart 
-            data={chartData} 
-            stopLoss={data?.stop_loss_take_profit?.stop_loss}
-            takeProfit={data?.stop_loss_take_profit?.take_profit}
-            entryRange={data?.entry_range ? [data.entry_range.min, data.entry_range.max] : undefined}
-            levels={levels} 
-            marketData={marketLevels} 
-          />
+          {data && chartData.length > 0 ? (
+            <section className="price-chart" aria-label="Gráfico de precio con niveles recomendados">
+              <h2>Precio vs Niveles Recomendados</h2>
+              <PriceLevelsChart
+                data={chartData}
+                stopLoss={data.stop_loss_take_profit.stop_loss}
+                takeProfit={data.stop_loss_take_profit.take_profit}
+                entryRange={[data.entry_range.min, data.entry_range.max]}
+              />
+            </section>
+          ) : (
+            <section className="price-chart empty" aria-live="polite">
+              <h2>Precio vs Niveles Recomendados</h2>
+              <p>Esperando datos de mercado para renderizar el gráfico...</p>
+            </section>
+          )}
           <div className="dashboard-grid">
             <IndicatorsPanel />
             <RiskPanel risk={data?.risk_metrics} />

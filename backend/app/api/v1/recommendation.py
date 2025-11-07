@@ -3,14 +3,14 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.recommendation import Recommendation
+from app.models.recommendation import RecommendationResponse
 from app.services.recommendation_service import RecommendationService
 
 router = APIRouter()
 recommendation_service = RecommendationService()
 
 
-@router.get("/today", response_model=Recommendation)
+@router.get("/today", response_model=RecommendationResponse)
 async def get_today_recommendation():
     """
     Get today's trading recommendation.
@@ -18,10 +18,22 @@ async def get_today_recommendation():
     Returns signal, entry range, SL/TP, confidence, indicators, risk metrics, factors, and analysis.
     """
     try:
-        recommendation = await recommendation_service.get_today_recommendation()
-        if not recommendation:
+        data = await recommendation_service.get_today_recommendation()
+        if not data:
             raise HTTPException(status_code=404, detail="No recommendation available for today")
-        return recommendation
+        return RecommendationResponse(
+            signal=data["signal"],
+            entry_range=data["entry_range"],
+            stop_loss_take_profit=data["stop_loss_take_profit"],
+            confidence=data["confidence"],
+            current_price=data["current_price"],
+            analysis=data["analysis"],
+            indicators=data["indicators"],
+            risk_metrics=data["risk_metrics"],
+            factors=data.get("factors", {}),
+            timestamp=data["timestamp"],
+            disclaimer=data["disclaimer"],
+        )
     except HTTPException:
         raise
     except Exception as e:

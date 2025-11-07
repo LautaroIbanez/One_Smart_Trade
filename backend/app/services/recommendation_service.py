@@ -38,19 +38,21 @@ class RecommendationService:
         analysis = build_narrative(signal)
         signal["analysis"] = analysis
 
+        rec = None
+
         # Save recommendation if session is provided
         if self.session:
-            create_recommendation(self.session, signal)
+            rec = create_recommendation(self.session, signal)
         else:
             # Fallback to creating a new session
             with SessionLocal() as db:
                 try:
-                    create_recommendation(db, signal)
+                    rec = create_recommendation(db, signal)
                 finally:
                     db.close()
 
         logger.info(f"Generated and saved recommendation: {signal['signal']}")
-        return signal
+        return self._from_orm(rec) if rec else signal
 
     async def get_today_recommendation(self) -> Optional[dict[str, Any]]:
         """Get today's recommendation from DB or generate on-demand."""
@@ -99,17 +101,19 @@ class RecommendationService:
                 from app.quant.narrative import build_narrative
                 recommendation["analysis"] = build_narrative(recommendation)
 
+            result = None
             with SessionLocal() as db:
                 try:
-                    create_recommendation(db, recommendation)
+                    rec = create_recommendation(db, recommendation)
                     logger.info(f"Generated and saved recommendation: {recommendation['signal']}")
+                    result = self._from_orm(rec)
                 finally:
                     db.close()
 
-            if recommendation:
-                self._cache = recommendation
+            if result:
+                self._cache = result
                 self._cache_timestamp = datetime.utcnow()
-            return recommendation
+            return result
         except Exception as e:
             logger.error(f"Error generating recommendation: {e}", exc_info=True)
             return None

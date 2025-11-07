@@ -23,7 +23,7 @@ El proyecto incluye scripts CLI para operaciones manuales comunes:
 **Ejemplo de uso:**
 ```bash
 cd /opt/one-smart-trade/backend
-poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
 poetry run python -m app.scripts.check_gaps --interval all --days 7
 poetry run python -m app.scripts.regenerate_signal
 ```
@@ -85,7 +85,7 @@ poetry run python -m app.scripts.check_gaps --interval all --days 30
 curl -s http://localhost:8000/api/v1/diagnostics/last-run
 
 # Verificar métricas de Prometheus
-curl -s http://localhost:8000/metrics | grep ost_last_ingestion_timestamp_seconds
+curl -s http://localhost:8000/metrics | grep ingestion_failure_total
 ```
 
 ### Solución
@@ -93,7 +93,7 @@ curl -s http://localhost:8000/metrics | grep ost_last_ingestion_timestamp_second
 2. Ejecutar backfill manual para timeframe:
    ```bash
    cd backend
-   poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+   poetry run python -m app.scripts.backfill --interval 1h --since 2024-01-01
    ```
 3. Regenerar datos curados (se hace automáticamente en backfill, pero se puede hacer manualmente):
    ```bash
@@ -149,8 +149,8 @@ curl http://localhost:8000/api/v1/diagnostics/last-run
 3. Si faltan datos, regenerar:
    ```bash
    # Backfill si es necesario
-   poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
-   poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+   poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
+   poetry run python -m app.scripts.backfill --interval 1h --since 2024-01-01
    
    # Curar datos (se hace automáticamente en backfill, pero se puede hacer manualmente)
    poetry run python -m app.scripts.curate --interval 1d

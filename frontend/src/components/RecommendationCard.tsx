@@ -88,15 +88,9 @@ function RecommendationCard() {
           <span className="label">Confianza:</span>
           <span className="value">{data.confidence.toFixed(1)}%</span>
         </div>
-        <section className="analysis">
-          <h3>Análisis profesional</h3>
-          {data.analysis && data.analysis.trim() ? (
-            <p className="analysis-text">{data.analysis}</p>
-          ) : (
-            <p className="analysis-empty" role="status" aria-live="polite">
-              Análisis no disponible. Los datos están siendo procesados. Intenta refrescar en unos momentos.
-            </p>
-          )}
+        <section aria-labelledby="analysis-heading" className="analysis">
+          <h3 id="analysis-heading">Análisis profesional</h3>
+          <p className="analysis-text">{data.analysis}</p>
         </section>
         {data.disclaimer && (
           <div className="recommendation-disclaimer" role="note" aria-label="Disclaimer legal">

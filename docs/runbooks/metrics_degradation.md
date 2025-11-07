@@ -16,8 +16,11 @@ curl -s http://localhost:8000/metrics | grep ost_http_request_latency_seconds
 # Tasa de errores
 curl -s http://localhost:8000/metrics | grep ost_http_requests_total | grep status=5
 
-# Duración de ingesta
-curl -s http://localhost:8000/metrics | grep ost_ingestion_duration_seconds
+# Latencia de ingesta
+curl -s http://localhost:8000/metrics | grep ingestion_latency_seconds
+
+# Fallos de señal
+curl -s http://localhost:8000/metrics | grep signal_generation_failure_total
 ```
 
 ### 2. Verificar recursos del sistema

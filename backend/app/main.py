@@ -68,7 +68,6 @@ async def job_ingest_all() -> None:
     """Scheduled job to ingest data for all timeframes."""
     import time
 
-    from app.core.logging import logger
     from app.observability.metrics import record_ingestion
 
     ingestion = DataIngestion()
@@ -77,43 +76,24 @@ async def job_ingest_all() -> None:
     try:
         results = await ingestion.ingest_all_timeframes()
         duration = time.time() - start_time
-        total_rows = sum(result.get("rows", 0) for result in results)
+        total_rows = sum(item.get("rows", 0) for item in results)
 
-        # Record metrics per timeframe
-        for result in results:
-            interval = result.get("interval", "unknown")
-            if interval != "unknown":
-                individual_duration = duration / len(results) if results else 0.0
-                if result.get("status") == "success":
-                    record_ingestion(interval, individual_duration, True)
-                else:
-                    error_reason = result.get("error", result.get("status", "unknown"))
-                    record_ingestion(interval, individual_duration, False, error_reason)
-
-        # Log to database
         db = SessionLocal()
         try:
-            log_run(
-                db,
-                "ingestion",
-                "success",
-                f"Fetched {total_rows} rows",
-            )
+            log_run(db, "ingestion", "success", f"Fetched {total_rows} rows", {"results": results})
         finally:
             db.close()
 
+        for res in results:
+            interval = res.get("interval", "unknown")
+            success = res.get("status") == "success"
+            record_ingestion(interval, duration / max(len(results), 1), success, res.get("status"))
         record_ingestion("multiple", duration, True)
     except Exception as exc:  # rate limits, timeouts, etc.
         duration = time.time() - start_time
-        logger.exception("Data ingestion failed")
         db = SessionLocal()
         try:
-            log_run(
-                db,
-                "ingestion",
-                "failed",
-                str(exc),
-            )
+            log_run(db, "ingestion", "failed", str(exc))
         finally:
             db.close()
         record_ingestion("multiple", duration, False, str(type(exc).__name__))

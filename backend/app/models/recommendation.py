@@ -43,3 +43,18 @@ class Recommendation(BaseModel):
         description="Legal disclaimer"
     )
 
+
+class RecommendationResponse(BaseModel):
+    """API response schema for recommendations with raw dictionaries."""
+
+    signal: Literal["BUY", "HOLD", "SELL"]
+    entry_range: dict
+    stop_loss_take_profit: dict
+    confidence: float
+    current_price: float
+    analysis: str
+    indicators: dict
+    risk_metrics: dict
+    factors: dict = Field(default_factory=dict)
+    timestamp: str
+    disclaimer: str
