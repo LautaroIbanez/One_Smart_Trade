@@ -1,106 +1,98 @@
 """Narrative builder for professional textual analysis."""
 from __future__ import annotations
 
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Any
+
+TEMPLATE = """Contexto:
+- Señal consolidada: {signal}
+- Entrada sugerida: {entry_min:.2f} - {entry_max:.2f}
+- Stop-loss: {stop_loss:.2f} | Take-profit: {take_profit:.2f}
+- Confianza histórica: {confidence:.1%}
+
+Indicadores:
+- RSI(14): {rsi_14:.2f}
+- ATR(14): {atr_14:.2f}
+- Volatilidad 30d: {volatility_30:.2%}
+
+Riesgo:
+- Prob. tocar SL: {prob_stop_loss:.1%}
+- Prob. tocar TP: {prob_take_profit:.1%}
+- Drawdown esperado: {expected_drawdown:.2%}
+
+Última actualización: {timestamp} UTC.
+"""
 
 
-def build_narrative(signal_payload: Dict[str, Any]) -> str:
+def build_narrative(signal_payload: dict[str, Any]) -> str:
     """
-    Build professional textual analysis from signal payload.
-    
+    Build professional textual analysis from signal payload using template.
+
     Args:
-        signal_payload: Dict with signal, confidence, indicators, factors, risk_metrics
-        
+        signal_payload: Dict with signal, confidence, indicators, factors, risk_metrics, entry_range, stop_loss_take_profit
+
     Returns:
         Professional analysis text
     """
     import math
-    
-    s = signal_payload.get("signal", "HOLD")
-    conf = float(signal_payload.get("confidence", 50.0))
-    ind = signal_payload.get("indicators", {})
-    fac = signal_payload.get("factors", {})
-    risk = signal_payload.get("risk_metrics", {})
-    entry = signal_payload.get("entry_range", {})
-    sl_tp = signal_payload.get("stop_loss_take_profit", {})
 
-    parts = []
-    
-    # Signal context
-    if s == "BUY":
-        parts.append("Contexto alcista con confluencia multi-timeframe. ")
-    elif s == "SELL":
-        parts.append("Contexto bajista con señales de continuidad. ")
-    else:
-        parts.append("Contexto neutral; priorizar paciencia y gestión de riesgo. ")
-
-    # Key indicators - use safe defaults if missing or NaN
     def safe_float(val, default=0.0):
+        """Safely convert value to float, handling NaN/Inf."""
         try:
             fval = float(val)
             return fval if not (math.isnan(fval) or math.isinf(fval)) else default
         except (ValueError, TypeError):
             return default
-    
-    rsi = safe_float(ind.get("rsi"), 50.0)
-    macd_val = safe_float(ind.get("macd"), 0.0)
-    atr_val = safe_float(ind.get("atr"), 0.0)
-    vol = safe_float(ind.get("realized_vol", ind.get("realized_volatility")), 0.0)
-    parts.append(f"Confianza {conf:.1f}%. RSI {rsi:.1f}, MACD {macd_val:.4f}, ATR {atr_val:.2f}, Vol. {vol:.2f}. ")
 
-    # Cross-timeframe factors
-    align = fac.get("momentum_alignment", 0)
-    regime_d = fac.get("vol_regime_1d", fac.get("vol_regime_1h", 1))
-    if align:
-        parts.append("Momentum 1h/1d alineado favorablemente. ")
-    else:
-        parts.append("Momentum 1h/1d desalineado; considerar esperar mejor entrada. ")
-    
-    regime_val = int(regime_d) if regime_d is not None else 1
-    if regime_val == 2:
-        parts.append("Régimen de volatilidad alto; ajustar tamaño de posición. ")
-    elif regime_val == 0:
-        parts.append("Régimen de volatilidad bajo; condiciones favorables. ")
-    else:
-        parts.append("Régimen de volatilidad medio. ")
+    # Extract values with safe defaults
+    signal = signal_payload.get("signal", "HOLD")
+    confidence = safe_float(signal_payload.get("confidence", 50.0)) / 100.0  # Convert to decimal
 
-    # Risk metrics
-    rr = safe_float(risk.get("risk_reward_ratio"), 0.0)
-    if rr > 0:
-        parts.append(f"Ratio riesgo/recompensa {rr:.2f}. ")
-    
-    sl_prob = safe_float(risk.get("sl_probability"), 0.0)
-    tp_prob = safe_float(risk.get("tp_probability"), 0.0)
-    if sl_prob > 0 and tp_prob > 0:
-        parts.append(f"Probabilidad SL {sl_prob:.1f}%, TP {tp_prob:.1f}%. ")
+    entry_range = signal_payload.get("entry_range", {})
+    entry_min = safe_float(entry_range.get("min", 0.0))
+    entry_max = safe_float(entry_range.get("max", 0.0))
 
-    # Entry and levels
-    if entry:
-        opt = safe_float(entry.get("optimal"), 0.0)
-        if opt > 0:
-            parts.append(f"Entrada óptima ${opt:,.2f}. ")
-    
-    if sl_tp:
-        sl = safe_float(sl_tp.get("stop_loss"), 0.0)
-        tp = safe_float(sl_tp.get("take_profit"), 0.0)
-        if sl > 0 and tp > 0:
-            parts.append(f"Stop Loss ${sl:,.2f}, Take Profit ${tp:,.2f}. ")
+    sl_tp = signal_payload.get("stop_loss_take_profit", {})
+    stop_loss = safe_float(sl_tp.get("stop_loss", 0.0))
+    take_profit = safe_float(sl_tp.get("take_profit", 0.0))
 
-    # Liquidity assessment
-    volume_24h = safe_float(ind.get("volume"), 0.0)
-    if volume_24h > 0:
-        parts.append("Liquidez adecuada detectada. ")
-    else:
-        parts.append("Monitorear liquidez antes de ejecutar. ")
+    indicators = signal_payload.get("indicators", {})
+    rsi_14 = safe_float(indicators.get("rsi_14", indicators.get("rsi", 50.0)))
+    atr_14 = safe_float(indicators.get("atr_14", indicators.get("atr", 0.0)))
+    volatility_30 = safe_float(indicators.get("volatility_30", indicators.get("realized_volatility", 0.0))) / 100.0  # Convert to decimal
 
-    parts.append("Este contenido no es asesoramiento financiero; opere bajo su propio criterio.")
-    return "".join(parts)
+    risk_metrics = signal_payload.get("risk_metrics", {})
+    prob_stop_loss = safe_float(risk_metrics.get("sl_probability", 0.0)) / 100.0  # Convert to decimal
+    prob_take_profit = safe_float(risk_metrics.get("tp_probability", 0.0)) / 100.0  # Convert to decimal
+    expected_drawdown = safe_float(risk_metrics.get("expected_drawdown", 0.0))
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    try:
+        return TEMPLATE.format(
+            signal=signal,
+            entry_min=entry_min,
+            entry_max=entry_max,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            confidence=confidence,
+            rsi_14=rsi_14,
+            atr_14=atr_14,
+            volatility_30=volatility_30,
+            prob_stop_loss=prob_stop_loss,
+            prob_take_profit=prob_take_profit,
+            expected_drawdown=expected_drawdown,
+            timestamp=timestamp,
+        )
+    except (KeyError, ValueError):
+        # Fallback to a simpler narrative if template fails
+        return f"Señal: {signal}, Confianza: {confidence:.1%}, RSI: {rsi_14:.2f}, ATR: {atr_14:.2f}. Última actualización: {timestamp} UTC."
 
 
-def build_analysis(factors: Dict[str, Any], risk_metrics: Dict[str, Any], price: float, **kwargs) -> str:
+def build_analysis(factors: dict[str, Any], risk_metrics: dict[str, Any], **kwargs) -> str:
     """
     Build analysis text from factors and risk metrics.
-    
+
     This is a convenience wrapper around build_narrative for backward compatibility.
     """
     payload = {

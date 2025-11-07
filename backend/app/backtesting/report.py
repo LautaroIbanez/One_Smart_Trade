@@ -1,25 +1,88 @@
 """Generate backtest report with charts and markdown export."""
 from __future__ import annotations
 
-from typing import Dict, Any
-from pathlib import Path
 from datetime import datetime
-import pandas as pd
+from pathlib import Path
+from textwrap import dedent
+from typing import Any
+
 import matplotlib
-matplotlib.use('Agg')
+import pandas as pd
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+
 from app.backtesting.metrics import calculate_metrics
 from app.core.logging import logger
 
+# Paths relative to project root (not backend/)
+_current_file = Path(__file__).resolve()
+_project_root = _current_file.parent.parent.parent.parent  # backend/app/backtesting -> project root
+REPORT_PATH = _project_root / "docs" / "backtest-report.md"
+ASSETS_DIR = _project_root / "docs" / "assets"
 
-def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+
+def write_report(summary: dict[str, Any]) -> None:
+    """
+    Write backtest report to markdown file.
+
+    Args:
+        summary: Dict with backtest metrics and metadata (start_date, end_date, trading_days,
+                 cagr, sharpe, sortino, profit_factor, max_drawdown, bh_cagr, bh_sharpe,
+                 bh_sortino, bh_max_drawdown, slippage_bps)
+    """
+    from datetime import datetime
+
+    # Ensure dates are datetime objects
+    start_date = summary.get("start_date")
+    end_date = summary.get("end_date")
+    if isinstance(start_date, str):
+        start_date = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+    if isinstance(end_date, str):
+        end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    content = dedent(
+        f"""
+        # Backtest One Smart Trade
+
+        ## Período
+        - Inicio: {start_date.strftime('%Y-%m-%d') if start_date else 'N/A'}
+        - Fin: {end_date.strftime('%Y-%m-%d') if end_date else 'N/A'}
+        - Duración: {summary.get('trading_days', 0)} días
+
+        ## Métricas Clave
+        | Métrica | Estrategia | Buy & Hold |
+        | --- | --- | --- |
+        | CAGR | {summary.get('cagr', 0.0):.2%} | {summary.get('bh_cagr', 0.0):.2%} |
+        | Sharpe | {summary.get('sharpe', 0.0):.2f} | {summary.get('bh_sharpe', 0.0):.2f} |
+        | Sortino | {summary.get('sortino', 0.0):.2f} | {summary.get('bh_sortino', 0.0):.2f} |
+        | Profit Factor | {summary.get('profit_factor', 0.0):.2f} | — |
+        | Max Drawdown | {summary.get('max_drawdown', 0.0):.2%} | {summary.get('bh_max_drawdown', 0.0):.2%} |
+
+        ## Rolling KPIs
+        Adjuntar gráficos generados automáticamente (`docs/assets/rolling.png`, etc.).
+
+        ## Limitaciones
+        - Comisiones y slippage asumidos: {summary.get('slippage_bps', 15)} bps.
+        - Periodos sin liquidez o datos faltantes se excluyeron.
+        """
+    ).strip() + "\n"
+
+    REPORT_PATH.write_text(content, encoding="utf-8")
+    logger.info(f"Backtest report written to {REPORT_PATH}")
+
+
+def generate_report(backtest_result: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     """Generate backtest report with charts and markdown."""
     metrics = calculate_metrics(backtest_result)
     trades = backtest_result.get("trades", [])
     equity_curve = backtest_result.get("equity_curve", [])
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Equity curve chart
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -31,7 +94,9 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
     ax.legend()
     ax.grid(True, alpha=0.3)
     equity_path = output_dir / "equity_curve.png"
+    assets_equity_path = ASSETS_DIR / "equity_curve.png"
     plt.savefig(equity_path, dpi=150, bbox_inches="tight")
+    plt.savefig(assets_equity_path, dpi=150, bbox_inches="tight")
     plt.close()
 
     # Drawdown chart
@@ -48,7 +113,9 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
     ax.legend()
     ax.grid(True, alpha=0.3)
     dd_path = output_dir / "drawdown.png"
+    assets_dd_path = ASSETS_DIR / "drawdown.png"
     plt.savefig(dd_path, dpi=150, bbox_inches="tight")
+    plt.savefig(assets_dd_path, dpi=150, bbox_inches="tight")
     plt.close()
 
     # Returns distribution
@@ -65,7 +132,9 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
         ax.legend()
         ax.grid(True, alpha=0.3)
         dist_path = output_dir / "returns_distribution.png"
+        assets_dist_path = ASSETS_DIR / "returns_distribution.png"
         plt.savefig(dist_path, dpi=150, bbox_inches="tight")
+        plt.savefig(assets_dist_path, dpi=150, bbox_inches="tight")
         plt.close()
     else:
         dist_path = None
@@ -75,10 +144,10 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
     buy_hold_cagr = 0.0
     first_price = backtest_result.get("first_price", 0.0)
     last_price = backtest_result.get("last_price", 0.0)
-    
+
     if first_price > 0 and last_price > 0:
         buy_hold_return = ((last_price - first_price) / first_price) * 100
-        
+
         # Calculate Buy & Hold CAGR
         start_dt = pd.to_datetime(backtest_result["start_date"])
         end_dt = pd.to_datetime(backtest_result["end_date"])
@@ -96,9 +165,11 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
         ax.grid(True, alpha=0.3, axis="y")
         for bar in bars:
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', ha='center', va='bottom')
+            ax.text(bar.get_x() + bar.get_width()/2., height, f"{height:.1f}%", ha="center", va="bottom")
         bh_path = output_dir / "buy_hold_comparison.png"
+        assets_bh_path = ASSETS_DIR / "buy_hold_comparison.png"
         plt.savefig(bh_path, dpi=150, bbox_inches="tight")
+        plt.savefig(assets_bh_path, dpi=150, bbox_inches="tight")
         plt.close()
     else:
         bh_path = None
@@ -110,7 +181,7 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
         df_trades["exit_time"] = pd.to_datetime(df_trades["exit_time"])
         df_trades["month"] = df_trades["exit_time"].dt.to_period("M")
         monthly_returns = df_trades.groupby("month")["return_pct"].sum()
-        
+
         fig, ax = plt.subplots(figsize=(12, 6))
         colors = ["#10b981" if x >= 0 else "#ef4444" for x in monthly_returns.values]
         ax.bar(range(len(monthly_returns)), monthly_returns.values, color=colors, alpha=0.7)
@@ -122,16 +193,57 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
         ax.set_xticklabels([str(p) for p in monthly_returns.index], rotation=45, ha="right")
         ax.grid(True, alpha=0.3, axis="y")
         monthly_path = output_dir / "monthly_returns.png"
+        assets_monthly_path = ASSETS_DIR / "monthly_returns.png"
         plt.savefig(monthly_path, dpi=150, bbox_inches="tight")
+        plt.savefig(assets_monthly_path, dpi=150, bbox_inches="tight")
         plt.close()
     else:
         monthly_path = None
 
-    # Calculate duration
+    # Generate rolling KPIs chart
+    if trades and len(equity_curve) > 30:
+        _generate_rolling_chart(equity_curve, ASSETS_DIR)
+
+    # Calculate duration and prepare summary for write_report
     start_dt = pd.to_datetime(backtest_result["start_date"])
     end_dt = pd.to_datetime(backtest_result["end_date"])
     duration_days = (end_dt - start_dt).days
     duration_years = duration_days / 365.25
+
+    # Calculate Buy & Hold metrics
+    first_price = backtest_result.get("first_price", 0.0)
+    last_price = backtest_result.get("last_price", 0.0)
+    bh_cagr = 0.0
+    bh_sharpe = 0.0
+    bh_sortino = 0.0
+    bh_max_drawdown = 0.0
+
+    if first_price > 0 and last_price > 0 and duration_years > 0:
+        bh_cagr = ((last_price / first_price) ** (1 / duration_years) - 1) * 100
+        # Simplified Buy & Hold metrics (would need price series for full calculation)
+        bh_sharpe = 0.0  # Placeholder
+        bh_sortino = 0.0  # Placeholder
+        bh_max_drawdown = 0.0  # Placeholder
+
+    # Prepare summary for write_report
+    summary = {
+        "start_date": start_dt,
+        "end_date": end_dt,
+        "trading_days": duration_days,
+        "cagr": metrics.get("cagr", 0.0) / 100.0,  # Convert to decimal
+        "sharpe": metrics.get("sharpe", 0.0),
+        "sortino": metrics.get("sortino", 0.0),
+        "profit_factor": metrics.get("profit_factor", 0.0),
+        "max_drawdown": metrics.get("max_drawdown", 0.0) / 100.0,  # Convert to decimal
+        "bh_cagr": bh_cagr / 100.0,  # Convert to decimal
+        "bh_sharpe": bh_sharpe,
+        "bh_sortino": bh_sortino,
+        "bh_max_drawdown": bh_max_drawdown / 100.0,  # Convert to decimal
+        "slippage_bps": int((0.001 + 0.0005) * 10000),  # Commission + slippage in bps
+    }
+
+    # Write simplified report
+    write_report(summary)
 
     # Prepare trade statistics for markdown
     avg_win = 0.0
@@ -141,12 +253,17 @@ def generate_report(backtest_result: Dict[str, Any], output_dir: Path) -> Dict[s
     if trades:
         df_trades_md = pd.DataFrame(trades)
         if not df_trades_md.empty:
-            winning = df_trades_md[df_trades_md['pnl'] > 0]
-            losing = df_trades_md[df_trades_md['pnl'] < 0]
-            avg_win = float(winning['pnl'].mean()) if len(winning) > 0 else 0.0
-            avg_loss = float(losing['pnl'].mean()) if len(losing) > 0 else 0.0
-            largest_win = float(df_trades_md['pnl'].max()) if not df_trades_md.empty else 0.0
-            largest_loss = float(df_trades_md['pnl'].min()) if not df_trades_md.empty else 0.0
+            winning = df_trades_md[df_trades_md["pnl"] > 0]
+            losing = df_trades_md[df_trades_md["pnl"] < 0]
+            avg_win = float(winning["pnl"].mean()) if len(winning) > 0 else 0.0
+            avg_loss = float(losing["pnl"].mean()) if len(losing) > 0 else 0.0
+            largest_win = float(df_trades_md["pnl"].max()) if not df_trades_md.empty else 0.0
+            largest_loss = float(df_trades_md["pnl"].min()) if not df_trades_md.empty else 0.0
+
+    # Generate monthly returns section
+    monthly_section = ""
+    if monthly_path:
+        monthly_section = "### Monthly Returns\n\n![Monthly Returns](monthly_returns.png)\n\nEl gráfico de retornos mensuales muestra la performance mes a mes. Barras verdes indican meses positivos, rojas indican meses negativos.\n\n"
 
     # Generate comprehensive markdown report
     md_content = f"""# Backtest Report - One Smart Trade
@@ -229,7 +346,7 @@ El gráfico de drawdown muestra los períodos de retroceso desde máximos histó
 
 La distribución de retornos muestra la frecuencia de diferentes niveles de retorno por trade. La línea vertical punteada indica la media.
 
-{f'### Monthly Returns\n\n![Monthly Returns](monthly_returns.png)\n\nEl gráfico de retornos mensuales muestra la performance mes a mes. Barras verdes indican meses positivos, rojas indican meses negativos.\n\n' if monthly_path else ''}### Strategy vs Buy & Hold
+{monthly_section}### Strategy vs Buy & Hold
 
 ![Buy & Hold Comparison](buy_hold_comparison.png)
 
@@ -270,7 +387,7 @@ Este backtest es solo para fines educativos. El rendimiento pasado no garantiza 
     report_path = output_dir / "backtest-report.md"
     report_path.write_text(md_content, encoding="utf-8")
     logger.info(f"Backtest report written to {report_path}")
-    
+
     # Also write to docs/backtest-report.md (project root)
     # Find project root by going up from backend/app/backtesting/report.py
     current_file = Path(__file__).resolve()
@@ -286,5 +403,42 @@ Este backtest es solo para fines educativos. El rendimiento pasado no garantiza 
         "report_path": str(report_path),
         "equity_chart": str(equity_path),
         "drawdown_chart": str(dd_path),
+        "summary": summary,
     }
+
+
+def _generate_rolling_chart(equity_curve: list[float], assets_dir: Path) -> None:
+    """Generate rolling KPIs chart."""
+    try:
+        equity_series = pd.Series(equity_curve)
+        window = min(30, len(equity_series) // 4)
+        if window < 5:
+            return
+
+        rolling_returns = equity_series.pct_change().rolling(window=window).mean() * 100
+        rolling_vol = equity_series.pct_change().rolling(window=window).std() * 100
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+        ax1.plot(rolling_returns, label="Rolling Return %", color="#3b82f6")
+        ax1.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
+        ax1.set_ylabel("Return (%)")
+        ax1.set_title("Rolling Returns")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        ax2.plot(rolling_vol, label="Rolling Volatility %", color="#ef4444")
+        ax2.set_xlabel("Period")
+        ax2.set_ylabel("Volatility (%)")
+        ax2.set_title("Rolling Volatility")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        rolling_path = assets_dir / "rolling.png"
+        plt.tight_layout()
+        plt.savefig(rolling_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info(f"Rolling KPIs chart saved to {rolling_path}")
+    except Exception as e:
+        logger.warning(f"Error generating rolling chart: {e}")
 

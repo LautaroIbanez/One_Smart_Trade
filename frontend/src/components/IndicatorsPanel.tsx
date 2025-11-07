@@ -35,7 +35,7 @@ function IndicatorsPanel() {
   const riskMetrics = data.risk_metrics || {}
 
   // Format indicator values for display
-  const formatValue = (key: string, value: any): string => {
+  const formatValue = (key: string, value: unknown): string => {
     if (typeof value === 'number') {
       // Format percentages for RSI, confidence-like values
       if (key.toLowerCase().includes('rsi') || key.toLowerCase().includes('stoch')) {

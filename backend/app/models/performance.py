@@ -1,7 +1,7 @@
 """Pydantic models for performance API responses."""
+from typing import Optional
+
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional
-from datetime import datetime
 
 
 class RollingMetrics(BaseModel):

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+
+from sqlalchemy import JSON, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, Float, Integer, DateTime, JSON
+
 from app.core.database import Base
 
 
@@ -24,7 +26,7 @@ class RecommendationORM(Base):
     indicators: Mapped[dict] = mapped_column(JSON, default={})
     risk_metrics: Mapped[dict] = mapped_column(JSON, default={})
     factors: Mapped[dict] = mapped_column(JSON, default={})
-    analysis: Mapped[str] = mapped_column(String(5000), default="")  # Increased for longer analysis text
+    analysis: Mapped[str] = mapped_column(String(5000), nullable=False, default="")  # Increased for longer analysis text
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

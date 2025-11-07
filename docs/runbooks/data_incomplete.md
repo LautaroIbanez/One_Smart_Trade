@@ -34,11 +34,12 @@ curl -s http://localhost:8000/metrics | grep ost_data_gaps_total
 ### Paso 1: Backfill manual
 ```bash
 cd /opt/one-smart-trade/backend
-# Backfill todos los intervalos (últimos 30 días por defecto)
-poetry run python -m app.scripts.backfill --interval all --days 30
+# Backfill para un intervalo específico desde una fecha
+poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
 
-# O para un intervalo específico
-poetry run python -m app.scripts.backfill --interval 1d --days 30
+# O para otros intervalos
+poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 4h --since "2023-01-01"
 ```
 
 ### Paso 2: Verificar datos raw

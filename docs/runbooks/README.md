@@ -7,8 +7,8 @@ Runbooks para operación y resolución de incidentes comunes.
 El proyecto incluye scripts CLI para operaciones manuales comunes:
 
 - **`python -m app.scripts.backfill`**: Backfill de datos históricos
-  - `--interval {15m|30m|1h|4h|1d|1w|all}`: Intervalo a backfillear (default: all)
-  - `--days N`: Número de días a backfillear (default: 30)
+  - `--interval {15m|30m|1h|4h|1d|1w}`: Intervalo a backfillear (requerido)
+  - `--since YYYY-MM-DD`: Fecha desde la cual backfillear (opcional)
 
 - **`python -m app.scripts.check_gaps`**: Verificar gaps en datos
   - `--interval {15m|30m|1h|4h|1d|1w|all}`: Intervalo a verificar (default: all)
@@ -23,7 +23,7 @@ El proyecto incluye scripts CLI para operaciones manuales comunes:
 **Ejemplo de uso:**
 ```bash
 cd /opt/one-smart-trade/backend
-poetry run python -m app.scripts.backfill --interval 1d --days 30
+poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
 poetry run python -m app.scripts.check_gaps --interval all --days 7
 poetry run python -m app.scripts.regenerate_signal
 ```
@@ -93,9 +93,9 @@ curl -s http://localhost:8000/metrics | grep ost_last_ingestion_timestamp_second
 2. Ejecutar backfill manual para timeframe:
    ```bash
    cd backend
-   poetry run python -m app.scripts.backfill --interval 1h --days 30
+   poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
    ```
-3. Regenerar datos curados:
+3. Regenerar datos curados (se hace automáticamente en backfill, pero se puede hacer manualmente):
    ```bash
    poetry run python -m app.scripts.curate --interval 1h
    ```
@@ -149,10 +149,10 @@ curl http://localhost:8000/api/v1/diagnostics/last-run
 3. Si faltan datos, regenerar:
    ```bash
    # Backfill si es necesario
-   poetry run python -m app.scripts.backfill --interval 1d --days 7
-   poetry run python -m app.scripts.backfill --interval 1h --days 7
+   poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
+   poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
    
-   # Curar datos
+   # Curar datos (se hace automáticamente en backfill, pero se puede hacer manualmente)
    poetry run python -m app.scripts.curate --interval 1d
    poetry run python -m app.scripts.curate --interval 1h
    ```

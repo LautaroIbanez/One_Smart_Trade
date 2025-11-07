@@ -1,6 +1,6 @@
 import './RiskPanel.css'
 
-type Props = { risk: Record<string, any> | undefined }
+type Props = { risk: Record<string, unknown> | undefined }
 
 export default function RiskPanel({ risk }: Props) {
   if (!risk) return null

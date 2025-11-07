@@ -1,13 +1,14 @@
 """Strategy implementations producing signals and trade metadata."""
 from __future__ import annotations
 
-from typing import Dict, Any, Literal
+from typing import Any, Literal
+
 import pandas as pd
 
 Signal = Literal["BUY", "SELL", "HOLD"]
 
 
-def momentum_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, Any]:
+def momentum_strategy(df: pd.DataFrame, ind: dict[str, pd.Series]) -> dict[str, Any]:
     if df.empty:
         return {"signal": "HOLD", "confidence": 0.0, "reason": "no_data"}
     ema9 = ind.get("ema_9", pd.Series())
@@ -28,7 +29,7 @@ def momentum_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, 
     return {"signal": "HOLD", "confidence": 30.0, "reason": "no_alignment"}
 
 
-def mean_reversion_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, Any]:
+def mean_reversion_strategy(df: pd.DataFrame, ind: dict[str, pd.Series]) -> dict[str, Any]:
     if df.empty:
         return {"signal": "HOLD", "confidence": 0.0, "reason": "no_data"}
     rsi = ind.get("rsi", pd.Series())
@@ -44,7 +45,7 @@ def mean_reversion_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict
     return {"signal": "HOLD", "confidence": 25.0, "reason": "neutral"}
 
 
-def breakout_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, Any]:
+def breakout_strategy(df: pd.DataFrame, ind: dict[str, pd.Series]) -> dict[str, Any]:
     if df.empty or len(df) < 20:
         return {"signal": "HOLD", "confidence": 0.0, "reason": "no_data"}
     vol = df["volume"].tail(20)
@@ -60,7 +61,7 @@ def breakout_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, 
     return {"signal": "HOLD", "confidence": 20.0, "reason": "no_breakout"}
 
 
-def volatility_strategy(df: pd.DataFrame, ind: Dict[str, pd.Series]) -> Dict[str, Any]:
+def volatility_strategy(df: pd.DataFrame, ind: dict[str, pd.Series]) -> dict[str, Any]:
     if df.empty:
         return {"signal": "HOLD", "confidence": 0.0, "reason": "no_data"}
     rv = ind.get("realized_vol", pd.Series())

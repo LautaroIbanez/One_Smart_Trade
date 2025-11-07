@@ -1,15 +1,12 @@
 """Backtesting engine with commission and slippage modeling."""
 from __future__ import annotations
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
-import pandas as pd
-import numpy as np
+from datetime import datetime
+from typing import Any, Optional
+
+from app.core.logging import logger
 from app.data.curation import DataCuration
 from app.quant.signal_engine import generate_signal
-from app.quant.strategies import momentum_strategy, mean_reversion_strategy, breakout_strategy, volatility_strategy
-from app.quant import indicators as ind
-from app.core.logging import logger
 
 
 class BacktestEngine:
@@ -35,7 +32,7 @@ class BacktestEngine:
 
     def _execute_trade(
         self, entry_price: float, exit_price: float, side: str, size: float
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Execute a trade with slippage and commission."""
         entry_exec = self._apply_slippage(entry_price, side)
         exit_exec = self._apply_slippage(exit_price, "SELL" if side == "BUY" else "BUY")
@@ -67,27 +64,33 @@ class BacktestEngine:
         end_date: datetime,
         initial_capital: float = 10000.0,
         position_size_pct: float = 1.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Run backtest over date range (supports 5+ years of data).
-        
+
         Args:
             start_date: Start date for backtest
             end_date: End date for backtest
             initial_capital: Starting capital
             position_size_pct: Position size as percentage of capital
-            
+
         Returns:
             Dict with trades, equity_curve, and metadata, or error dict
         """
-        # Load historical data for the date range
-        df_1d = self.curation.get_historical_curated("1d", start_date=start_date, end_date=end_date)
+        # Load historical data using curated datasets
+        curation = DataCuration()
+        df_1d = curation.get_historical_curated("1d", days=365 * 5)
         if df_1d is None or df_1d.empty:
-            return {
-                "error": "No historical data available",
-                "error_type": "NO_DATA",
-                "details": f"No curated 1d data found for range {start_date.date()} to {end_date.date()}"
-            }
+            raise RuntimeError("Historical dataset empty; run ingestion + curation first.")
+
+        # Filter by date range if provided
+        if start_date:
+            df_1d = df_1d[df_1d["open_time"] >= start_date].copy()
+        if end_date:
+            df_1d = df_1d[df_1d["open_time"] <= end_date].copy()
+
+        if df_1d.empty:
+            raise RuntimeError(f"No data in date range {start_date} to {end_date}")
 
         # Ensure we have enough data (at least 200 days for indicators)
         if len(df_1d) < 200:
@@ -116,9 +119,9 @@ class BacktestEngine:
                         "details": f"Only {len(df_1h)} rows available, need at least 200 for reliable indicators"
                     }
 
-        trades: List[Dict[str, Any]] = []
-        equity_curve: List[float] = [initial_capital]
-        current_position: Optional[Dict[str, Any]] = None
+        trades: list[dict[str, Any]] = []
+        equity_curve: list[float] = [initial_capital]
+        current_position: Optional[dict[str, Any]] = None
         capital = initial_capital
 
         for i in range(1, len(df_1d)):
@@ -129,7 +132,7 @@ class BacktestEngine:
             df_slice = df_1d.iloc[:i]
             # Filter 1h data up to previous day's timestamp
             df_h_slice = df_1h[df_1h["open_time"] <= prev_row["open_time"]].copy()
-            
+
             # Ensure we have enough data for indicators (at least 200 rows)
             if len(df_slice) < 200 or len(df_h_slice) < 200:
                 # Skip early days when we don't have enough historical data

@@ -45,7 +45,7 @@ function HistoryTable() {
               </tr>
             </thead>
             <tbody>
-              {recommendations.map((rec: any, index: number) => (
+              {recommendations.map((rec: { timestamp: string; signal: string; current_price: number; confidence: number }, index: number) => (
                 <tr key={rec.timestamp || index}>
                   <td>{new Date(rec.timestamp).toLocaleDateString('es-ES')}</td>
                   <td>

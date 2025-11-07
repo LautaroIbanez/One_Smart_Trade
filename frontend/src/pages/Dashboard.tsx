@@ -42,10 +42,14 @@ function Dashboard() {
 
   const chartData = useMemo(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
-    return marketData.data.slice(-50).map((item: any) => ({
-      open_time: new Date(item.open_time || item.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-      close: item.close || item.current_price,
-    }))
+    return marketData.data.slice(-50).map((item: Record<string, unknown>) => {
+      const timeValue = item.open_time || item.timestamp
+      const timeStr = typeof timeValue === 'string' ? timeValue : timeValue instanceof Date ? timeValue.toISOString() : String(timeValue)
+      return {
+        timestamp: new Date(timeStr).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+        price: (item.close as number) || (item.current_price as number) || (item.price as number) || 0,
+      }
+    })
   }, [marketData])
 
   const marketLevels = useMemo(() => {
@@ -74,7 +78,14 @@ function Dashboard() {
         </header>
         <main className="dashboard-content">
           <RecommendationCard />
-          <PriceLevelsChart data={chartData} levels={levels} marketData={marketLevels} />
+          <PriceLevelsChart 
+            data={chartData} 
+            stopLoss={data?.stop_loss_take_profit?.stop_loss}
+            takeProfit={data?.stop_loss_take_profit?.take_profit}
+            entryRange={data?.entry_range ? [data.entry_range.min, data.entry_range.max] : undefined}
+            levels={levels} 
+            marketData={marketLevels} 
+          />
           <div className="dashboard-grid">
             <IndicatorsPanel />
             <RiskPanel risk={data?.risk_metrics} />

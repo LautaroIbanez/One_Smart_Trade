@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, desc
-from app.db.models import RecommendationORM, RunLogORM, BacktestResultORM
+
+from app.db.models import BacktestResultORM, RecommendationORM, RunLogORM
 
 
 def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
     """Create recommendation with analysis text."""
     from app.quant.narrative import build_narrative
-    
+
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    
+
     # Generate analysis text if not provided or empty
     analysis = payload.get("analysis", "")
     if not analysis or not analysis.strip():
@@ -27,7 +29,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
             "stop_loss_take_profit": payload.get("stop_loss_take_profit", {}),
         }
         analysis = build_narrative(narrative_payload)
-    
+
     rec = RecommendationORM(
         date=date_str,
         signal=payload["signal"],
@@ -73,7 +75,6 @@ def log_run(db: Session, run_type: str, status: str, message: str = "") -> RunLo
 def get_last_run(db: Session, run_type: str | None = None) -> RunLogORM | None:
     stmt = select(RunLogORM)
     if run_type:
-        from sqlalchemy import and_
         stmt = stmt.where(RunLogORM.run_type == run_type)
     stmt = stmt.order_by(desc(RunLogORM.finished_at)).limit(1)
     return db.execute(stmt).scalars().first()

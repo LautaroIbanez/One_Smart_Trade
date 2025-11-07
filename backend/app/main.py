@@ -1,20 +1,19 @@
 """FastAPI application entry point."""
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.middleware.rate_limit import RateLimitMiddleware
-from app.middleware.exception_handler import ExceptionHandlerMiddleware
-from app.observability.metrics import RequestMetricsMiddleware, metrics_router
-from app.api.v1 import recommendation, diagnostics, market, performance
+
+from app.api.v1 import diagnostics, market, performance, recommendation
 from app.core.config import settings
+from app.core.database import Base, SessionLocal, engine
 from app.core.logging import setup_logging
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, time
-from app.core.database import engine, Base, SessionLocal
-from app.data.ingestion import DataIngestion
 from app.data.curation import DataCuration
-from app.quant.signal_engine import generate_signal
-from app.db import models
-from app.db.crud import create_recommendation, log_run
+from app.data.ingestion import DataIngestion
+from app.db.crud import log_run
+from app.middleware.exception_handler import ExceptionHandlerMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.observability.metrics import RequestMetricsMiddleware, metrics_router
 
 # Initialize logging
 setup_logging()
@@ -64,188 +63,117 @@ Base.metadata.create_all(bind=engine)
 scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
 
 
-async def job_ingest_all():
+@scheduler.scheduled_job("cron", minute="*/15", id="ingest_klines")
+async def job_ingest_all() -> None:
     """Scheduled job to ingest data for all timeframes."""
-    from app.observability.metrics import record_ingestion
-    from app.core.logging import logger
-    from app.data.curation import DataCuration
     import time
-    import httpx
-    
-    di = DataIngestion()
-    dc = DataCuration()
+
+    from app.core.logging import logger
+    from app.observability.metrics import record_ingestion
+
+    ingestion = DataIngestion()
     start_time = time.time()
-    
+
     try:
-        logger.info("Starting scheduled ingestion job")
-        results = await di.ingest_all_timeframes()
+        results = await ingestion.ingest_all_timeframes()
         duration = time.time() - start_time
-        
-        # Check for failures in results and record metrics per timeframe
-        failed = [r for r in results if r.get("status") in ("error", "no_data", "empty")]
-        
-        # Record metrics for each individual timeframe
+        total_rows = sum(result.get("rows", 0) for result in results)
+
+        # Record metrics per timeframe
         for result in results:
             interval = result.get("interval", "unknown")
             if interval != "unknown":
-                # Calculate individual duration (approximate, since we don't track per-interval)
-                individual_duration = duration / len(results)
+                individual_duration = duration / len(results) if results else 0.0
                 if result.get("status") == "success":
                     record_ingestion(interval, individual_duration, True)
                 else:
                     error_reason = result.get("error", result.get("status", "unknown"))
                     record_ingestion(interval, individual_duration, False, error_reason)
-        
-        if failed:
-            failed_intervals = [r.get("interval", "unknown") for r in failed]
-            reason = f"{len(failed)} timeframes failed: {', '.join(failed_intervals)}"
-            logger.warning(f"Ingestion completed with {len(failed)} failures", extra={"failed": failed})
-            record_ingestion("all", duration, False, reason)
-            db = SessionLocal()
-            try:
-                log_run(db, "ingestion", "error", reason)
-            finally:
-                db.close()
-        else:
-            logger.info(f"Ingestion completed successfully in {duration:.2f}s", extra={"duration": duration})
-            record_ingestion("all", duration, True)
-            
-            # Curate data after successful ingestion
-            try:
-                for interval in ["15m", "30m", "1h", "4h", "1d", "1w"]:
-                    dc.curate_timeframe(interval)
-            except Exception as curation_error:
-                logger.warning(f"Error during curation after ingestion: {curation_error}")
-            
-            db = SessionLocal()
-            try:
-                log_run(db, "ingestion", "success")
-            finally:
-                db.close()
-    except httpx.HTTPStatusError as e:
-        duration = time.time() - start_time
-        if e.response.status_code == 429:
-            reason = "RateLimited"
-            logger.warning("Ingestion rate limited by Binance", extra={"status_code": 429})
-        else:
-            reason = f"HTTPError_{e.response.status_code}"
-            logger.error(f"Ingestion HTTP error: {e.response.status_code}", exc_info=True)
-        record_ingestion("all", duration, False, reason)
+
+        # Log to database
         db = SessionLocal()
         try:
-            log_run(db, "ingestion", "error", f"{reason}: {str(e)}")
-        finally:
-            db.close()
-    except Exception as e:
-        duration = time.time() - start_time
-        reason = type(e).__name__
-        logger.error(f"Ingestion job failed: {reason}", exc_info=True, extra={"error": str(e)})
-        record_ingestion("all", duration, False, reason)
-        db = SessionLocal()
-        try:
-            log_run(db, "ingestion", "error", str(e))
+            log_run(
+                db,
+                "ingestion",
+                "success",
+                f"Fetched {total_rows} rows",
+            )
         finally:
             db.close()
 
+        record_ingestion("multiple", duration, True)
+    except Exception as exc:  # rate limits, timeouts, etc.
+        duration = time.time() - start_time
+        logger.exception("Data ingestion failed")
+        db = SessionLocal()
+        try:
+            log_run(
+                db,
+                "ingestion",
+                "failed",
+                str(exc),
+            )
+        finally:
+            db.close()
+        record_ingestion("multiple", duration, False, str(type(exc).__name__))
 
-async def job_generate_signal():
+
+@scheduler.scheduled_job("cron", hour=12, minute=0, id="generate_signal")
+async def job_generate_signal() -> None:
     """Scheduled job to generate daily trading signal."""
-    from app.observability.metrics import record_signal_generation
-    from app.core.logging import logger
     import time
-    
+
+    from app.core.logging import logger
+    from app.data.ingestion import INTERVALS
+    from app.observability.metrics import record_signal_generation
+    from app.services.recommendation_service import RecommendationService
+
+    curation = DataCuration()
     start_time = time.time()
+
+    # Regenerate curated datasets before calculating signals
+    for interval in INTERVALS:
+        try:
+            curation.curate_interval(interval)
+        except FileNotFoundError:
+            logger.warning("Skipping interval %s because raw data is missing", interval)
+
+    db = SessionLocal()
     try:
-        logger.info("Starting scheduled signal generation job")
-        dc = DataCuration()
-        
-        # Try to get curated data, curate if missing
-        df_1d = dc.get_latest_curated("1d")
-        if df_1d is None or df_1d.empty:
-            logger.info("No 1d curated data found, attempting to curate...")
-            curation_result = dc.curate_timeframe("1d")
-            if curation_result.get("status") == "success":
-                df_1d = dc.get_latest_curated("1d")
-        
-        df_1h = dc.get_latest_curated("1h")
-        if df_1h is None or df_1h.empty:
-            logger.info("No 1h curated data found, attempting to curate...")
-            curation_result = dc.curate_timeframe("1h")
-            if curation_result.get("status") == "success":
-                df_1h = dc.get_latest_curated("1h")
-        
-        if df_1d is None or df_1d.empty:
-            duration = time.time() - start_time
-            reason = "NoData_1d"
-            logger.warning("Signal generation failed: no 1d curated data available after curation attempt")
-            record_signal_generation(duration, False, reason)
-            db = SessionLocal()
-            try:
-                log_run(db, "signal", "error", "No curated data available for 1d")
-            finally:
-                db.close()
-            return
-        
-        if df_1h is None or df_1h.empty:
-            logger.warning("No 1h data available, using 1d data as fallback")
-            df_1h = df_1d
-        
-        # Generate signal with validated data
-        payload = generate_signal(df_1h, df_1d)
+        service = RecommendationService(session=db)
+        # Generate recommendation (will use curated data)
+        recommendation = await service.generate_recommendation()
+        if recommendation is None:
+            raise ValueError("Failed to generate recommendation")
+
         duration = time.time() - start_time
-        
-        logger.info(
-            f"Signal generated: {payload['signal']} (confidence: {payload['confidence']}%)",
-            extra={"signal": payload["signal"], "confidence": payload["confidence"], "duration": duration}
+
+        log_run(
+            db,
+            "signal_generation",
+            "success",
+            "Signal generated",
         )
-        
+
         record_signal_generation(duration, True)
-        db = SessionLocal()
-        try:
-            # Analysis will be generated in create_recommendation if not present
-            create_recommendation(db, payload)
-            log_run(db, "signal", "success")
-        finally:
-            db.close()
-    except ValueError as e:
+    except Exception as exc:
         duration = time.time() - start_time
-        reason = "ValueError"
-        logger.error(f"Signal generation ValueError: {str(e)}", exc_info=True)
-        record_signal_generation(duration, False, reason)
-        db = SessionLocal()
-        try:
-            log_run(db, "signal", "error", f"ValueError: {str(e)}")
-        finally:
-            db.close()
-    except KeyError as e:
-        duration = time.time() - start_time
-        reason = "KeyError"
-        logger.error(f"Signal generation KeyError: {str(e)}", exc_info=True)
-        record_signal_generation(duration, False, reason)
-        db = SessionLocal()
-        try:
-            log_run(db, "signal", "error", f"KeyError: {str(e)}")
-        finally:
-            db.close()
-    except Exception as e:
-        duration = time.time() - start_time
-        reason = type(e).__name__
-        logger.error(f"Signal generation failed: {reason}", exc_info=True, extra={"error": str(e)})
-        record_signal_generation(duration, False, reason)
-        db = SessionLocal()
-        try:
-            log_run(db, "signal", "error", str(e))
-        finally:
-            db.close()
+        logger.exception("Signal generation failed")
+        log_run(
+            db,
+            "signal_generation",
+            "failed",
+            str(exc),
+        )
+        record_signal_generation(duration, False, str(type(exc).__name__))
+    finally:
+        db.close()
 
 
 @app.on_event("startup")
 async def on_startup():
-    # Schedule ingestion per cadence
-    scheduler.add_job(job_ingest_all, "interval", minutes=15, id="ingest_all")
-    # Daily signal at configured time
-    hh, mm = [int(x) for x in settings.RECOMMENDATION_UPDATE_TIME.split(":")]
-    scheduler.add_job(job_generate_signal, "cron", hour=hh, minute=mm, id="generate_signal_daily")
+    # Jobs are already scheduled via decorators
     scheduler.start()
 
 

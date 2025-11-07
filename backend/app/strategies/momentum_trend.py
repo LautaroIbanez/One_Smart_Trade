@@ -1,6 +1,8 @@
 """Momentum-Trend strategy."""
+from typing import Any
+
 import pandas as pd
-from typing import Dict, Any
+
 from app.strategies.base import BaseStrategy, SignalType
 
 
@@ -10,7 +12,7 @@ class MomentumTrendStrategy(BaseStrategy):
     def __init__(self):
         super().__init__("Momentum-Trend")
 
-    def generate_signal(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_signal(self, df: pd.DataFrame, indicators: dict[str, Any]) -> dict[str, Any]:
         """Generate signal based on momentum and trend."""
         if df.empty or len(df) < 200:
             return {"signal": "HOLD", "confidence": 0.0, "reason": "Insufficient data"}

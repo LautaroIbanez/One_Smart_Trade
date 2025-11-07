@@ -1,12 +1,13 @@
 """Recommendation engine that generates trading signals."""
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Optional
+
 import pandas as pd
-import numpy as np
+
+from app.core.logging import logger
 from app.data.curation import DataCuration
 from app.indicators.technical import TechnicalIndicators
 from app.strategies.strategy_ensemble import StrategyEnsemble
-from app.core.logging import logger
 
 
 class RecommendationEngine:
@@ -17,7 +18,7 @@ class RecommendationEngine:
         self.indicators_calc = TechnicalIndicators()
         self.ensemble = StrategyEnsemble()
 
-    def _calculate_entry_range(self, df: pd.DataFrame, signal: str, current_price: float) -> Dict[str, float]:
+    def _calculate_entry_range(self, df: pd.DataFrame, signal: str, current_price: float) -> dict[str, float]:
         """Calculate entry price range."""
         recent_data = df.tail(50)
         support = recent_data["low"].min()
@@ -39,7 +40,7 @@ class RecommendationEngine:
 
         return {"min": round(min_entry, 2), "max": round(max_entry, 2), "optimal": round(optimal, 2)}
 
-    def _calculate_sl_tp(self, df: pd.DataFrame, signal: str, entry_price: float) -> Dict[str, float]:
+    def _calculate_sl_tp(self, df: pd.DataFrame, signal: str, entry_price: float) -> dict[str, float]:
         """Calculate stop loss and take profit levels."""
         atr = df.get("atr", pd.Series([entry_price * 0.02])).iloc[-1] if "atr" in df.columns else entry_price * 0.02
         volatility = df.get("realized_volatility", pd.Series([0.3])).iloc[-1] if "realized_volatility" in df.columns else 0.3
@@ -73,7 +74,7 @@ class RecommendationEngine:
             "take_profit_pct": round(take_profit_pct, 2),
         }
 
-    def _calculate_risk_metrics(self, df: pd.DataFrame, signal: str, entry: float, sl: float, tp: float) -> Dict[str, Any]:
+    def _calculate_risk_metrics(self, df: pd.DataFrame, signal: str, entry: float, sl: float, tp: float) -> dict[str, Any]:
         """Calculate risk metrics."""
         atr = df.get("atr", pd.Series([entry * 0.02])).iloc[-1] if "atr" in df.columns else entry * 0.02
         volatility = df.get("realized_volatility", pd.Series([0.3])).iloc[-1] if "realized_volatility" in df.columns else 0.3
@@ -101,7 +102,7 @@ class RecommendationEngine:
             "volatility": round(volatility * 100, 2),
         }
 
-    def _generate_analysis(self, signal_data: Dict[str, Any], indicators: Dict[str, float], risk_metrics: Dict[str, Any]) -> str:
+    def _generate_analysis(self, signal_data: dict[str, Any], indicators: dict[str, float], risk_metrics: dict[str, Any]) -> str:
         """Generate textual analysis."""
         signal = signal_data["signal"]
         confidence = signal_data["confidence"]
@@ -140,7 +141,7 @@ class RecommendationEngine:
 
         return " ".join(analysis_parts)
 
-    async def generate_recommendation(self) -> Optional[Dict[str, Any]]:
+    async def generate_recommendation(self) -> Optional[dict[str, Any]]:
         """Generate today's trading recommendation."""
         try:
             df_1d = self.curation.get_latest_curated("1d")

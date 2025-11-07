@@ -1,9 +1,10 @@
 """Cross-timeframe factors and market structure features."""
 from __future__ import annotations
 
-from typing import Dict, Any
-import pandas as pd
+from typing import Any
+
 import numpy as np
+import pandas as pd
 
 
 def slope(series: pd.Series, window: int = 10) -> pd.Series:
@@ -22,7 +23,7 @@ def slope(series: pd.Series, window: int = 10) -> pd.Series:
 def regime_volatility(realized_vol: pd.Series, high: float = 0.5, low: float = 0.2) -> pd.Series:
     """
     Map realized vol to regimes: 2=high,1=mid,0=low.
-    
+
     Thresholds:
     - high: 0.5 (50% annualized volatility) - above this is high vol regime
     - low: 0.2 (20% annualized volatility) - below this is low vol regime
@@ -34,7 +35,7 @@ def regime_volatility(realized_vol: pd.Series, high: float = 0.5, low: float = 0
 def divergence(price: pd.Series, osc: pd.Series, window: int = 14) -> pd.Series:
     """
     Simple divergence detector: price higher high but osc lower high (bear) / opposite (bull).
-    
+
     Returns: 1 for bullish divergence, -1 for bearish divergence, 0 for none.
     Window: 14 periods default (adjustable based on timeframe).
     """
@@ -47,7 +48,7 @@ def divergence(price: pd.Series, osc: pd.Series, window: int = 14) -> pd.Series:
     return bull - bear
 
 
-def cross_timeframe(df_1h: pd.DataFrame, df_1d: pd.DataFrame, ind_1h: Dict[str, pd.Series], ind_1d: Dict[str, pd.Series]) -> Dict[str, Any]:
+def cross_timeframe(df_1h: pd.DataFrame, df_1d: pd.DataFrame, ind_1h: dict[str, pd.Series], ind_1d: dict[str, pd.Series]) -> dict[str, Any]:
     """Compute cross-timeframe factors (momentum alignment, volatility regime, divergences, slopes)."""
     # Align on latest available timestamps
     p1h = df_1h["close"].iloc[-1]

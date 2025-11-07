@@ -1,24 +1,26 @@
 """Strategy ensemble for signal consolidation."""
-from typing import List, Dict, Any, Literal
+from typing import Any
+
 import pandas as pd
+
 from app.strategies.base import BaseStrategy, SignalType
-from app.strategies.momentum_trend import MomentumTrendStrategy
-from app.strategies.mean_reversion import MeanReversionStrategy
 from app.strategies.breakout import BreakoutStrategy
+from app.strategies.mean_reversion import MeanReversionStrategy
+from app.strategies.momentum_trend import MomentumTrendStrategy
 
 
 class StrategyEnsemble:
     """Combine multiple strategies into consolidated signal."""
 
     def __init__(self):
-        self.strategies: List[BaseStrategy] = [
+        self.strategies: list[BaseStrategy] = [
             MomentumTrendStrategy(),
             MeanReversionStrategy(),
             BreakoutStrategy(),
         ]
         self.strategy_weights = {s.name: 1.0 / len(self.strategies) for s in self.strategies}
 
-    def consolidate_signals(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> Dict[str, Any]:
+    def consolidate_signals(self, df: pd.DataFrame, indicators: dict[str, Any]) -> dict[str, Any]:
         """Consolidate signals from all strategies."""
         signals = []
         total_confidence = 0.0
@@ -36,7 +38,7 @@ class StrategyEnsemble:
                 )
                 weight = self.strategy_weights.get(strategy.name, 0.0)
                 total_confidence += signal_data.get("confidence", 0.0) * weight
-            except Exception as e:
+            except Exception:
                 continue
 
         if not signals:

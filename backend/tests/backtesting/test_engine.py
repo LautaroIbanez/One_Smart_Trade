@@ -23,22 +23,25 @@ def test_backtest_consistency():
     engine = BacktestEngine()
 
     # Mock curation to return minimal data
-    with patch.object(engine.curation, "get_latest_curated") as mock_curated:
-        from datetime import datetime
-        import pandas as pd
+    from datetime import datetime
+    import pandas as pd
 
-        dates = pd.date_range("2020-01-01", periods=100, freq="D")
-        df = pd.DataFrame(
-            {
-                "open_time": dates,
-                "open": [30000] * 100,
-                "high": [31000] * 100,
-                "low": [29000] * 100,
-                "close": [30000 + i * 10 for i in range(100)],
-                "volume": [100] * 100,
-            }
-        )
-        mock_curated.return_value = df
+    dates = pd.date_range("2020-01-01", periods=250, freq="D")
+    df = pd.DataFrame(
+        {
+            "open_time": dates,
+            "open": [30000] * 250,
+            "high": [31000] * 250,
+            "low": [29000] * 250,
+            "close": [30000 + i * 10 for i in range(250)],
+            "volume": [100] * 250,
+        }
+    )
+    
+    with patch("app.backtesting.engine.DataCuration") as mock_curation_class:
+        mock_curation = mock_curation_class.return_value
+        mock_curation.get_historical_curated.return_value = df
+        mock_curation.get_latest_curated.return_value = df
 
         start = datetime(2020, 1, 1)
         end = datetime(2020, 4, 1)

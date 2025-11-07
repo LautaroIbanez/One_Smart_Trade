@@ -56,7 +56,18 @@ cd /opt/one-smart-trade/backend
 poetry run python -m app.scripts.regenerate_signal
 ```
 
-### Paso 3: Si error persiste
+### Paso 3: Si faltan datos, regenerar
+```bash
+# Backfill si es necesario
+poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
+poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
+
+# Curar datos (se hace automáticamente en backfill, pero se puede hacer manualmente)
+poetry run python -m app.scripts.curate --interval 1d
+poetry run python -m app.scripts.curate --interval 1h
+```
+
+### Paso 4: Si error persiste
 - Verificar versión de dependencias: `poetry show`
 - Verificar memoria disponible: `free -h`
 - Verificar logs completos para stack trace

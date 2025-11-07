@@ -25,8 +25,8 @@ export interface Recommendation {
   confidence: number
   current_price: number
   analysis: string
-  indicators: Record<string, any>
-  risk_metrics: Record<string, any>
+  indicators: Record<string, unknown>
+  risk_metrics: Record<string, unknown>
   timestamp: string
   disclaimer: string
 }

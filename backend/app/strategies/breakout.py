@@ -1,6 +1,8 @@
 """Breakout strategy."""
+from typing import Any
+
 import pandas as pd
-from typing import Dict, Any
+
 from app.strategies.base import BaseStrategy, SignalType
 
 
@@ -10,7 +12,7 @@ class BreakoutStrategy(BaseStrategy):
     def __init__(self):
         super().__init__("Breakout")
 
-    def generate_signal(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_signal(self, df: pd.DataFrame, indicators: dict[str, Any]) -> dict[str, Any]:
         """Generate signal based on breakouts."""
         if df.empty or len(df) < 50:
             return {"signal": "HOLD", "confidence": 0.0, "reason": "Insufficient data"}

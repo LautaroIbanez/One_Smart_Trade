@@ -1,14 +1,15 @@
 """Performance service for backtesting results."""
-from typing import Dict, Any
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+from app import __version__
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.metrics import calculate_metrics
 from app.backtesting.report import generate_report
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.db.crud import save_backtest_result, get_latest_backtest_result
-from app import __version__
+from app.db.crud import get_latest_backtest_result, save_backtest_result
 
 
 class PerformanceService:
@@ -19,7 +20,7 @@ class PerformanceService:
         self.reports_dir = Path(settings.DATA_DIR) / "backtest_reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-    async def get_summary(self, use_cache: bool = True) -> Dict[str, Any]:
+    async def get_summary(self, use_cache: bool = True) -> dict[str, Any]:
         """Get performance summary from latest backtest."""
         # Check for cached result in DB
         if use_cache:

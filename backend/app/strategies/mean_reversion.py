@@ -1,6 +1,8 @@
 """Mean-Reversion strategy."""
+from typing import Any
+
 import pandas as pd
-from typing import Dict, Any
+
 from app.strategies.base import BaseStrategy, SignalType
 
 
@@ -10,7 +12,7 @@ class MeanReversionStrategy(BaseStrategy):
     def __init__(self):
         super().__init__("Mean-Reversion")
 
-    def generate_signal(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_signal(self, df: pd.DataFrame, indicators: dict[str, Any]) -> dict[str, Any]:
         """Generate signal based on mean reversion."""
         if df.empty or len(df) < 100:
             return {"signal": "HOLD", "confidence": 0.0, "reason": "Insufficient data"}

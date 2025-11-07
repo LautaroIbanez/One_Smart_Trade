@@ -2,43 +2,60 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from fastapi import APIRouter
+from collections.abc import Callable
 
+from fastapi import APIRouter, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from starlette.middleware.base import BaseHTTPMiddleware
 
 REQUEST_COUNT = Counter(
-    'ost_http_requests_total', 'Total HTTP requests', ['method', 'path', 'status']
+    "ost_http_requests_total", "Total HTTP requests", ["method", "path", "status"]
 )
 REQUEST_LATENCY = Histogram(
-    'ost_http_request_latency_seconds', 'Request latency in seconds', ['method', 'path']
+    "ost_http_request_latency_seconds", "Request latency in seconds", ["method", "path"]
 )
 
 # Scheduler metrics
+INGESTION_SUCCESS = Counter(
+    "ingestion_success_total",
+    "Conteo de ingestiones completadas",
+)
+INGESTION_FAILURE = Counter(
+    "ingestion_failure_total",
+    "Conteo de ingestiones fallidas",
+)
+INGESTION_LATENCY = Histogram(
+    "ingestion_latency_seconds",
+    "Latencia de ingestion en segundos",
+)
+LAST_INGESTION = Gauge(
+    "ingestion_last_timestamp",
+    "Marca de tiempo de la última ingestión exitosa",
+)
+
+# Legacy metrics (kept for backward compatibility)
 INGESTION_DURATION = Histogram(
-    'ost_ingestion_duration_seconds', 'Data ingestion duration', ['timeframe']
+    "ost_ingestion_duration_seconds", "Data ingestion duration", ["timeframe"]
 )
 INGESTION_FAILURES = Counter(
-    'ost_ingestion_failures_total', 'Total ingestion failures', ['timeframe', 'reason']
+    "ost_ingestion_failures_total", "Total ingestion failures", ["timeframe", "reason"]
 )
 SIGNAL_GENERATION_DURATION = Histogram(
-    'ost_signal_generation_duration_seconds', 'Signal generation duration'
+    "ost_signal_generation_duration_seconds", "Signal generation duration"
 )
 SIGNAL_GENERATION_FAILURES = Counter(
-    'ost_signal_generation_failures_total', 'Total signal generation failures', ['reason']
+    "ost_signal_generation_failures_total", "Total signal generation failures", ["reason"]
 )
 
 # Data quality metrics
 LAST_INGESTION_TIME = Gauge(
-    'ost_last_ingestion_timestamp_seconds', 'Last successful ingestion timestamp', ['timeframe']
+    "ost_last_ingestion_timestamp_seconds", "Last successful ingestion timestamp", ["timeframe"]
 )
 LAST_SIGNAL_TIME = Gauge(
-    'ost_last_signal_timestamp_seconds', 'Last successful signal generation timestamp'
+    "ost_last_signal_timestamp_seconds", "Last successful signal generation timestamp"
 )
 DATA_GAPS = Counter(
-    'ost_data_gaps_total', 'Total data gaps detected', ['timeframe']
+    "ost_data_gaps_total", "Total data gaps detected", ["timeframe"]
 )
 
 
@@ -60,20 +77,45 @@ class RequestMetricsMiddleware(BaseHTTPMiddleware):
 metrics_router = APIRouter()
 
 
-@metrics_router.get('/metrics')
+@metrics_router.get("/metrics")
 async def metrics() -> Response:
     """Prometheus metrics endpoint."""
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
-def record_ingestion(timeframe: str, duration: float, success: bool, reason: str = ""):
-    """Record ingestion metrics."""
-    if success:
-        INGESTION_DURATION.labels(timeframe=timeframe).observe(duration)
-        LAST_INGESTION_TIME.labels(timeframe=timeframe).set(time.time())
-    else:
-        INGESTION_FAILURES.labels(timeframe=timeframe, reason=reason).inc()
+def record_ingestion(timeframe: str = "", duration: float = 0.0, success: bool = False, reason: str = "", *, latency_s: float = 0.0, interval: str = ""):
+    """
+    Record ingestion metrics.
+
+    Supports both old signature (timeframe, duration, success, reason) and new signature (success, latency_s, interval).
+    """
+    import time
+
+    # Use new signature if provided, otherwise use old signature
+    if latency_s > 0 or interval:
+        latency = latency_s if latency_s > 0 else duration
+        if success:
+            INGESTION_SUCCESS.inc()
+            LAST_INGESTION.set(time.time())
+        else:
+            INGESTION_FAILURE.inc()
+        INGESTION_LATENCY.observe(latency)
+
+    # Legacy metrics (always record for backward compatibility)
+    if timeframe:
+        if success:
+            INGESTION_DURATION.labels(timeframe=timeframe).observe(duration)
+            LAST_INGESTION_TIME.labels(timeframe=timeframe).set(time.time())
+        else:
+            INGESTION_FAILURES.labels(timeframe=timeframe, reason=reason).inc()
+    elif interval:
+        # Use interval as timeframe for legacy metrics
+        if success:
+            INGESTION_DURATION.labels(timeframe=interval).observe(latency_s if latency_s > 0 else duration)
+            LAST_INGESTION_TIME.labels(timeframe=interval).set(time.time())
+        else:
+            INGESTION_FAILURES.labels(timeframe=interval, reason=reason).inc()
 
 
 def record_signal_generation(duration: float, success: bool, reason: str = ""):

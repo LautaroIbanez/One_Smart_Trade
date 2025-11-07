@@ -6,14 +6,14 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from app.main import job_generate_signal
-from app.core.logging import logger
+from app.core.logging import logger  # noqa: E402
+from app.main import job_generate_signal  # noqa: E402
 
 
 def main():
     """CLI entry point."""
     logger.info("Manually triggering signal generation...")
-    
+
     try:
         asyncio.run(job_generate_signal())
         logger.info("✓ Signal generation completed")

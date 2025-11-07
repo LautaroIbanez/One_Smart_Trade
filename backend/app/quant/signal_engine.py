@@ -1,20 +1,30 @@
 """Signal engine consolidating strategies with SL/TP and confidence."""
 from __future__ import annotations
 
-from typing import Dict, Any
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
 from app.quant import indicators as ind
 from app.quant.factors import cross_timeframe
-from app.quant.strategies import momentum_strategy, mean_reversion_strategy, breakout_strategy, volatility_strategy
+from app.quant.strategies import (
+    breakout_strategy,
+    mean_reversion_strategy,
+    momentum_strategy,
+    volatility_strategy,
+)
 
 
-def _entry_range(df: pd.DataFrame, signal: str, current_price: float) -> Dict[str, float]:
+def _entry_range(df: pd.DataFrame, signal: str, current_price: float) -> dict[str, float]:
     recent = df.tail(100)
     support = float(recent["low"].min())
     resistance = float(recent["high"].max())
-    vwap_val = float(ind.vwap(df).iloc[-1])
+    # Use curated vwap if available, otherwise calculate
+    if "vwap" in df.columns and not df["vwap"].empty:
+        vwap_val = float(df["vwap"].iloc[-1])
+    else:
+        vwap_val = float(ind.vwap(df).iloc[-1])
     if signal == "BUY":
         mn = max(support, current_price * 0.995)
         mx = min(vwap_val * 1.005, current_price * 1.01)
@@ -28,9 +38,23 @@ def _entry_range(df: pd.DataFrame, signal: str, current_price: float) -> Dict[st
     return {"min": round(mn, 2), "max": round(mx, 2), "optimal": round(opt, 2)}
 
 
-def _sl_tp(df: pd.DataFrame, signal: str, entry: float) -> Dict[str, float]:
-    a = ind.atr(df).iloc[-1]
-    vol = ind.realized_volatility(df).iloc[-1]
+def _sl_tp(df: pd.DataFrame, signal: str, entry: float) -> dict[str, float]:
+    # Use curated atr if available, otherwise calculate
+    if "atr_14" in df.columns and not df["atr_14"].empty:
+        a = float(df["atr_14"].iloc[-1])
+    elif "atr" in df.columns and not df["atr"].empty:
+        a = float(df["atr"].iloc[-1])
+    else:
+        a = ind.atr(df).iloc[-1]
+
+    # Use curated volatility if available, otherwise calculate
+    if "volatility_30" in df.columns and not df["volatility_30"].empty:
+        vol = float(df["volatility_30"].iloc[-1])
+    elif "realized_volatility" in df.columns and not df["realized_volatility"].empty:
+        vol = float(df["realized_volatility"].iloc[-1])
+    else:
+        vol = ind.realized_volatility(df).iloc[-1]
+
     mult = 2.0
     if vol > 0.5:
         mult = 2.5
@@ -80,14 +104,14 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
     return float(wins / trials * 100)
 
 
-def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
+def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
     """Generate trading signal from 1h and 1d dataframes."""
     # Validate inputs
     if df_1d is None or df_1d.empty:
         raise ValueError("df_1d is required and cannot be empty")
     if df_1h is None or df_1h.empty:
         df_1h = df_1d  # Fallback to 1d data
-    
+
     # Ensure required columns exist
     required_cols = ["open", "high", "low", "close", "volume"]
     for col in required_cols:
@@ -95,7 +119,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
             raise ValueError(f"Missing required column '{col}' in df_1d")
         if col not in df_1h.columns:
             raise ValueError(f"Missing required column '{col}' in df_1h")
-    
+
     # Calculate indicators
     ind_1d = ind.calculate_all(df_1d)
     ind_1h = ind.calculate_all(df_1h)
@@ -133,7 +157,14 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
     sl_prob = 100.0 - mc_conf  # Simplified: inverse of TP probability
     tp_prob = mc_conf
     expected_dd = abs(entry["optimal"] - levels["stop_loss"])
-    vol = float(ind.realized_volatility(df_1d).iloc[-1]) if not ind.realized_volatility(df_1d).empty else 0.0
+    # Use curated volatility if available, otherwise calculate
+    if "volatility_30" in df_1d.columns and not df_1d["volatility_30"].empty:
+        vol = float(df_1d["volatility_30"].iloc[-1])
+    elif "realized_volatility" in df_1d.columns and not df_1d["realized_volatility"].empty:
+        vol = float(df_1d["realized_volatility"].iloc[-1])
+    else:
+        vol_series = ind.realized_volatility(df_1d)
+        vol = float(vol_series.iloc[-1]) if not vol_series.empty else 0.0
 
     risk_metrics = {
         "risk_reward_ratio": round(rr_ratio, 2),
@@ -168,7 +199,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
                 indicators_dict["volume"] = vol_val
         except (ValueError, IndexError, TypeError):
             pass
-    
+
     payload = {
         "signal": final_signal,
         "entry_range": entry,
@@ -181,7 +212,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> Dict[str, Any]:
         "votes": votes,
         "signals": signals,
     }
-    
+
     return payload
 
 

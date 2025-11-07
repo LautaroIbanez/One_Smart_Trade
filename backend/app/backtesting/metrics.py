@@ -1,12 +1,13 @@
 """Calculate professional backtesting metrics."""
 from __future__ import annotations
 
-from typing import Dict, Any, List
-import pandas as pd
+from typing import Any
+
 import numpy as np
+import pandas as pd
 
 
-def calculate_metrics(backtest_result: Dict[str, Any]) -> Dict[str, float]:
+def calculate_metrics(backtest_result: dict[str, Any]) -> dict[str, float]:
     """Calculate comprehensive backtesting metrics."""
     trades = backtest_result.get("trades", [])
     equity_curve = backtest_result.get("equity_curve", [])
@@ -103,7 +104,7 @@ def calculate_metrics(backtest_result: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
-def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: List[float], window_days: int) -> Dict[str, Any]:
+def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: list[float], window_days: int) -> dict[str, Any]:
     """Calculate rolling metrics over a window."""
     if trades_df.empty or len(equity_curve) < 2:
         return {"avg_return": 0.0, "avg_sharpe": 0.0, "max_dd": 0.0}

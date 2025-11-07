@@ -1,5 +1,6 @@
 """Diagnostics endpoints."""
 from fastapi import APIRouter
+
 from app.services.diagnostics_service import DiagnosticsService
 
 router = APIRouter()

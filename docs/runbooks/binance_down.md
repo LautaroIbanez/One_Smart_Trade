@@ -54,11 +54,11 @@ sudo systemctl start one-smart-trade-backend
 Esperar 5-15 minutos y probar manualmente:
 ```bash
 cd /opt/one-smart-trade/backend
-# Reintentar ingesta de todos los intervalos
-poetry run python -m app.scripts.backfill --interval all --days 1
+# Reintentar ingesta para un intervalo específico
+poetry run python -m app.scripts.backfill --interval 1d --since "2023-01-01"
 
-# O para un intervalo específico
-poetry run python -m app.scripts.backfill --interval 1d --days 1
+# O para otros intervalos
+poetry run python -m app.scripts.backfill --interval 1h --since "2023-01-01"
 ```
 
 ### Paso 3: Si persiste >30 minutos

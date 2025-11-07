@@ -1,13 +1,14 @@
 """Exception handling middleware for consistent error responses."""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
+
 from fastapi import Request, Response, status
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-import traceback
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from app.core.logging import logger
 
 

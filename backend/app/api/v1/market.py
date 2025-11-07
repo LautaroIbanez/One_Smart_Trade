@@ -1,6 +1,8 @@
 """Market data endpoints."""
-from fastapi import APIRouter, HTTPException
 from typing import Literal
+
+from fastapi import APIRouter, HTTPException
+
 from app.services.market_service import MarketService
 
 router = APIRouter()

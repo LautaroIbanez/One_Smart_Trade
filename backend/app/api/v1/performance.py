@@ -1,7 +1,13 @@
 """Performance endpoints."""
 from fastapi import APIRouter, HTTPException
+
+from app.models.performance import (
+    PerformanceMetrics,
+    PerformancePeriod,
+    PerformanceSummaryResponse,
+    RollingMetrics,
+)
 from app.services.performance_service import PerformanceService
-from app.models.performance import PerformanceSummaryResponse, PerformanceMetrics, RollingMetrics, PerformancePeriod
 
 router = APIRouter()
 performance_service = PerformanceService()
@@ -11,13 +17,13 @@ performance_service = PerformanceService()
 async def get_performance_summary():
     """
     Get backtesting performance summary with metrics and disclaimer.
-    
+
     Returns comprehensive metrics including CAGR, Sharpe, Sortino, Max Drawdown,
     Win Rate, Profit Factor, Expectancy, Calmar, and rolling KPIs (monthly/quarterly).
     """
     try:
         result = await performance_service.get_summary()
-        
+
         if result.get("status") == "error":
             return PerformanceSummaryResponse(
                 status="error",
@@ -59,6 +65,7 @@ async def get_performance_summary():
             metrics=metrics,
             period=period,
             report_path=result.get("report_path"),
+            message=None,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

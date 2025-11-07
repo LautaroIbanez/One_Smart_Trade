@@ -1,6 +1,6 @@
 """Diagnostics service."""
-from typing import Dict, Any
-from datetime import datetime
+from typing import Any
+
 from app.core.database import SessionLocal
 from app.db.crud import get_last_run
 
@@ -8,7 +8,7 @@ from app.db.crud import get_last_run
 class DiagnosticsService:
     """Service for system diagnostics."""
 
-    async def get_last_run_info(self) -> Dict[str, Any]:
+    async def get_last_run_info(self) -> dict[str, Any]:
         """Get last run information from database."""
         db = SessionLocal()
         try:

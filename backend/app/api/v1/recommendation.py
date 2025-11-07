@@ -1,9 +1,10 @@
 """Recommendation endpoints."""
-from fastapi import APIRouter, HTTPException
-from datetime import datetime
 from typing import Optional
-from app.services.recommendation_service import RecommendationService
+
+from fastapi import APIRouter, HTTPException
+
 from app.models.recommendation import Recommendation
+from app.services.recommendation_service import RecommendationService
 
 router = APIRouter()
 recommendation_service = RecommendationService()
@@ -13,7 +14,7 @@ recommendation_service = RecommendationService()
 async def get_today_recommendation():
     """
     Get today's trading recommendation.
-    
+
     Returns signal, entry range, SL/TP, confidence, indicators, risk metrics, factors, and analysis.
     """
     try:
@@ -31,7 +32,7 @@ async def get_today_recommendation():
 async def get_recommendation_history(limit: Optional[int] = 10):
     """
     Get recent recommendation history.
-    
+
     Returns list of past recommendations with all fields including analysis.
     """
     try:

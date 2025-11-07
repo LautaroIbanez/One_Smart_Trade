@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
+import '@testing-library/jest-dom/vitest'
 import Dashboard from '../../pages/Dashboard'
 
 const createWrapper = () => {
@@ -16,7 +17,8 @@ const createWrapper = () => {
 describe('Dashboard Integration', () => {
   it('renders header and refresh button', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
-    expect(screen.getByText('One Smart Trade')).toBeInTheDocument()
+    // There are two "One Smart Trade" headings (AppLayout and Dashboard), so use getAllByText
+    expect(screen.getAllByText('One Smart Trade').length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /Refrescar/i })).toBeInTheDocument()
   })
 

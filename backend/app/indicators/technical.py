@@ -1,7 +1,7 @@
 """Technical indicators calculation."""
+from typing import Any
+
 import pandas as pd
-import numpy as np
-from typing import Dict, Any, Optional
 
 
 class TechnicalIndicators:
@@ -18,7 +18,7 @@ class TechnicalIndicators:
         return df[column].rolling(window=period).mean()
 
     @staticmethod
-    def macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, pd.Series]:
+    def macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> dict[str, pd.Series]:
         """Calculate MACD."""
         ema_fast = TechnicalIndicators.ema(df, fast)
         ema_slow = TechnicalIndicators.ema(df, slow)
@@ -45,7 +45,7 @@ class TechnicalIndicators:
         return (rsi - rsi_min) / (rsi_max - rsi_min) * 100
 
     @staticmethod
-    def bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: int = 2, column: str = "close") -> Dict[str, pd.Series]:
+    def bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: int = 2, column: str = "close") -> dict[str, pd.Series]:
         """Calculate Bollinger Bands."""
         sma = TechnicalIndicators.sma(df, period, column)
         std = df[column].rolling(window=period).std()
@@ -54,7 +54,7 @@ class TechnicalIndicators:
         return {"upper": upper, "middle": sma, "lower": lower}
 
     @staticmethod
-    def keltner_channels(df: pd.DataFrame, period: int = 20, atr_multiplier: float = 2.0) -> Dict[str, pd.Series]:
+    def keltner_channels(df: pd.DataFrame, period: int = 20, atr_multiplier: float = 2.0) -> dict[str, pd.Series]:
         """Calculate Keltner Channels."""
         ema = TechnicalIndicators.ema(df, period)
         atr = TechnicalIndicators.atr(df, period)
@@ -93,7 +93,7 @@ class TechnicalIndicators:
         return df[column].diff(period)
 
     @staticmethod
-    def calculate_all(df: pd.DataFrame) -> Dict[str, Any]:
+    def calculate_all(df: pd.DataFrame) -> dict[str, Any]:
         """Calculate all indicators and return as dictionary."""
         indicators = {}
         indicators["ema_9"] = TechnicalIndicators.ema(df, 9)
@@ -121,7 +121,7 @@ class TechnicalIndicators:
         return indicators
 
     @staticmethod
-    def get_latest_values(indicators: Dict[str, pd.Series]) -> Dict[str, float]:
+    def get_latest_values(indicators: dict[str, pd.Series]) -> dict[str, float]:
         """Get latest values from indicator series."""
         return {key: float(series.iloc[-1]) if not series.empty and not pd.isna(series.iloc[-1]) else 0.0 for key, series in indicators.items()}
 
