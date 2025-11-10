@@ -5,6 +5,7 @@ import IndicatorsPanel from '../components/IndicatorsPanel'
 import RiskPanel from '../components/RiskPanel'
 import { PriceLevelsChart } from '../components/PriceLevelsChart'
 import PerformanceSummary from '../components/PerformanceSummary'
+import SignalCompliance from '../features/performance/SignalCompliance'
 import AppLayout from '../components/AppLayout'
 import { useInvalidateAll, useTodayRecommendation, useMarketData } from '../api/hooks'
 import type { MarketPoint } from '@/types'
@@ -92,6 +93,7 @@ function Dashboard() {
                 stopLoss={data.stop_loss_take_profit.stop_loss}
                 takeProfit={data.stop_loss_take_profit.take_profit}
                 entryRange={[data.entry_range.min, data.entry_range.max]}
+                currentPrice={data.current_price}
                 tpProbability={
                   typeof data.risk_metrics?.tp_probability === 'number'
                     ? data.risk_metrics.tp_probability
@@ -111,6 +113,7 @@ function Dashboard() {
           </div>
           <HistoryTable />
           <PerformanceSummary />
+          <SignalCompliance />
         </main>
       </div>
     </AppLayout>

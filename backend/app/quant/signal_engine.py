@@ -18,24 +18,56 @@ from app.quant.strategies import (
 
 def _entry_range(df: pd.DataFrame, signal: str, current_price: float) -> dict[str, float]:
     recent = df.tail(100)
-    support = float(recent["low"].min())
-    resistance = float(recent["high"].max())
+    support_raw = float(recent["low"].min())
+    resistance_raw = float(recent["high"].max())
     # Use curated vwap if available, otherwise calculate
     if "vwap" in df.columns and not df["vwap"].empty:
         vwap_val = float(df["vwap"].iloc[-1])
     else:
         vwap_val = float(ind.vwap(df).iloc[-1])
+
+    band = 0.02  # 2% anchor band around current price
+    support_anchor = float(np.clip(support_raw, current_price * (1 - band), current_price))
+    resistance_anchor = float(np.clip(resistance_raw, current_price, current_price * (1 + band)))
+    vwap_buy_anchor = float(np.clip(vwap_val, current_price * (1 - band / 2), current_price))
+    vwap_sell_anchor = float(np.clip(vwap_val, current_price, current_price * (1 + band / 2)))
+
     if signal == "BUY":
-        mn = max(support, current_price * 0.995)
-        mx = min(vwap_val * 1.005, current_price * 1.01)
+        anchor = max(support_anchor, vwap_buy_anchor)
+        anchor = min(anchor, current_price * (1 - band / 4))
+        lower = max(anchor * 0.995, current_price * (1 - band))
+        upper_candidates = [
+            current_price * 0.999,
+            anchor * 1.01,
+            resistance_anchor,
+        ]
+        upper_candidates = [val for val in upper_candidates if val > lower]
+        upper = min(upper_candidates) if upper_candidates else lower * 1.01
+        upper = min(upper, current_price)
     elif signal == "SELL":
-        mn = max(current_price * 0.99, vwap_val * 0.995)
-        mx = min(resistance, current_price * 1.005)
+        anchor = min(resistance_anchor, vwap_sell_anchor)
+        anchor = max(anchor, current_price * (1 + band / 4))
+        upper = min(anchor * 1.005, current_price * (1 + band))
+        lower_candidates = [
+            current_price * 1.001,
+            anchor * 0.99,
+            support_anchor,
+        ]
+        lower_candidates = [val for val in lower_candidates if val < upper]
+        lower = max(lower_candidates) if lower_candidates else upper * 0.99
+        lower = max(lower, current_price)
     else:
-        mn = current_price * 0.998
-        mx = current_price * 1.002
-    opt = (mn + mx) / 2
-    return {"min": round(mn, 2), "max": round(mx, 2), "optimal": round(opt, 2)}
+        lower = current_price * 0.998
+        upper = current_price * 1.002
+
+    if upper <= lower:
+        midpoint = (lower + upper) / 2 if upper != lower else lower
+        adjust = abs(current_price) * 0.002 or 1.0
+        lower = midpoint - adjust
+        upper = midpoint + adjust
+
+    opt = np.clip((lower + upper) / 2, lower, upper)
+    return {"min": round(lower, 2), "max": round(upper, 2), "optimal": round(opt, 2)}
 
 
 def _sl_tp(df: pd.DataFrame, signal: str, entry: float) -> dict[str, float]:
@@ -160,12 +192,46 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
     price = float(df_1d["close"].iloc[-1])
     entry = _entry_range(df_1d, final_signal, price)
     levels = _sl_tp(df_1d, final_signal, entry["optimal"])
+
+    support_raw = df_1d["support"].iloc[-1] if "support" in df_1d else np.nan
+    resistance_raw = df_1d["resistance"].iloc[-1] if "resistance" in df_1d else np.nan
+    support = float(support_raw) if not pd.isna(support_raw) else entry["min"]
+    resistance = float(resistance_raw) if not pd.isna(resistance_raw) else entry["max"]
+
+    if final_signal == "BUY":
+        levels["stop_loss"] = max(levels["stop_loss"], support * 0.99)
+        min_tp = max(entry["optimal"] + abs(entry["optimal"] - levels["stop_loss"]) * 1.2, resistance * 0.99)
+        if levels["take_profit"] <= min_tp:
+            levels["take_profit"] = min_tp
+    elif final_signal == "SELL":
+        levels["stop_loss"] = min(levels["stop_loss"], resistance * 1.01)
+        max_tp = min(entry["optimal"] - abs(levels["stop_loss"] - entry["optimal"]) * 1.2, support * 1.01)
+        if levels["take_profit"] >= max_tp:
+            levels["take_profit"] = max_tp
+
+    risk = 0.0
+    reward = 0.0
+    if final_signal == "BUY":
+        risk = entry["optimal"] - levels["stop_loss"]
+        reward = levels["take_profit"] - entry["optimal"]
+    elif final_signal == "SELL":
+        risk = levels["stop_loss"] - entry["optimal"]
+        reward = entry["optimal"] - levels["take_profit"]
+
+    if final_signal in {"BUY", "SELL"}:
+        if risk <= 0 or reward <= 0:
+            raise ValueError("Invalid risk geometry: stop-loss or target collapses on entry.")
+
+    rr_ratio = abs(reward / risk) if risk else 0.0
+    if final_signal in {"BUY", "SELL"} and rr_ratio < 1.2:
+        raise ValueError("Risk/reward below institutional floor (1.2x)")
+
     mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"])
 
     # Calculate risk metrics
-    rr_ratio = abs((levels["take_profit"] - entry["optimal"]) / (entry["optimal"] - levels["stop_loss"])) if entry["optimal"] != levels["stop_loss"] else 0.0
     sl_prob = 100.0 - mc_conf  # Simplified: inverse of TP probability
     tp_prob = mc_conf
+
     expected_dd = abs(entry["optimal"] - levels["stop_loss"])
     # Use curated volatility if available, otherwise calculate
     if "volatility_30" in df_1d.columns and not df_1d["volatility_30"].empty:
@@ -182,6 +248,8 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         "tp_probability": round(tp_prob, 1),
         "expected_drawdown": round(expected_dd, 2),
         "volatility": round(vol, 2),
+        "risk": round(risk, 2),
+        "reward": round(reward, 2),
     }
 
     rr_boost = np.clip(risk_metrics["risk_reward_ratio"] / 3.0, 0.7, 1.3) if risk_metrics["risk_reward_ratio"] else 0.7
@@ -232,6 +300,17 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         "risk_metrics": risk_metrics,
         "votes": votes,
         "signals": signals,
+        "signal_breakdown": {
+            "vectors": {label: float(val) for label, val in zip(strat_labels, signal_vectors)},
+            "narrative": [
+                f"{label.replace('_', ' ').title()} {float(val):+.2f}"
+                for label, val in zip(strat_labels, signal_vectors)
+            ],
+            "aggregate_score": aggregate_score,
+            "base_confidence": base_conf,
+            "agreement": agreement,
+            "risk_adjusted_confidence": final_conf,
+        },
     }
 
     return payload

@@ -92,6 +92,16 @@ function RecommendationCard() {
           <h3 id="analysis-heading">Análisis profesional</h3>
           <p className="analysis-text">{data.analysis}</p>
         </section>
+        {Array.isArray(data.signal_breakdown?.narrative) && data.signal_breakdown?.narrative.length > 0 && (
+          <section aria-labelledby="drivers-heading" className="drivers">
+            <h3 id="drivers-heading">Drivers de la señal</h3>
+            <ul>
+              {data.signal_breakdown.narrative.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </section>
+        )}
         {data.disclaimer && (
           <div className="recommendation-disclaimer" role="note" aria-label="Disclaimer legal">
             <strong>⚠️ Aviso Legal:</strong> {data.disclaimer}

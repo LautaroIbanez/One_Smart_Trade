@@ -20,6 +20,11 @@ El proyecto incluye scripts CLI para operaciones manuales comunes:
 - **`python -m app.scripts.regenerate_signal`**: Regenerar señal manualmente
   - Sin parámetros
 
+- **`python -m app.backtesting.run_campaign`**: Ejecutar campañas walk-forward con persistencia de métricas
+  - `--start YYYY-MM-DD --end YYYY-MM-DD`
+  - `--walk-forward-window N` (días)
+  - `--cost-bps X` (comisión base en bps)
+
 **Ejemplo de uso:**
 ```bash
 cd /opt/one-smart-trade/backend
@@ -27,6 +32,36 @@ poetry run python -m app.scripts.backfill --interval 1d --since 2024-01-01
 poetry run python -m app.scripts.check_gaps --interval all --days 7
 poetry run python -m app.scripts.regenerate_signal
 ```
+
+## Recalcular parquet y versionado de datasets
+
+1. **Versionar estado actual**  
+   ```bash
+   cd backend
+   for interval in 15m 30m 1h 4h 1d 1w; do
+       cp data/curated/$interval/latest.parquet data/curated/$interval/$(date +%Y%m%d)_pre-factor-upgrade.parquet
+   done
+   ```
+   Ajusta el sufijo (`pre-factor-upgrade`) según el experimento que compares.
+2. **Regenerar con los nuevos indicadores**  
+   ```bash
+   poetry run python -m app.scripts.curate --interval all
+   ```
+   Usa `--interval <tf>` para recalcular solo un timeframe.
+3. **Versionar resultado post-curación**  
+   ```bash
+   for interval in 15m 30m 1h 4h 1d 1w; do
+       cp data/curated/$interval/latest.parquet data/curated/$interval/$(date +%Y%m%d)_post-factor-upgrade.parquet
+   done
+   ```
+4. **Comparar señales antes/después**  
+   - Point the quant engine scripts (`app.quant`) to the versioned parquet deseado.
+   - Corre `poetry run pytest tests/quant/test_indicators_and_factors.py` para asegurar consistencia.
+
+### Notas operativas
+
+- Si tu entorno no soporta `date`, reemplaza el prefijo por una marca manual (`20250115`).
+- Mantén como mínimo dos versiones recientes para diagnósticos; archiva versiones antiguas en almacenamiento frío.
 
 ## Índice
 

@@ -140,6 +140,42 @@ class DataCuration:
         data["resistance"] = data["high"].rolling(window=20, min_periods=20).max()
         data["volatility_30"] = data["returns"].rolling(window=30, min_periods=30).std() * np.sqrt(30)
 
+        data["realized_vol_7"] = (
+            data["returns"].rolling(window=7, min_periods=7).std() * np.sqrt(365)
+        )
+        data["realized_vol_90"] = (
+            data["returns"].rolling(window=90, min_periods=90).std() * np.sqrt(365)
+        )
+        data["volume_imbalance"] = (
+            data["taker_buy_base"] - (data["volume"] - data["taker_buy_base"])
+        ) / data["volume"].replace({0: np.nan})
+        data["rolling_vwap_anchored"] = (
+            typical_price.rolling(window=55, min_periods=30)
+            .apply(lambda x: np.average(x, weights=data["volume"].loc[x.index]))
+        )
+        data["hl_range_pct"] = (data["high"] - data["low"]) / data["close"]
+        data["buy_volume_ratio"] = data["taker_buy_base"] / data["volume"].replace({0: np.nan})
+
+        bid_price_candidates = ["best_bid_price", "bid_price", "bid"]
+        ask_price_candidates = ["best_ask_price", "ask_price", "ask"]
+        bid_qty_candidates = ["best_bid_qty", "bid_qty", "bid_volume"]
+        ask_qty_candidates = ["best_ask_qty", "ask_qty", "ask_volume"]
+
+        bid_price_series = next((data[c] for c in bid_price_candidates if c in data.columns), data["close"])
+        ask_price_series = next((data[c] for c in ask_price_candidates if c in data.columns), data["close"])
+        bid_qty_series = next((data[c] for c in bid_qty_candidates if c in data.columns), data["taker_buy_base"])
+        ask_qty_series = next(
+            (data[c] for c in ask_qty_candidates if c in data.columns),
+            (data["volume"] - data["taker_buy_base"]),
+        )
+
+        data["mid_price"] = (bid_price_series + ask_price_series) / 2
+        spread_denominator = data["mid_price"].replace({0: np.nan})
+        data["spread_pct"] = (ask_price_series - bid_price_series) / spread_denominator
+        depth_total = (bid_qty_series + ask_qty_series).replace({0: np.nan})
+        data["orderbook_imbalance"] = (bid_qty_series - ask_qty_series) / depth_total
+        data["liquidity_pressure"] = (ask_qty_series / depth_total) - (bid_qty_series / depth_total)
+
         data["atr_multiple_sl"] = data["close"] - 1.5 * data["atr_14"]
         data["atr_multiple_tp"] = data["close"] + 2.5 * data["atr_14"]
         data.dropna(inplace=True)

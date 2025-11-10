@@ -1,0 +1,26 @@
+momentum:
+  confidence_buy: 65.0
+  confidence_sell: 65.0
+  confidence_hold: 30.0
+
+mean_reversion:
+  rsi_buy: 30
+  rsi_sell: 70
+  confidence_buy: 55.0
+  confidence_sell: 55.0
+  confidence_hold: 25.0
+
+breakout:
+  lookback: 20
+  volume_multiple: 1.5
+  confidence_buy: 60.0
+  confidence_sell: 60.0
+  confidence_hold: 20.0
+
+volatility:
+  low_threshold: 0.2
+  high_threshold: 0.5
+  confidence_low: 35.0
+  confidence_high: 50.0
+  confidence_mid: 30.0
+

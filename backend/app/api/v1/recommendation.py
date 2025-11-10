@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.recommendation import RecommendationResponse
+from app.models.recommendation import RecommendationResponse, SignalPerformanceResponse
 from app.services.recommendation_service import RecommendationService
 
 router = APIRouter()
@@ -21,6 +21,8 @@ async def get_today_recommendation():
         data = await recommendation_service.get_today_recommendation()
         if not data:
             raise HTTPException(status_code=404, detail="No recommendation available for today")
+        if data.get("status") == "invalid":
+            raise HTTPException(status_code=422, detail=data.get("reason", "Invalid recommendation"))
         return RecommendationResponse(
             signal=data["signal"],
             entry_range=data["entry_range"],
@@ -31,6 +33,7 @@ async def get_today_recommendation():
             indicators=data["indicators"],
             risk_metrics=data["risk_metrics"],
             factors=data.get("factors", {}),
+            signal_breakdown=data.get("signal_breakdown", {}),
             timestamp=data["timestamp"],
             disclaimer=data["disclaimer"],
         )
@@ -38,6 +41,20 @@ async def get_today_recommendation():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/performance", response_model=SignalPerformanceResponse)
+async def get_signal_performance(lookahead_days: int = 5, limit: int = 90):
+    try:
+        data = await recommendation_service.get_signal_performance(
+            lookahead_days=lookahead_days,
+            limit=limit,
+        )
+        return SignalPerformanceResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/history")

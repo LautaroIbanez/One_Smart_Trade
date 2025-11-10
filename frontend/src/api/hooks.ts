@@ -29,6 +29,19 @@ export const useRecommendationHistory = (limit: number = 10) => {
   })
 }
 
+export const useSignalPerformance = (lookaheadDays: number = 5, limit: number = 90) => {
+  return useQuery({
+    queryKey: ['recommendation', 'performance', lookaheadDays, limit],
+    queryFn: async () => {
+      const { data } = await api.get('/api/v1/recommendation/performance', {
+        params: { lookahead_days: lookaheadDays, limit },
+      })
+      return data
+    },
+    staleTime: 300_000,
+  })
+}
+
 export const useMarketData = (interval: Interval) => {
   return useQuery({
     queryKey: ['market', interval],

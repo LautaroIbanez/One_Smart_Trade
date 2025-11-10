@@ -23,9 +23,12 @@ class RecommendationORM(Base):
     take_profit_pct: Mapped[float] = mapped_column(Float)
     confidence: Mapped[float] = mapped_column(Float)
     current_price: Mapped[float] = mapped_column(Float)
+    market_timestamp: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    spot_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     indicators: Mapped[dict] = mapped_column(JSON, default={})
     risk_metrics: Mapped[dict] = mapped_column(JSON, default={})
     factors: Mapped[dict] = mapped_column(JSON, default={})
+    signal_breakdown: Mapped[dict] = mapped_column(JSON, default={})
     analysis: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

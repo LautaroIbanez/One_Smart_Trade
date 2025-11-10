@@ -12,8 +12,7 @@ import pandas as pd
 from app import __version__
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.metrics import calculate_metrics
-from app.backtesting.report import write_report
-from app.backtesting.schemas import BacktestSummary
+from app.backtesting.report import build_campaign_report
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.crud import get_latest_backtest_result, save_backtest_result
@@ -69,8 +68,7 @@ class PerformanceService:
 
             metrics = calculate_metrics(result)
             charts = self._generate_charts(result)
-            summary = self._build_summary(result, metrics)
-            write_report(summary)
+            build_campaign_report()
 
             # Persist to DB with versioning
             with SessionLocal() as db:
@@ -154,35 +152,3 @@ class PerformanceService:
             charts["win_rate"] = _save_chart(fig, "win_rate.png")
 
         return charts
-
-    def _build_summary(self, backtest_result: dict[str, Any], metrics: dict[str, Any]) -> BacktestSummary:
-        start_dt = pd.to_datetime(backtest_result["start_date"]).to_pydatetime()
-        end_dt = pd.to_datetime(backtest_result["end_date"]).to_pydatetime()
-        trading_days = max((end_dt - start_dt).days, 0)
-        duration_years = trading_days / 365.25 if trading_days else 0.0
-
-        first_price = float(backtest_result.get("first_price", 0.0) or 0.0)
-        last_price = float(backtest_result.get("last_price", 0.0) or 0.0)
-
-        if first_price > 0 and last_price > 0 and duration_years > 0:
-            bh_cagr = (last_price / first_price) ** (1 / duration_years) - 1
-        else:
-            bh_cagr = 0.0
-
-        slippage_bps = int((self.engine.COMMISSION_RATE + self.engine.SLIPPAGE_RATE) * 10000)
-
-        return BacktestSummary(
-            start_date=start_dt,
-            end_date=end_dt,
-            trading_days=trading_days,
-            cagr=(metrics.get("cagr", 0.0) or 0.0) / 100.0,
-            sharpe=metrics.get("sharpe", 0.0) or 0.0,
-            sortino=metrics.get("sortino", 0.0) or 0.0,
-            profit_factor=metrics.get("profit_factor", 0.0) or 0.0,
-            max_drawdown=(metrics.get("max_drawdown", 0.0) or 0.0) / 100.0,
-            bh_cagr=bh_cagr,
-            bh_sharpe=0.0,
-            bh_sortino=0.0,
-            bh_max_drawdown=0.0,
-            slippage_bps=slippage_bps,
-        )

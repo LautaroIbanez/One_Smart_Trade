@@ -33,9 +33,12 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         take_profit_pct=data["stop_loss_take_profit"]["take_profit_pct"],
         confidence=data["confidence"],
         current_price=data["current_price"],
+        market_timestamp=data.get("market_timestamp"),
+        spot_source=data.get("spot_source", "1d"),
         indicators=data.get("indicators", {}),
         factors=data.get("factors", {}),
         risk_metrics=data["risk_metrics"],
+        signal_breakdown=data.get("signal_breakdown", {}),
         analysis=analysis,
     )
     db.add(rec)
