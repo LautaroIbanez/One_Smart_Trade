@@ -156,6 +156,15 @@ async def job_generate_signal() -> None:
         db.close()
 
 
+@scheduler.scheduled_job("cron", minute="*/5", id="auto_close_trades")
+async def job_auto_close_trades() -> None:
+    """Scheduled job to close open trades when TP/SL levels are hit."""
+    from app.services.recommendation_service import RecommendationService
+
+    service = RecommendationService()
+    await service.auto_close_open_trade()
+
+
 @app.on_event("startup")
 async def on_startup():
     # Jobs are already scheduled via decorators

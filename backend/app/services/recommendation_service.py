@@ -7,8 +7,13 @@ import pandas as pd
 from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.data.curation import DataCuration
-from app.db.crud import create_recommendation, get_latest_recommendation
-from app.db.crud import get_recommendation_history as db_history
+from app.db.crud import (
+    close_recommendation,
+    create_recommendation,
+    get_latest_recommendation,
+    get_open_recommendation,
+    get_recommendation_history as db_history,
+)
 from app.quant.signal_engine import generate_signal
 
 
@@ -21,9 +26,36 @@ class RecommendationService:
         self.session = session
         self.curation = DataCuration()
 
+    def _get_open_recommendation(self):
+        if self.session is not None:
+            return get_open_recommendation(self.session)
+        with SessionLocal() as db:
+            try:
+                rec = get_open_recommendation(db)
+                if rec:
+                    db.expunge(rec)
+                return rec
+            finally:
+                db.close()
+
+    def _cache_result(self, rec) -> dict[str, Any]:
+        result = self._from_orm(rec)
+        self._cache = result
+        self._cache_timestamp = rec.created_at
+        return result
+
+    def _reset_cache(self) -> None:
+        self._cache = None
+        self._cache_timestamp = None
+
     async def generate_recommendation(self) -> Optional[dict[str, Any]]:
         """Generate a new recommendation using curated datasets."""
         from app.quant.narrative import build_narrative
+
+        open_rec = self._get_open_recommendation()
+        if open_rec:
+            logger.info("Reusing open recommendation with status=%s for consensus", open_rec.status)
+            return self._from_orm(open_rec)
 
         try:
             latest_daily = self.curation.get_latest_curated("1d")
@@ -76,11 +108,20 @@ class RecommendationService:
                     db.close()
 
         logger.info(f"Generated and saved recommendation: {signal['signal']}")
-        return self._from_orm(rec) if rec else signal
+        return self._cache_result(rec) if rec else signal
 
     async def get_today_recommendation(self) -> Optional[dict[str, Any]]:
         """Get today's recommendation from DB or generate on-demand."""
         today = datetime.utcnow().date()
+
+        open_rec = self._get_open_recommendation()
+        if open_rec:
+            logger.info(
+                "Serving open recommendation from %s with status=%s",
+                open_rec.date,
+                open_rec.status,
+            )
+            return self._cache_result(open_rec)
 
         # Check cache first
         if self._cache and self._cache_timestamp and self._cache_timestamp.date() == today:
@@ -95,10 +136,7 @@ class RecommendationService:
                     rec_date = rec.created_at.date()
                     if rec_date == today:
                         logger.info(f"Found today's recommendation in DB (created at {rec.created_at})")
-                        result = self._from_orm(rec)
-                        self._cache = result
-                        self._cache_timestamp = rec.created_at
-                        return result
+                        return self._cache_result(rec)
                     else:
                         logger.debug(f"Latest recommendation is from {rec_date}, not today")
             finally:
@@ -145,14 +183,12 @@ class RecommendationService:
                 try:
                     rec = create_recommendation(db, recommendation)
                     logger.info(f"Generated and saved recommendation: {recommendation['signal']}")
-                    result = self._from_orm(rec)
+                    result = self._cache_result(rec)
                 finally:
                     db.close()
 
             if result:
-                self._cache = result
-                self._cache_timestamp = datetime.utcnow()
-            return result
+                return result
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
             return {"status": "invalid", "reason": str(exc)}
@@ -335,6 +371,106 @@ class RecommendationService:
             "trades_evaluated": trades_count,
         }
 
+    async def auto_close_open_trade(self) -> None:
+        """Check if the open trade hit TP/SL and close it automatically."""
+        updated_rec = None
+        exit_price = exit_reason = None
+        exit_at = None
+        exit_pct = None
+
+        with SessionLocal() as db:
+            try:
+                rec = get_open_recommendation(db)
+                if rec is None:
+                    return
+                evaluation = self._evaluate_exit_conditions(rec)
+                if evaluation is None:
+                    return
+                exit_price, exit_reason, exit_at, exit_pct = evaluation
+                updated_rec = close_recommendation(
+                    db,
+                    rec,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                    exit_at=exit_at,
+                    exit_pct=exit_pct,
+                )
+                db.expunge(updated_rec)
+            finally:
+                db.close()
+
+        self._reset_cache()
+
+        if updated_rec:
+            logger.info(
+                "Closed recommendation %s (%s) at %.2f due to %s (%.2f%%)",
+                updated_rec.id,
+                updated_rec.signal,
+                exit_price,
+                exit_reason,
+                exit_pct if exit_pct is not None else 0.0,
+            )
+
+    def _evaluate_exit_conditions(self, rec) -> tuple[float, str, datetime, float] | None:
+        """Determine if the open trade has hit TP or SL based on curated data."""
+        if rec.signal not in {"BUY", "SELL"}:
+            return None
+
+        try:
+            df = self.curation.get_latest_curated("1h")
+        except FileNotFoundError:
+            logger.debug("Cannot evaluate exit: 1h curated data missing")
+            return None
+
+        if df is None or df.empty or "open_time" not in df.columns:
+            return None
+
+        opened_at = rec.opened_at or rec.created_at
+        if opened_at is None:
+            return None
+
+        start_ts = pd.Timestamp(opened_at)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize("UTC")
+        else:
+            start_ts = start_ts.tz_convert("UTC")
+
+        df = df[df["open_time"] >= start_ts]
+        if df.empty:
+            return None
+
+        for _, row in df.iterrows():
+            timestamp = row["open_time"]
+            if not isinstance(timestamp, pd.Timestamp):
+                timestamp = pd.Timestamp(timestamp)
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            exit_at = timestamp.to_pydatetime()
+
+            low = float(row["low"])
+            high = float(row["high"])
+
+            if rec.signal == "BUY":
+                if low <= rec.stop_loss:
+                    exit_price = float(rec.stop_loss)
+                    pnl_pct = ((exit_price - rec.entry_optimal) / rec.entry_optimal) * 100
+                    return exit_price, "stop_loss", exit_at, pnl_pct
+                if high >= rec.take_profit:
+                    exit_price = float(rec.take_profit)
+                    pnl_pct = ((exit_price - rec.entry_optimal) / rec.entry_optimal) * 100
+                    return exit_price, "take_profit", exit_at, pnl_pct
+            elif rec.signal == "SELL":
+                if high >= rec.stop_loss:
+                    exit_price = float(rec.stop_loss)
+                    pnl_pct = ((rec.entry_optimal - exit_price) / rec.entry_optimal) * 100
+                    return exit_price, "stop_loss", exit_at, pnl_pct
+                if low <= rec.take_profit:
+                    exit_price = float(rec.take_profit)
+                    pnl_pct = ((rec.entry_optimal - exit_price) / rec.entry_optimal) * 100
+                    return exit_price, "take_profit", exit_at, pnl_pct
+
+        return None
+
     def _from_orm(self, r) -> dict[str, Any]:
         """Convert ORM model to API response dict."""
         return {
@@ -356,6 +492,12 @@ class RecommendationService:
             "factors": r.factors or {},
             "signal_breakdown": r.signal_breakdown or {},
             "timestamp": r.created_at.isoformat(),
+             "status": r.status,
+             "opened_at": r.opened_at.isoformat() if r.opened_at else None,
+             "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+             "exit_reason": r.exit_reason,
+             "exit_price": r.exit_price,
+             "exit_price_pct": r.exit_price_pct,
             "disclaimer": "This is not financial advice. Trading cryptocurrencies involves significant risk.",
         }
 

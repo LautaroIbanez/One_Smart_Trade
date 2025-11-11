@@ -41,6 +41,12 @@ class Recommendation(BaseModel):
     factors: dict = Field(default_factory=dict, description="Cross-timeframe factors (momentum alignment, volatility regime)")
     signal_breakdown: dict = Field(default_factory=dict, description="Strategy contributions and agreement metrics")
     timestamp: str = Field(..., description="ISO timestamp of recommendation")
+    status: str = Field(default="closed", description="Current trade status (open|closed|inactive)")
+    opened_at: str | None = Field(default=None, description="Timestamp when the trade was opened")
+    closed_at: str | None = Field(default=None, description="Timestamp when the trade was closed")
+    exit_reason: str | None = Field(default=None, description="Reason for closing the trade")
+    exit_price: float | None = Field(default=None, description="Exit price when trade closed")
+    exit_price_pct: float | None = Field(default=None, description="Return percentage realised at exit")
     disclaimer: str = Field(
         default="This is not financial advice. Trading cryptocurrencies involves significant risk.",
         description="Legal disclaimer"
@@ -63,6 +69,12 @@ class RecommendationResponse(BaseModel):
     factors: dict = Field(default_factory=dict)
     signal_breakdown: dict = Field(default_factory=dict)
     timestamp: str
+    status: str = Field(default="closed")
+    opened_at: str | None = None
+    closed_at: str | None = None
+    exit_reason: str | None = None
+    exit_price: float | None = None
+    exit_price_pct: float | None = None
     disclaimer: str
 
 

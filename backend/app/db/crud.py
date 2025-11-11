@@ -31,6 +31,7 @@ def _normalise_date_from_market_timestamp(market_timestamp: str | None, fallback
 
 def _apply_payload_to_recommendation(rec: RecommendationORM, data: dict[str, Any]) -> None:
     """Mutate an existing RecommendationORM with the payload fields."""
+    now = datetime.utcnow()
     rec.signal = data["signal"]
     rec.entry_min = data["entry_range"]["min"]
     rec.entry_max = data["entry_range"]["max"]
@@ -48,7 +49,22 @@ def _apply_payload_to_recommendation(rec: RecommendationORM, data: dict[str, Any
     rec.risk_metrics = data["risk_metrics"]
     rec.signal_breakdown = data.get("signal_breakdown", {})
     rec.analysis = data["analysis"]
-    rec.created_at = datetime.utcnow()
+    rec.created_at = now
+
+    if rec.signal in {"BUY", "SELL"}:
+        rec.status = "open"
+        rec.opened_at = rec.opened_at or now
+        rec.closed_at = None
+        rec.exit_reason = None
+        rec.exit_price = None
+        rec.exit_price_pct = None
+    else:
+        rec.status = "inactive"
+        rec.opened_at = None
+        rec.closed_at = None
+        rec.exit_reason = None
+        rec.exit_price = None
+        rec.exit_price_pct = None
 
 
 def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
@@ -60,6 +76,24 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
 
     if not data.get("analysis"):
         data["analysis"] = build_narrative(data)
+
+    open_rec = get_open_recommendation(db)
+    if open_rec and open_rec.closed_at is None:
+        open_rec.confidence = data["confidence"]
+        open_rec.current_price = data["current_price"]
+        open_rec.market_timestamp = data.get("market_timestamp", open_rec.market_timestamp)
+        open_rec.spot_source = data.get("spot_source", open_rec.spot_source)
+        open_rec.indicators = data.get("indicators", open_rec.indicators or {})
+        open_rec.factors = data.get("factors", open_rec.factors or {})
+        open_rec.risk_metrics = data["risk_metrics"]
+        open_rec.signal_breakdown = data.get("signal_breakdown", open_rec.signal_breakdown or {})
+        open_rec.analysis = data["analysis"]
+        open_rec.created_at = now
+        db.add(open_rec)
+        db.commit()
+        db.refresh(open_rec)
+        db.expunge(open_rec)
+        return open_rec
 
     market_timestamp = data.get("market_timestamp")
     date_str = _normalise_date_from_market_timestamp(market_timestamp, now)
@@ -90,6 +124,12 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         "signal_breakdown": data.get("signal_breakdown", {}),
         "analysis": data["analysis"],
         "created_at": now,
+        "status": "open" if data["signal"] in {"BUY", "SELL"} else "inactive",
+        "opened_at": now if data["signal"] in {"BUY", "SELL"} else None,
+        "closed_at": None,
+        "exit_reason": None,
+        "exit_price": None,
+        "exit_price_pct": None,
     }
 
     dialect_name = getattr(getattr(db, "bind", None), "dialect", None)
@@ -113,6 +153,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         )
         if rec is None:
             raise RuntimeError("Failed to persist recommendation snapshot")
+        db.expunge(rec)
         return rec
 
     # Fallback path for non-SQLite databases
@@ -131,6 +172,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
     db.add(rec)
     db.commit()
     db.refresh(rec)
+    db.expunge(rec)
     return rec
 
 
@@ -142,6 +184,36 @@ def get_latest_recommendation(db: Session) -> RecommendationORM | None:
 def get_recommendation_history(db: Session, limit: int = 30) -> list[RecommendationORM]:
     stmt = select(RecommendationORM).order_by(desc(RecommendationORM.created_at)).limit(limit)
     return list(db.execute(stmt).scalars().all())
+
+
+def get_open_recommendation(db: Session) -> RecommendationORM | None:
+    stmt = (
+        select(RecommendationORM)
+        .where(RecommendationORM.status == "open")
+        .order_by(desc(RecommendationORM.opened_at))
+        .limit(1)
+    )
+    return db.execute(stmt).scalars().first()
+
+
+def close_recommendation(
+    db: Session,
+    rec: RecommendationORM,
+    *,
+    exit_price: float,
+    exit_reason: str,
+    exit_at: datetime,
+    exit_pct: float | None = None,
+) -> RecommendationORM:
+    rec.status = "closed"
+    rec.closed_at = exit_at
+    rec.exit_reason = exit_reason
+    rec.exit_price = exit_price
+    rec.exit_price_pct = exit_pct
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    return rec
 
 
 def log_run(db: Session, run_type: str, status: str, message: str = "", details: dict | None = None) -> RunLogORM:

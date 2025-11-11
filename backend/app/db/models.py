@@ -34,6 +34,12 @@ class RecommendationORM(Base):
     signal_breakdown: Mapped[dict] = mapped_column(JSON, default={})
     analysis: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    status: Mapped[str] = mapped_column(String(16), default="closed", index=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class RunLogORM(Base):

@@ -35,6 +35,12 @@ async def get_today_recommendation():
             factors=data.get("factors", {}),
             signal_breakdown=data.get("signal_breakdown", {}),
             timestamp=data["timestamp"],
+            status=data.get("status", "closed"),
+            opened_at=data.get("opened_at"),
+            closed_at=data.get("closed_at"),
+            exit_reason=data.get("exit_reason"),
+            exit_price=data.get("exit_price"),
+            exit_price_pct=data.get("exit_price_pct"),
             disclaimer=data["disclaimer"],
         )
     except HTTPException:
