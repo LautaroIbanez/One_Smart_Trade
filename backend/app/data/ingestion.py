@@ -36,6 +36,9 @@ class DataIngestion:
         if start_ts >= end_ts:
             return []
 
+        start_dt = start_ts.to_pydatetime()
+        end_dt = end_ts.to_pydatetime()
+
         try:
             from app.data.curation import DataCuration
         except ImportError:
@@ -44,22 +47,22 @@ class DataIngestion:
                     "status": "error",
                     "interval": interval,
                     "reason": "DataCuration import failed",
-                    "start": start.isoformat(),
-                    "end": end.isoformat(),
+                    "start": start_dt.isoformat(),
+                    "end": end_dt.isoformat(),
                 }
             ]
 
         curator = DataCuration()
         try:
-            df = curator.get_historical_curated(interval, start_date=start, end_date=end)
+            df = curator.get_historical_curated(interval, start_date=start_dt, end_date=end_dt)
         except FileNotFoundError:
             return [
                 {
                     "status": "missing_data",
                     "interval": interval,
                     "reason": "curated_not_found",
-                    "start": start_ts.isoformat(),
-                    "end": end_ts.isoformat(),
+                    "start": start_dt.isoformat(),
+                    "end": end_dt.isoformat(),
                 }
             ]
 
@@ -69,8 +72,8 @@ class DataIngestion:
                     "status": "missing_data",
                     "interval": interval,
                     "reason": "empty_curated",
-                    "start": start_ts.isoformat(),
-                    "end": end_ts.isoformat(),
+                    "start": start_dt.isoformat(),
+                    "end": end_dt.isoformat(),
                 }
             ]
 
@@ -82,8 +85,8 @@ class DataIngestion:
                     "status": "missing_data",
                     "interval": interval,
                     "reason": "no_rows_in_range",
-                    "start": start_ts.isoformat(),
-                    "end": end_ts.isoformat(),
+                    "start": start_dt.isoformat(),
+                    "end": end_dt.isoformat(),
                 }
             ]
 
@@ -95,7 +98,7 @@ class DataIngestion:
                 {
                     "status": "gap",
                     "interval": interval,
-                    "start": start_ts.isoformat(),
+                    "start": start_dt.isoformat(),
                     "end": (first_timestamp - expected_delta).isoformat(),
                     "missing_candles": int((first_timestamp - start_ts) / expected_delta),
                 }
@@ -125,7 +128,7 @@ class DataIngestion:
                     "status": "gap",
                     "interval": interval,
                     "start": (last_timestamp + expected_delta).isoformat(),
-                    "end": end_ts.isoformat(),
+                    "end": end_dt.isoformat(),
                     "missing_candles": int((end_ts - last_timestamp) / expected_delta),
                 }
             )
