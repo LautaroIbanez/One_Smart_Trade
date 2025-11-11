@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     SCHEDULER_TIMEZONE: str = "UTC"
     RECOMMENDATION_UPDATE_TIME: str = "12:00"
 
+    # Preflight maintenance
+    PRESTART_MAINTENANCE: bool = True
+    PRESTART_LOOKBACK_DAYS: int = 30
+    PRESTART_BACKFILL_CHUNK: int = 900
+    PRESTART_BACKFILL_PAUSE_SECONDS: float = 0.2
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 

@@ -1,5 +1,8 @@
 """FastAPI application entry point."""
 
+import asyncio
+from contextlib import suppress
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +17,7 @@ from app.db.crud import log_run
 from app.middleware.exception_handler import ExceptionHandlerMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.observability.metrics import RequestMetricsMiddleware, metrics_router
+from app.services.preflight import run_preflight
 
 # Initialize logging
 setup_logging()
@@ -61,6 +65,7 @@ Base.metadata.create_all(bind=engine)
 
 
 scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
+_preflight_task: asyncio.Task | None = None
 
 
 @scheduler.scheduled_job("cron", minute="*/15", id="ingest_klines")
@@ -155,9 +160,16 @@ async def job_generate_signal() -> None:
 async def on_startup():
     # Jobs are already scheduled via decorators
     scheduler.start()
+    if settings.PRESTART_MAINTENANCE:
+        global _preflight_task
+        _preflight_task = asyncio.create_task(run_preflight())
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     scheduler.shutdown(wait=False)
+    if _preflight_task is not None and not _preflight_task.done():
+        _preflight_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _preflight_task
 

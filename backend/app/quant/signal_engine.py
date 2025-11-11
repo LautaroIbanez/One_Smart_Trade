@@ -13,6 +13,7 @@ from app.quant.strategies import (
     mean_reversion_strategy,
     momentum_strategy,
     volatility_strategy,
+    PARAMS as STRATEGY_PARAMS,
 )
 
 
@@ -129,7 +130,7 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
     return float(np.clip(adjusted * 100.0, 5.0, 95.0))
 
 
-def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
+def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int | None = None) -> dict[str, Any]:
     """Generate trading signal from 1h and 1d dataframes."""
     # Validate inputs
     if df_1d is None or df_1d.empty:
@@ -150,6 +151,29 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
     ind_1h = ind.calculate_all(df_1h)
     factors = cross_timeframe(df_1h, df_1d, ind_1h, ind_1d)
 
+    aggregate_params = STRATEGY_PARAMS.get("aggregate", {})
+    buy_threshold = float(aggregate_params.get("buy_threshold", 0.2))
+    sell_threshold = float(aggregate_params.get("sell_threshold", -0.2))
+    risk_reward_floor = float(aggregate_params.get("risk_reward_floor", 1.2))
+    base_conf_multiplier = float(aggregate_params.get("base_conf_multiplier", 140.0))
+    default_mc_trials = int(aggregate_params.get("mc_trials", 2000))
+    mc_trials_effective = default_mc_trials if mc_trials is None else mc_trials
+
+    vector_bias_cfg = aggregate_params.get("vector_bias", {})
+    momentum_bias_weight = float(vector_bias_cfg.get("momentum_bias_weight", 0.2))
+    momentum_alignment_bias = float(vector_bias_cfg.get("momentum_alignment", 0.1))
+    breakout_slope_weight = float(vector_bias_cfg.get("breakout_slope_weight", 0.1))
+    vol_mid_bias = float(vector_bias_cfg.get("volatility_mid_bias", 0.05))
+    vol_high_bias = float(vector_bias_cfg.get("volatility_high_bias", 0.1))
+    vol_low_bias = float(vector_bias_cfg.get("volatility_low_bias", -0.05))
+
+    mtf_cfg = aggregate_params.get("multi_timeframe", {})
+    slope_scale = float(mtf_cfg.get("slope_scale", 80.0))
+    intraday_scale = float(mtf_cfg.get("intraday_scale", 6.0))
+    ema21_slope_weight = float(mtf_cfg.get("ema21_slope_weight", 0.2))
+    intraday_momentum_weight = float(mtf_cfg.get("intraday_momentum_weight", 0.15))
+    alignment_shift = float(mtf_cfg.get("alignment_shift", 0.05))
+
     s1 = momentum_strategy(df_1d, ind_1d)
     s2 = mean_reversion_strategy(df_1d, ind_1d)
     s3 = breakout_strategy(df_1d, ind_1d)
@@ -163,26 +187,53 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         strength = strat.get("confidence", 0.0) / 100.0
         quality = 0.7 if "missing" in strat.get("reason", "") else 1.0
         bias = 0.0
+        alignment_flag = 2 * factors.get("momentum_alignment", 0.0) - 1.0
+        if alignment_flag == -1.0:
+            alignment_flag = -1.0
         if label == "momentum":
-            bias = 0.2 * np.tanh(factors.get("mom_1d", 0.0) * 6)
+            bias = momentum_bias_weight * np.tanh(factors.get("mom_1d", 0.0) * 6.0)
+            bias += momentum_alignment_bias * alignment_flag
         elif label == "mean_reversion":
-            bias = -0.15 * factors.get("momentum_alignment", 0.0)
+            bias = -momentum_alignment_bias * alignment_flag
         elif label == "breakout":
-            bias = 0.1 * np.tanh(factors.get("slope_1d", 0.0) * 50)
+            bias = breakout_slope_weight * np.tanh(factors.get("slope_1d", 0.0) * 50.0)
         elif label == "volatility":
             regime = factors.get("vol_regime_1d", 1)
-            bias = 0.1 if regime == 2 else (-0.05 if regime == 0 else 0.0)
+            if regime == 2:
+                bias = vol_high_bias
+            elif regime == 1:
+                bias = vol_mid_bias
+            else:
+                bias = vol_low_bias
         signal_vectors.append(direction * (strength * quality + bias))
 
+    multi_bias = 0.0
+    slope_component = ema21_slope_weight * np.tanh(factors.get("slope_1h", 0.0) * slope_scale)
+    ratio_component = 0.5 * ema21_slope_weight * np.tanh(factors.get("slope_ratio", 0.0) * slope_scale / 10.0)
+    intraday_component = intraday_momentum_weight * np.tanh(factors.get("mom_1h", 0.0) * intraday_scale)
+    alignment_component = alignment_shift * (1.0 if factors.get("momentum_alignment", 0.0) >= 0.5 else -1.0)
+    vol_regime = factors.get("vol_regime_1h", 1)
+    vol_component = 0.0
+    if vol_regime == 2:
+        vol_component = vol_high_bias * 0.5
+    elif vol_regime == 1:
+        vol_component = vol_mid_bias * 0.5
+    else:
+        vol_component = vol_low_bias * 0.5
+    multi_bias = slope_component + ratio_component + intraday_component + alignment_component + vol_component
+    signal_vectors.append(multi_bias)
+    strat_labels.append("multi_timeframe")
+
     aggregate_score = float(np.sum(signal_vectors))
-    if aggregate_score > 0.2:
+    raw_aggregate_score = float(aggregate_score)
+    if aggregate_score > buy_threshold:
         final_signal = "BUY"
-    elif aggregate_score < -0.2:
+    elif aggregate_score < sell_threshold:
         final_signal = "SELL"
     else:
         final_signal = "HOLD"
 
-    base_conf = min(95.0, abs(aggregate_score) * 140.0)
+    base_conf = min(95.0, abs(aggregate_score) * base_conf_multiplier)
     agreement = np.clip(np.mean([abs(s) for s in signal_vectors]) * 100.0, 0.0, 100.0)
 
     votes = {"BUY": 0, "SELL": 0, "HOLD": 0}
@@ -218,19 +269,30 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         risk = levels["stop_loss"] - entry["optimal"]
         reward = entry["optimal"] - levels["take_profit"]
 
+    rr_ratio = abs(reward / risk) if risk else 0.0
+    rr_rejected = False
     if final_signal in {"BUY", "SELL"}:
         if risk <= 0 or reward <= 0:
-            raise ValueError("Invalid risk geometry: stop-loss or target collapses on entry.")
+            rr_rejected = True
+        elif rr_ratio < risk_reward_floor:
+            rr_rejected = True
 
-    rr_ratio = abs(reward / risk) if risk else 0.0
-    if final_signal in {"BUY", "SELL"} and rr_ratio < 1.2:
-        raise ValueError("Risk/reward below institutional floor (1.2x)")
+    if rr_rejected:
+        final_signal = "HOLD"
+        aggregate_score = float(np.clip(aggregate_score, -0.05, 0.05))
+        entry = _entry_range(df_1d, final_signal, price)
+        levels = _sl_tp(df_1d, final_signal, entry["optimal"])
+        risk = 0.0
+        reward = 0.0
 
-    mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"])
+    if final_signal in {"BUY", "SELL"} and mc_trials_effective > 0:
+        mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"], trials=mc_trials_effective)
+    else:
+        mc_conf = base_conf
 
     # Calculate risk metrics
-    sl_prob = 100.0 - mc_conf  # Simplified: inverse of TP probability
-    tp_prob = mc_conf
+    sl_prob = max(0.0, 100.0 - mc_conf)
+    tp_prob = np.clip(mc_conf, 0.0, 100.0)
 
     expected_dd = abs(entry["optimal"] - levels["stop_loss"])
     # Use curated volatility if available, otherwise calculate
@@ -250,10 +312,19 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
         "volatility": round(vol, 2),
         "risk": round(risk, 2),
         "reward": round(reward, 2),
+        "risk_reward_floor": risk_reward_floor,
     }
+    if rr_rejected:
+        risk_metrics["risk_reward_ratio"] = round(rr_ratio, 2)
+        risk_metrics["rejected_reason"] = "risk_reward_floor"
+        risk_metrics["risk"] = 0.0
+        risk_metrics["reward"] = 0.0
 
-    rr_boost = np.clip(risk_metrics["risk_reward_ratio"] / 3.0, 0.7, 1.3) if risk_metrics["risk_reward_ratio"] else 0.7
-    final_conf = float(np.clip((0.5 * base_conf + 0.5 * mc_conf) * rr_boost, 5.0, 97.0))
+    if final_signal in {"BUY", "SELL"}:
+        rr_boost = np.clip(risk_metrics["risk_reward_ratio"] / 3.0, 0.7, 1.3) if risk_metrics["risk_reward_ratio"] else 0.7
+        final_conf = float(np.clip((0.5 * base_conf + 0.5 * mc_conf) * rr_boost, 5.0, 97.0))
+    else:
+        final_conf = float(np.clip(max(base_conf * 0.6, 5.0), 5.0, 60.0))
 
     # Prepare indicators dict (extract last values from Series, handling NaN)
     import math
@@ -307,6 +378,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame) -> dict[str, Any]:
                 for label, val in zip(strat_labels, signal_vectors)
             ],
             "aggregate_score": aggregate_score,
+            "raw_aggregate_score": raw_aggregate_score,
             "base_confidence": base_conf,
             "agreement": agreement,
             "risk_adjusted_confidence": final_conf,

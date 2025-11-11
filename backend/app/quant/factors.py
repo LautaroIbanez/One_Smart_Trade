@@ -54,16 +54,17 @@ def cross_timeframe(df_1h: pd.DataFrame, df_1d: pd.DataFrame, ind_1h: dict[str, 
     p1h = df_1h["close"].iloc[-1]
     p1d = df_1d["close"].iloc[-1]
 
-    mom_1h = (df_1h["close"].iloc[-1] - df_1h["close"].iloc[-10]) / df_1h["close"].iloc[-10]
-    mom_1d = (df_1d["close"].iloc[-1] - df_1d["close"].iloc[-10]) / df_1d["close"].iloc[-10]
+    mom_1h = _safe_momentum(df_1h["close"], horizon=10)
+    mom_1d = _safe_momentum(df_1d["close"], horizon=10)
 
-    align_momentum = float(np.sign(mom_1h) == np.sign(mom_1d))
+    align_momentum = float(np.sign(mom_1h) == np.sign(mom_1d)) if mom_1h != 0 and mom_1d != 0 else 0.0
 
-    slope_1h = float(slope(ind_1h["ema_21"], 20).iloc[-1]) if "ema_21" in ind_1h else 0.0
-    slope_1d = float(slope(ind_1d["ema_21"], 20).iloc[-1]) if "ema_21" in ind_1d else 0.0
+    slope_1h = float(_safe_last(slope(ind_1h["ema_21"], 20))) if "ema_21" in ind_1h else 0.0
+    slope_1d = float(_safe_last(slope(ind_1d["ema_21"], 20))) if "ema_21" in ind_1d else 0.0
+    slope_ratio = slope_1h / slope_1d if slope_1d not in (0.0, np.nan) else 0.0
 
-    rsi_div_1h = float(divergence(df_1h["close"], ind_1h["rsi"], 14).iloc[-1]) if "rsi" in ind_1h else 0.0
-    rsi_div_1d = float(divergence(df_1d["close"], ind_1d["rsi"], 14).iloc[-1]) if "rsi" in ind_1d else 0.0
+    rsi_div_1h = float(_safe_last(divergence(df_1h["close"], ind_1h["rsi"], 14))) if "rsi" in ind_1h else 0.0
+    rsi_div_1d = float(_safe_last(divergence(df_1d["close"], ind_1d["rsi"], 14))) if "rsi" in ind_1d else 0.0
 
     reg_1h = int(regime_volatility(ind_1h["realized_vol"]).iloc[-1]) if "realized_vol" in ind_1h else 1
     reg_1d = int(regime_volatility(ind_1d["realized_vol"]).iloc[-1]) if "realized_vol" in ind_1d else 1
@@ -72,6 +73,7 @@ def cross_timeframe(df_1h: pd.DataFrame, df_1d: pd.DataFrame, ind_1h: dict[str, 
         "momentum_alignment": align_momentum,
         "slope_1h": slope_1h,
         "slope_1d": slope_1d,
+        "slope_ratio": slope_ratio,
         "divergence_1h": rsi_div_1h,
         "divergence_1d": rsi_div_1d,
         "vol_regime_1h": reg_1h,
@@ -79,5 +81,21 @@ def cross_timeframe(df_1h: pd.DataFrame, df_1d: pd.DataFrame, ind_1h: dict[str, 
         "mom_1h": float(mom_1h),
         "mom_1d": float(mom_1d),
     }
+
+
+def _safe_momentum(close: pd.Series, horizon: int) -> float:
+    if close.empty or len(close) <= horizon:
+        return 0.0
+    base = close.iloc[-horizon - 1]
+    if base == 0:
+        return 0.0
+    return float((close.iloc[-1] - base) / base)
+
+
+def _safe_last(series: pd.Series | None) -> float:
+    if series is None or series.empty:
+        return 0.0
+    val = series.iloc[-1]
+    return float(val) if np.isfinite(val) else 0.0
 
 

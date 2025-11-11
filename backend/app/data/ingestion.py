@@ -17,6 +17,121 @@ class DataIngestion:
     def __init__(self, client: BinanceClient | None = None) -> None:
         self.client = client or BinanceClient()
 
+    def check_gaps(self, interval: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Detect missing candles within a timeframe for the given interval."""
+        if interval not in INTERVALS:
+            return [
+                {
+                    "status": "error",
+                    "interval": interval,
+                    "reason": f"Unsupported interval {interval}",
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                }
+            ]
+
+        expected_delta = _interval_to_timedelta(interval)
+        start_ts = _ensure_utc_timestamp(start)
+        end_ts = _ensure_utc_timestamp(end)
+        if start_ts >= end_ts:
+            return []
+
+        try:
+            from app.data.curation import DataCuration
+        except ImportError:
+            return [
+                {
+                    "status": "error",
+                    "interval": interval,
+                    "reason": "DataCuration import failed",
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                }
+            ]
+
+        curator = DataCuration()
+        try:
+            df = curator.get_historical_curated(interval, start_date=start, end_date=end)
+        except FileNotFoundError:
+            return [
+                {
+                    "status": "missing_data",
+                    "interval": interval,
+                    "reason": "curated_not_found",
+                    "start": start_ts.isoformat(),
+                    "end": end_ts.isoformat(),
+                }
+            ]
+
+        if df.empty:
+            return [
+                {
+                    "status": "missing_data",
+                    "interval": interval,
+                    "reason": "empty_curated",
+                    "start": start_ts.isoformat(),
+                    "end": end_ts.isoformat(),
+                }
+            ]
+
+        df = df.sort_values("open_time")
+        df = df[(df["open_time"] >= start_ts) & (df["open_time"] <= end_ts)]
+        if df.empty:
+            return [
+                {
+                    "status": "missing_data",
+                    "interval": interval,
+                    "reason": "no_rows_in_range",
+                    "start": start_ts.isoformat(),
+                    "end": end_ts.isoformat(),
+                }
+            ]
+
+        gaps: list[dict[str, Any]] = []
+
+        first_timestamp = df["open_time"].iloc[0]
+        if first_timestamp - expected_delta > start_ts:
+            gaps.append(
+                {
+                    "status": "gap",
+                    "interval": interval,
+                    "start": start_ts.isoformat(),
+                    "end": (first_timestamp - expected_delta).isoformat(),
+                    "missing_candles": int((first_timestamp - start_ts) / expected_delta),
+                }
+            )
+
+        previous = first_timestamp
+        for current in df["open_time"].iloc[1:]:
+            delta = current - previous
+            if delta > expected_delta:
+                gap_start = previous + expected_delta
+                gap_end = current - expected_delta
+                gaps.append(
+                    {
+                        "status": "gap",
+                        "interval": interval,
+                        "start": gap_start.isoformat(),
+                        "end": gap_end.isoformat(),
+                        "missing_candles": max(int(delta / expected_delta) - 1, 1),
+                    }
+                )
+            previous = current
+
+        last_timestamp = df["open_time"].iloc[-1]
+        if last_timestamp + expected_delta < end_ts:
+            gaps.append(
+                {
+                    "status": "gap",
+                    "interval": interval,
+                    "start": (last_timestamp + expected_delta).isoformat(),
+                    "end": end_ts.isoformat(),
+                    "missing_candles": int((end_ts - last_timestamp) / expected_delta),
+                }
+            )
+
+        return gaps
+
     async def ingest_all_timeframes(self) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for interval in INTERVALS:
@@ -99,3 +214,24 @@ class DataIngestion:
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
         df.drop(columns=["ignore"], inplace=True, errors="ignore")
         return df
+
+
+def _interval_to_timedelta(interval: str) -> pd.Timedelta:
+    mapping = {
+        "15m": pd.Timedelta(minutes=15),
+        "30m": pd.Timedelta(minutes=30),
+        "1h": pd.Timedelta(hours=1),
+        "4h": pd.Timedelta(hours=4),
+        "1d": pd.Timedelta(days=1),
+        "1w": pd.Timedelta(weeks=1),
+    }
+    return mapping[interval]
+
+
+def _ensure_utc_timestamp(value: datetime) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
