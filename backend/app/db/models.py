@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String
+from sqlalchemy import JSON, DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -11,6 +11,9 @@ from app.core.database import Base
 
 class RecommendationORM(Base):
     __tablename__ = "recommendations"
+    __table_args__ = (
+        UniqueConstraint("date", "market_timestamp", name="uq_recommendations_date_market_timestamp"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
     signal: Mapped[str] = mapped_column(String(8))
