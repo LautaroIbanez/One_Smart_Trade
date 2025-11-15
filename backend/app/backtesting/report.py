@@ -1,164 +1,73 @@
-from __future__ import annotations
-
-import json
-from pathlib import Path
-from textwrap import dedent
-from typing import Any
-
-import matplotlib.pyplot as plt
-import pandas as pd
-
-from app.core.database import SessionLocal
-from app.db.models import BacktestResultORM
-
-REPORT_PATH = Path("docs/backtest-report.md")
-ASSETS_DIR = Path("docs/assets")
-
-
-def _load_results() -> list[BacktestResultORM]:
-    with SessionLocal() as db:
-        return db.query(BacktestResultORM).order_by(BacktestResultORM.created_at.asc()).all()
-
-
-def _plot_equity(curve: list[float], title: str, filename: Path) -> None:
-    if not curve:
-        return
-    filename.parent.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(10, 4))
-    plt.plot(curve, color="#2563eb", linewidth=1.4)
-    plt.title(title)
-    plt.xlabel("Observaciones")
-    plt.ylabel("Capital")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150)
-    plt.close()
-
-
-def _plot_scenarios(scenarios: dict[str, Any], title: str, filename: Path) -> None:
-    data = []
-    labels = []
-    for label, payload in scenarios.items():
-        metrics = payload.get("metrics", {})
-        total_return = metrics.get("total_return", 0.0)
-        data.append(total_return)
-        labels.append(label.capitalize())
-    if not data:
-        return
-    filename.parent.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(6, 4))
-    plt.bar(labels, data, color=["#16a34a", "#2563eb", "#dc2626"])
-    plt.title(title)
-    plt.ylabel("Retorno total (%)")
-    plt.grid(axis="y", alpha=0.2)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150)
-    plt.close()
-
-
-def _format_metrics_row(name: str, metrics: dict[str, Any]) -> str:
-    return (
-        f"| {name} | {metrics.get('cagr', 0.0):.2f}% | {metrics.get('sharpe', 0.0):.2f} | "
-        f"{metrics.get('sortino', 0.0):.2f} | {metrics.get('max_drawdown', 0.0):.2f}% | "
-        f"{metrics.get('win_rate', 0.0):.2f}% | {metrics.get('profit_factor', 0.0):.2f} |"
-    )
-
-
-def build_campaign_report() -> None:
-    results = _load_results()
-    if not results:
-        REPORT_PATH.write_text(
-            "# One Smart Trade — Backtest\n\nNo existen resultados almacenados. Ejecuta `python -m app.backtesting.run_campaign` para generarlos.\n",
-            encoding="utf-8",
-        )
-        return
-
-    sections: list[str] = [
-        "# One Smart Trade — Backtest Campaign",
-        "Este informe resume las campañas caminantes ejecutadas y persistidas en la base de datos.",
-    ]
-
-    summary_rows = []
-    for idx, result in enumerate(results, start=1):
-        metrics = result.metrics or {}
-        segment = metrics.get("segment", {})
-        base_result = metrics.get("base_result", {})
-        base_metrics = base_result.get("metrics", {})
-        scenarios = metrics.get("cost_scenarios", {})
-
-        equity_curve = base_result.get("equity_curve", [])
-        equity_chart = ASSETS_DIR / f"campaign_equity_segment_{idx}.png"
-        _plot_equity(
-            equity_curve,
-            title=f"Equity Curve Segment {idx}",
-            filename=equity_chart,
-        )
-
-        scenario_chart = ASSETS_DIR / f"campaign_scenarios_segment_{idx}.png"
-        _plot_scenarios(
-            scenarios,
-            title=f"Retorno total por escenario (Segmento {idx})",
-            filename=scenario_chart,
-        )
-
-        sections.append(
-            dedent(
-                f"""
-                ## Segmento {idx}: {segment.get("start", "N/A")} → {segment.get("end", "N/A")}
-                - Versión: `{result.version}`
-                - Ventana: {segment.get("window_days", 0)} días
-                - Comisión base: {base_result.get("commission", 0.0):.4f}
-                - Deslizamiento base: {base_result.get("slippage", 0.0):.4f}
-
-                ![Equity Segmento {idx}](assets/{equity_chart.name})
-
-                | Escenario | CAGR | Sharpe | Sortino | Max DD | Win Rate | Profit Factor |
-                | --- | --- | --- | --- | --- | --- | --- |
-                {_format_metrics_row("Base", base_metrics)}
-                {_format_metrics_row("Optimista", scenarios.get("optimistic", {}).get("metrics", {}))}
-                {_format_metrics_row("Estresado", scenarios.get("stressed", {}).get("metrics", {}))}
-
-                ![Sensibilidad Segmento {idx}](assets/{scenario_chart.name})
-                """
-            ).strip()
-        )
-
-        summary_rows.append(
-            {
-                "segment": idx,
-                "start": segment.get("start"),
-                "end": segment.get("end"),
-                "cagr": base_metrics.get("cagr", 0.0),
-                "sharpe": base_metrics.get("sharpe", 0.0),
-                "max_drawdown": base_metrics.get("max_drawdown", 0.0),
-            }
-        )
-
-    df = pd.DataFrame(summary_rows)
-    if not df.empty:
-        sections.insert(
-            2,
-            dedent(
-                f"""
-                ## Resumen Ejecutivo
-
-                | Segmento | Inicio | Fin | CAGR (%) | Sharpe | Max DD (%) |
-                | --- | --- | --- | --- | --- | --- |
-                {_render_summary_table(df)}
-                """
-            ).strip(),
-        )
-
-    REPORT_PATH.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
-
-
-def _render_summary_table(df: pd.DataFrame) -> str:
-    rows = []
-    for _, row in df.iterrows():
-        rows.append(
-            f"| {int(row['segment'])} | {row['start']} | {row['end']} | {row['cagr']:.2f} | {row['sharpe']:.2f} | {row['max_drawdown']:.2f} |"
-        )
-    return "\n".join(rows)
-
-
-__all__ = ["build_campaign_report"]
+def _render_operational_section(operational_report: dict[str, Any] | None) -> str:
+    """Render operational flow section with fill rates, tracking error, and stop rebalancing."""
+    if not operational_report:
+        return "## Flujo Operativo\n\n*No operational data available.*\n\n"
+    
+    section = "## Flujo Operativo\n\n"
+    section += "*Ingesta → Preprocesamiento → Simulación → Rebalanceo de Stops → Reportes*\n\n"
+    
+    # Execution metrics
+    execution = operational_report.get("execution", {})
+    if execution:
+        section += "### Ejecución\n\n"
+        section += f"- **Fill Rate**: {execution.get('fill_rate', 0.0):.2%}\n"
+        section += f"- **Cancel Ratio**: {execution.get('cancel_ratio', 0.0):.2%}\n"
+        section += f"- **No-Trade Ratio**: {execution.get('no_trade_ratio', 0.0):.2%}\n"
+        section += f"- **Avg Wait Bars**: {execution.get('avg_wait_bars', 0.0):.2f}\n"
+        section += f"- **Avg Slippage**: {execution.get('avg_slippage_bps', 0.0):.2f} bps\n\n"
+    
+    # Realized slippage
+    realized_slippage = operational_report.get("realized_slippage")
+    if realized_slippage:
+        section += "### Slippage Realizado\n\n"
+        section += f"- **Promedio**: {realized_slippage.get('avg_bps', 0.0):.2f} bps\n"
+        section += f"- **Mediana**: {realized_slippage.get('median_bps', 0.0):.2f} bps\n"
+        section += f"- **P95**: {realized_slippage.get('p95_bps', 0.0):.2f} bps\n"
+        section += f"- **Máximo**: {realized_slippage.get('max_bps', 0.0):.2f} bps\n\n"
+    
+    # Fill ratios
+    fill_ratios = operational_report.get("fill_ratios")
+    if fill_ratios:
+        section += "### Fill Ratios\n\n"
+        section += f"- **Promedio**: {fill_ratios.get('avg', 0.0):.2%}\n"
+        section += f"- **Completos**: {fill_ratios.get('complete_fills', 0)}\n"
+        section += f"- **Parciales**: {fill_ratios.get('partial_fills', 0)}\n"
+        section += f"- **Fallidos**: {fill_ratios.get('failed_fills', 0)}\n\n"
+    
+    # Tracking error
+    tracking_error = operational_report.get("tracking_error")
+    if tracking_error:
+        section += "### Tracking Error vs Teórico\n\n"
+        section += f"- **Correlación**: {tracking_error.get('correlation', 0.0):.4f}\n"
+        section += f"- **Desviación Media**: {tracking_error.get('mean_deviation', 0.0):.4f}\n"
+        section += f"- **Máxima Divergencia**: {tracking_error.get('max_divergence', 0.0):.4f}\n"
+        section += f"- **Tracking Sharpe**: {tracking_error.get('tracking_sharpe', 0.0):.4f}\n\n"
+    
+    # Stop rebalancing
+    stop_rebalancing = operational_report.get("stop_rebalancing", {})
+    if stop_rebalancing:
+        total_rebalances = stop_rebalancing.get("total_rebalances", 0)
+        section += f"### Rebalanceo de Stops\n\n"
+        section += f"- **Total Rebalances**: {total_rebalances}\n"
+        
+        history = stop_rebalancing.get("rebalance_history", [])
+        if history:
+            section += f"\n**Últimos {min(5, len(history))} rebalances:**\n\n"
+            for event in history[:5]:
+                section += f"- **{event.get('timestamp', 'N/A')}** | "
+                section += f"Fill: {event.get('fill_price', 0.0):.2f} | "
+                if event.get("old_stop_loss") != event.get("new_stop_loss"):
+                    section += f"SL: {event.get('old_stop_loss', 0.0):.2f} → {event.get('new_stop_loss', 0.0):.2f} | "
+                if event.get("old_take_profit") != event.get("new_take_profit"):
+                    section += f"TP: {event.get('old_take_profit', 0.0):.2f} → {event.get('new_take_profit', 0.0):.2f} | "
+                section += f"Razón: {event.get('reason', 'N/A')}\n"
+            section += "\n"
+    
+    # Orderbook metrics
+    orderbook_metrics = operational_report.get("orderbook_metrics")
+    if orderbook_metrics:
+        section += "### Métricas de Order Book\n\n"
+        section += f"- **Avg Spread**: {orderbook_metrics.get('avg_spread_bps', 0.0):.2f} bps\n"
+        section += f"- **Avg Imbalance**: {orderbook_metrics.get('avg_imbalance_pct', 0.0):.2f}%\n\n"
+    
+    return section

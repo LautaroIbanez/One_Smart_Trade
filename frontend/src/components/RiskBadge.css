@@ -1,0 +1,107 @@
+.risk-badge {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: rgba(34, 197, 94, 0.05);
+  border-radius: 8px;
+  border-left: 3px solid #22c55e;
+  margin: 0.5rem 0;
+  position: relative;
+}
+
+.risk-badge-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+}
+
+.risk-badge-value {
+  font-weight: 700;
+  color: #22c55e;
+  font-size: 1.1rem;
+}
+
+.risk-badge-value.highlight {
+  color: #22c55e;
+}
+
+.tooltip-trigger {
+  cursor: help;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.6);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+.tooltip-trigger:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.tooltip-trigger:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.95);
+  color: white;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: normal;
+  white-space: normal;
+  width: 300px;
+  max-width: calc(100vw - 2rem);
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.tooltip-trigger:hover::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 0.25rem;
+  border: 6px solid transparent;
+  border-top-color: rgba(0, 0, 0, 0.95);
+  z-index: 1001;
+  pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .risk-badge {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .tooltip-trigger:hover::after {
+    width: calc(100vw - 2rem);
+    left: 0;
+    transform: none;
+    margin-left: 0;
+  }
+
+  .tooltip-trigger:hover::before {
+    left: 1rem;
+    transform: none;
+  }
+}
+
+

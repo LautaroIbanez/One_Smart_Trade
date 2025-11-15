@@ -47,6 +47,12 @@ class Recommendation(BaseModel):
     exit_reason: str | None = Field(default=None, description="Reason for closing the trade")
     exit_price: float | None = Field(default=None, description="Exit price when trade closed")
     exit_price_pct: float | None = Field(default=None, description="Return percentage realised at exit")
+    recommended_risk_fraction: float = Field(
+        default=0.01,
+        ge=0.0,
+        le=1.0,
+        description="Recommended risk fraction of equity (default: 0.01 = 1%)"
+    )
     disclaimer: str = Field(
         default="This is not financial advice. Trading cryptocurrencies involves significant risk.",
         description="Legal disclaimer"
@@ -75,7 +81,17 @@ class RecommendationResponse(BaseModel):
     exit_reason: str | None = None
     exit_price: float | None = None
     exit_price_pct: float | None = None
+    recommended_risk_fraction: float = Field(
+        default=0.01,
+        ge=0.0,
+        le=1.0,
+        description="Recommended risk fraction of equity (default: 0.01 = 1%)"
+    )
     disclaimer: str
+    suggested_sizing: dict | None = Field(
+        None,
+        description="Suggested position sizing information (calculated with default parameters)",
+    )
 
 
 class SignalPerformancePoint(BaseModel):
@@ -84,13 +100,19 @@ class SignalPerformancePoint(BaseModel):
     date: str
     signal: Literal["BUY", "HOLD", "SELL"]
     entry_price: float
+    entry_price_realistic: float | None = None
     stop_loss: float
     take_profit: float
     exit_price: float
+    exit_price_realistic: float | None = None
     level_hit: str
     holding_days: int
     return_pct: float
+    return_pct_realistic: float | None = None
     tracking_error: float
+    deviation_pct: float | None = None
+    entry_slippage_pct: float | None = None
+    exit_slippage_pct: float | None = None
     hit_date: str | None = None
     signal_breakdown: dict = Field(default_factory=dict)
 
@@ -100,8 +122,11 @@ class SignalPerformanceResponse(BaseModel):
 
     status: str
     timeline: list[SignalPerformancePoint]
-    equity_curve: list[float]
+    equity_curve: list[float]  # Legacy: equals equity_theoretical
+    equity_theoretical: list[float] | None = None
+    equity_realistic: list[float] | None = None
     drawdown_curve: list[float]
     win_rate: float
     average_tracking_error: float
     trades_evaluated: int
+    tracking_error_metrics: dict = Field(default_factory=dict)

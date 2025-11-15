@@ -43,4 +43,10 @@ aggregate:
     ema21_slope_weight: 0.22
     intraday_momentum_weight: 0.18
     alignment_shift: 0.08
+  regime_classifier:
+    enabled: false
+    method: "hmm"
+    exponential_factor: 2.0
+    window_size: 252
+    refit_every: 21
 

@@ -1,0 +1,252 @@
+.history-row {
+  cursor: pointer;
+}
+
+.history-row.expanded {
+  background-color: var(--bg-hover);
+}
+
+.signal-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 1rem;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.signal-buy {
+  background-color: var(--accent-success);
+  color: white;
+}
+
+.signal-sell {
+  background-color: var(--accent-danger);
+  color: white;
+}
+
+.signal-hold {
+  background-color: var(--accent-warning);
+  color: white;
+}
+
+.exit-price {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+}
+
+.confidence-bar {
+  position: relative;
+  width: 100%;
+  height: 1.5rem;
+  background-color: var(--bg-tertiary);
+  border-radius: 0.75rem;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.confidence-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-danger) 0%, var(--accent-warning) 50%, var(--accent-success) 100%);
+  transition: width 0.3s ease;
+}
+
+.confidence-text {
+  position: relative;
+  z-index: 1;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0 0.5rem;
+  color: var(--text-primary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.outcome-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 1rem;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.outcome-tp {
+  background-color: var(--accent-success);
+  color: white;
+}
+
+.outcome-sl {
+  background-color: var(--accent-danger);
+  color: white;
+}
+
+.outcome-manual {
+  background-color: var(--accent-warning);
+  color: white;
+}
+
+.outcome-open {
+  background-color: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.return-positive {
+  color: var(--accent-success);
+  font-weight: 600;
+}
+
+.return-negative {
+  color: var(--accent-danger);
+  font-weight: 600;
+}
+
+.return-neutral {
+  color: var(--text-secondary);
+}
+
+.expand-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  transition: transform 0.2s ease;
+}
+
+.expand-button.expanded {
+  transform: rotate(90deg);
+}
+
+.expand-button:hover {
+  color: var(--accent-primary);
+}
+
+.history-row-details {
+  background-color: var(--bg-tertiary);
+}
+
+.history-row-details td {
+  padding: 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.details-content {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.details-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.audit-trail-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  background-color: var(--bg-secondary);
+  color: var(--accent-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.audit-trail-button:hover {
+  background-color: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.details-section h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+}
+
+.details-section p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.metrics-grid,
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.metric-item,
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.metric-label,
+.info-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-value,
+.info-value {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.levels-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.level-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background-color: var(--bg-secondary);
+  border-radius: 0.5rem;
+}
+
+.level-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.level-value {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.level-value.stop-loss {
+  color: var(--accent-danger);
+}
+
+.level-value.take-profit {
+  color: var(--accent-success);
+}
+
+@media (max-width: 768px) {
+  .metrics-grid,
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

@@ -6,8 +6,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.backtesting.execution_metrics import ExecutionMetrics
+from app.backtesting.risk import RuinSimulator, run_risk_simulations
 
-def calculate_metrics(backtest_result: dict[str, Any]) -> dict[str, float]:
+
+def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, float]:
     """Calculate comprehensive backtesting metrics."""
     trades = backtest_result.get("trades", [])
     equity_curve = backtest_result.get("equity_curve", [])
@@ -85,8 +88,36 @@ def calculate_metrics(backtest_result: dict[str, Any]) -> dict[str, float]:
     # Rolling metrics (monthly and quarterly)
     rolling_monthly = _calculate_rolling_metrics(df_trades, equity_curve, window_days=30)
     rolling_quarterly = _calculate_rolling_metrics(df_trades, equity_curve, window_days=90)
+    risk_profile = run_risk_simulations(equity_curve, returns.tolist())
+    longest_streak = _longest_losing_streak(df_trades)
+    
+    # Approximate periodic returns and negatives using fixed windows (no timestamps available here)
+    equity_series = pd.Series(equity_curve)
+    approx_monthly = _approximate_period_returns(equity_series, window=30)
+    approx_quarterly = _approximate_period_returns(equity_series, window=90)
+    monthly_negative_pct = float((approx_monthly < 0).mean()) if not approx_monthly.empty else 0.0
+    
+    # Risk of ruin using RuinSimulator (based on win rate and payoff ratio)
+    ruin_simulator = RuinSimulator()
+    ruin_results = ruin_simulator.estimate_from_trades(
+        df_trades,
+        horizon=250,
+        threshold=0.5,  # -50% of initial capital
+        trials=5000,
+    )
+    risk_of_ruin = ruin_results.get("ruin_probability", 0.0)
+    
+    # Add additional ruin metrics for multiple thresholds
+    win_rate_decimal = ruin_results.get("win_rate", 0.0)
+    payoff_ratio = ruin_results.get("payoff_ratio", 0.0)
+    ruin_multiple_thresholds = ruin_simulator.estimate_with_multiple_thresholds(
+        win_rate=win_rate_decimal,
+        payoff_ratio=payoff_ratio,
+        horizon=250,
+        trials=5000,
+    )
 
-    return {
+    metrics_dict = {
         "cagr": round(cagr, 2),
         "sharpe": round(sharpe, 2),
         "sortino": round(sortino, 2),
@@ -101,7 +132,64 @@ def calculate_metrics(backtest_result: dict[str, Any]) -> dict[str, float]:
         "losing_trades": losing_trades,
         "rolling_monthly": rolling_monthly,
         "rolling_quarterly": rolling_quarterly,
+        "risk_profile": risk_profile or None,
+        "longest_losing_streak": longest_streak,
+        "risk_of_ruin": round(risk_of_ruin, 4),
+        "ruin_simulation": {
+            **ruin_results,
+            "ruin_multiple_thresholds": ruin_multiple_thresholds,
+        },
+        # Periodic approximations for UI and filters
+        "periodic_returns_approx": {
+            "monthly": approx_monthly.round(6).tolist(),
+            "quarterly": approx_quarterly.round(6).tolist(),
+        },
+        "negative_month_prob_approx": round(monthly_negative_pct, 4),
     }
+    
+    # Add tracking error metrics if available
+    tracking_error = backtest_result.get("tracking_error")
+    if tracking_error and isinstance(tracking_error, dict):
+        metrics_dict["tracking_error_metrics"] = {
+            "mean_deviation": tracking_error.get("mean_deviation", 0.0),
+            "max_divergence": tracking_error.get("max_divergence", 0.0),
+            "tracking_sharpe": tracking_error.get("tracking_sharpe", 0.0),
+            "rmse": tracking_error.get("rmse", 0.0),
+            "correlation": tracking_error.get("correlation", 0.0),
+            "max_drawdown_divergence": tracking_error.get("max_drawdown_divergence", 0.0),
+            "cumulative_tracking_error": tracking_error.get("cumulative_tracking_error", 0.0),
+            "p95_divergence": tracking_error.get("p95_divergence", 0.0),
+            "p99_divergence": tracking_error.get("p99_divergence", 0.0),
+        }
+    
+    # Add execution metrics if provided
+    execution_metrics = kwargs.get("execution_metrics")
+    if execution_metrics and isinstance(execution_metrics, ExecutionMetrics):
+        metrics["execution_friction"] = {
+            "total_orders": execution_metrics.total_orders,
+            "filled_orders": execution_metrics.filled_orders,
+            "partially_filled_orders": execution_metrics.partially_filled_orders,
+            "cancelled_orders": execution_metrics.cancelled_orders,
+            "no_trades": execution_metrics.no_trades,
+            "fill_rate": round(execution_metrics.fill_rate, 4),
+            "partial_fill_rate": round(execution_metrics.partial_fill_rate, 4),
+            "cancel_ratio": round(execution_metrics.cancel_ratio, 4),
+            "no_trade_ratio": round(execution_metrics.no_trade_ratio, 4),
+            "total_qty": round(execution_metrics.total_qty, 4),
+            "filled_qty": round(execution_metrics.filled_qty, 4),
+            "cancelled_qty": round(execution_metrics.cancelled_qty, 4),
+            "qty_fill_rate": round(execution_metrics.qty_fill_rate, 4),
+            "avg_wait_bars": round(execution_metrics.avg_wait_bars, 2),
+            "median_wait_bars": round(execution_metrics.median_wait_bars, 2),
+            "p95_wait_bars": round(execution_metrics.p95_wait_bars, 2),
+            "avg_slippage_bps": round(execution_metrics.avg_slippage_bps, 2),
+            "median_slippage_bps": round(execution_metrics.median_slippage_bps, 2),
+            "p95_slippage_bps": round(execution_metrics.p95_slippage_bps, 2),
+            "opportunity_cost": round(execution_metrics.opportunity_cost, 2),
+            "no_trade_events_count": len(execution_metrics.no_trade_events),
+        }
+    
+    return metrics_dict
 
 
 def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: list[float], window_days: int) -> dict[str, Any]:
@@ -132,4 +220,53 @@ def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: list[float
         "avg_sharpe": round(avg_sharpe, 2),
         "max_dd": round(max_dd, 2),
     }
+
+
+def _longest_losing_streak(trades_df: pd.DataFrame) -> int:
+    losses = trades_df["pnl"] < 0
+    if losses.sum() == 0:
+        return 0
+    groups = (losses != losses.shift()).cumsum()
+    streaks = losses.groupby(groups).cumsum()
+    return int(streaks.max())
+
+
+def _approximate_period_returns(equity: pd.Series, *, window: int) -> pd.Series:
+    """
+    Approximate period returns by chunking the equity curve into fixed-size windows
+    and computing geometric compounding per chunk.
+    """
+    if equity.empty or len(equity) < window + 1:
+        return pd.Series(dtype=float)
+    # Convert to returns per step
+    step_returns = equity.pct_change().dropna()
+    # Truncate to full windows
+    length = (len(step_returns) // window) * window
+    if length < window:
+        return pd.Series(dtype=float)
+    reshaped = step_returns.iloc[:length].to_numpy().reshape(-1, window)
+    compounded = (1 + reshaped).prod(axis=1) - 1
+    return pd.Series(compounded)
+
+def _monte_carlo_ruin(
+    return_pct: pd.Series,
+    *,
+    horizon: int = 250,
+    ruin_threshold: float = -0.5,
+    trials: int = 5000,
+) -> float:
+    if return_pct.empty:
+        return 0.0
+    returns = return_pct.dropna().values
+    if len(returns) < 2:
+        return 0.0
+    mean = np.mean(returns)
+    std = np.std(returns, ddof=1)
+    if np.isclose(std, 0.0):
+        return float(returns.mean() < ruin_threshold)
+    rng = np.random.default_rng()
+    shocks = rng.normal(mean, std, size=(trials, horizon))
+    cumulative = np.cumsum(shocks, axis=1)
+    ruin = (cumulative <= ruin_threshold * 100).any(axis=1)
+    return float(ruin.mean())
 

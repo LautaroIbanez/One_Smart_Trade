@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.quant import indicators as ind
 from app.quant.factors import cross_timeframe
+from app.quant.regime import RegimeClassifier
 from app.quant.strategies import (
     breakout_strategy,
     mean_reversion_strategy,
@@ -166,6 +167,11 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
     vol_mid_bias = float(vector_bias_cfg.get("volatility_mid_bias", 0.05))
     vol_high_bias = float(vector_bias_cfg.get("volatility_high_bias", 0.1))
     vol_low_bias = float(vector_bias_cfg.get("volatility_low_bias", -0.05))
+    
+    regime_cfg = aggregate_params.get("regime_classifier", {})
+    use_regime_classifier = regime_cfg.get("enabled", False)
+    regime_method = regime_cfg.get("method", "hmm")
+    regime_exponential_factor = float(regime_cfg.get("exponential_factor", 2.0))
 
     mtf_cfg = aggregate_params.get("multi_timeframe", {})
     slope_scale = float(mtf_cfg.get("slope_scale", 80.0))
@@ -181,6 +187,17 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
     signals = [s1, s2, s3, s4]
 
     strat_labels = ["momentum", "mean_reversion", "breakout", "volatility"]
+    
+    regime_proba = None
+    if use_regime_classifier:
+        try:
+            regime_classifier = RegimeClassifier(method=regime_method, n_regimes=3)
+            regime_proba = regime_classifier.fit_predict_proba(df_1d)
+            if not regime_proba.empty:
+                regime_proba = regime_proba.iloc[-1]
+        except Exception:
+            use_regime_classifier = False
+    
     signal_vectors = []
     for label, strat in zip(strat_labels, signals):
         direction = {"BUY": 1.0, "SELL": -1.0}.get(strat["signal"], 0.0)
@@ -197,14 +214,25 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
             bias = -momentum_alignment_bias * alignment_flag
         elif label == "breakout":
             bias = breakout_slope_weight * np.tanh(factors.get("slope_1d", 0.0) * 50.0)
+            if use_regime_classifier and regime_proba is not None:
+                p_stress = regime_proba.get("stress", 0.0) if isinstance(regime_proba, pd.Series) else 0.0
+                p_high_vol = p_stress
+                adaptive_weight = np.exp(regime_exponential_factor * p_high_vol)
+                bias *= adaptive_weight
         elif label == "volatility":
-            regime = factors.get("vol_regime_1d", 1)
-            if regime == 2:
-                bias = vol_high_bias
-            elif regime == 1:
-                bias = vol_mid_bias
+            if use_regime_classifier and regime_proba is not None:
+                p_calm = regime_proba.get("calm", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+                p_balanced = regime_proba.get("balanced", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+                p_stress = regime_proba.get("stress", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+                bias = p_calm * vol_low_bias + p_balanced * vol_mid_bias + p_stress * vol_high_bias
             else:
-                bias = vol_low_bias
+                regime = factors.get("vol_regime_1d", 1)
+                if regime == 2:
+                    bias = vol_high_bias
+                elif regime == 1:
+                    bias = vol_mid_bias
+                else:
+                    bias = vol_low_bias
         signal_vectors.append(direction * (strength * quality + bias))
 
     multi_bias = 0.0
@@ -212,14 +240,22 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
     ratio_component = 0.5 * ema21_slope_weight * np.tanh(factors.get("slope_ratio", 0.0) * slope_scale / 10.0)
     intraday_component = intraday_momentum_weight * np.tanh(factors.get("mom_1h", 0.0) * intraday_scale)
     alignment_component = alignment_shift * (1.0 if factors.get("momentum_alignment", 0.0) >= 0.5 else -1.0)
-    vol_regime = factors.get("vol_regime_1h", 1)
-    vol_component = 0.0
-    if vol_regime == 2:
-        vol_component = vol_high_bias * 0.5
-    elif vol_regime == 1:
-        vol_component = vol_mid_bias * 0.5
+    
+    if use_regime_classifier and regime_proba is not None:
+        p_calm = regime_proba.get("calm", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+        p_balanced = regime_proba.get("balanced", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+        p_stress = regime_proba.get("stress", 0.33) if isinstance(regime_proba, pd.Series) else 0.33
+        vol_component = p_calm * vol_low_bias * 0.5 + p_balanced * vol_mid_bias * 0.5 + p_stress * vol_high_bias * 0.5
     else:
-        vol_component = vol_low_bias * 0.5
+        vol_regime = factors.get("vol_regime_1h", 1)
+        vol_component = 0.0
+        if vol_regime == 2:
+            vol_component = vol_high_bias * 0.5
+        elif vol_regime == 1:
+            vol_component = vol_mid_bias * 0.5
+        else:
+            vol_component = vol_low_bias * 0.5
+    
     multi_bias = slope_component + ratio_component + intraday_component + alignment_component + vol_component
     signal_vectors.append(multi_bias)
     strat_labels.append("multi_timeframe")

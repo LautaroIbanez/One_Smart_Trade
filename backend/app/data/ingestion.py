@@ -6,7 +6,8 @@ from typing import Any, Iterable
 import pandas as pd
 
 from .binance_client import BinanceClient
-from .storage import RAW_ROOT, write_parquet
+from .storage import RAW_ROOT, ensure_partition_dirs, get_raw_path, write_parquet
+from .universe import AssetSpec
 
 INTERVALS: tuple[str, ...] = ("15m", "30m", "1h", "4h", "1d", "1w")
 
@@ -157,29 +158,71 @@ class DataIngestion:
         end: datetime | None = None,
         *,
         symbol: str = "BTCUSDT",
+        venue: str = "binance",
         limit: int = 1000,
     ) -> dict[str, Any]:
+        """
+        Ingest data for a specific timeframe, optionally partitioned by venue/symbol.
+        
+        If venue is provided, uses partitioned paths {venue}/{symbol}/{interval}.
+        Otherwise, falls back to legacy flat structure for backward compatibility.
+        """
         raw_klines, meta = await self.client.get_klines(symbol, interval, start, end, limit)
         if not raw_klines:
             return {
                 "status": "empty",
                 "interval": interval,
+                "symbol": symbol,
+                "venue": venue,
                 "rows": 0,
                 "meta": meta,
             }
 
         df = self._klines_to_dataframe(raw_klines)
+        df["venue"] = venue
+        df["symbol"] = symbol
+        
         filename = meta["fetched_at"].replace(":", "-")
-        output = RAW_ROOT / interval / f"{filename}.parquet"
-        output.parent.mkdir(parents=True, exist_ok=True)
-        write_parquet(df, output, metadata=meta | {"rows": len(df)})
+        if venue:
+            output = get_raw_path(venue, symbol, interval, filename=f"{filename}.parquet")
+            ensure_partition_dirs(venue, symbol, interval)
+        else:
+            output = RAW_ROOT / interval / f"{filename}.parquet"
+            output.parent.mkdir(parents=True, exist_ok=True)
+        
+        write_parquet(
+            df,
+            output,
+            metadata=meta | {"rows": len(df), "venue": venue, "symbol": symbol},
+        )
         return {
             "status": "success",
             "interval": interval,
+            "symbol": symbol,
+            "venue": venue,
             "rows": len(df),
             "meta": meta,
             "path": str(output),
         }
+
+    async def ingest_asset(
+        self,
+        asset: AssetSpec,
+        interval: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        *,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Ingest data for a specific asset specification."""
+        return await self.ingest_timeframe(
+            interval,
+            start=start,
+            end=end,
+            symbol=asset.symbol,
+            venue=asset.venue,
+            limit=limit,
+        )
 
     def _klines_to_dataframe(self, klines: Iterable[Iterable[Any]]) -> pd.DataFrame:
         columns = [

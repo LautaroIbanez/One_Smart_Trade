@@ -1,11 +1,15 @@
 import { useState, useMemo } from 'react'
 import RecommendationCard from '../components/RecommendationCard'
-import HistoryTable from '../components/HistoryTable'
+import HistoryExplorer from '../components/HistoryExplorer'
 import IndicatorsPanel from '../components/IndicatorsPanel'
 import RiskPanel from '../components/RiskPanel'
 import { PriceLevelsChart } from '../components/PriceLevelsChart'
 import PerformanceSummary from '../components/PerformanceSummary'
 import SignalCompliance from '../features/performance/SignalCompliance'
+import MonthlyPerformance from '../features/performance/MonthlyPerformance'
+import ObservabilityDashboard from '../components/ObservabilityDashboard'
+import LivelihoodDashboard from '../components/LivelihoodDashboard'
+import UserRiskPanel from '../components/UserRiskPanel'
 import AppLayout from '../components/AppLayout'
 import { useInvalidateAll, useTodayRecommendation, useMarketData } from '../api/hooks'
 import type { MarketPoint } from '@/types'
@@ -111,9 +115,17 @@ function Dashboard() {
             <IndicatorsPanel />
             <RiskPanel risk={data?.risk_metrics} />
           </div>
-          <HistoryTable />
+          <HistoryExplorer defaultPageSize={25} />
+          <UserRiskPanel />
           <PerformanceSummary />
           <SignalCompliance />
+          <MonthlyPerformance />
+          <LivelihoodDashboard enabled={(() => {
+            const envFlag = (import.meta as any).env?.VITE_LIVELIHOOD_BETA === 'true'
+            const lsFlag = localStorage.getItem('enableLivelihoodBeta') === 'true'
+            return envFlag || lsFlag
+          })()} />
+          <ObservabilityDashboard isPrivate={false} />
         </main>
       </div>
     </AppLayout>

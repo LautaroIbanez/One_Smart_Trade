@@ -64,6 +64,13 @@ Ver `docs/INSTALLATION.md` para instrucciones completas de despliegue.
 - [Backtest Report](docs/backtest-report.md)
 - [Runbooks](docs/runbooks/)
 
+## Objetivo Cuantitativo y Gobernanza
+
+- **Objetivo cuantitativo:** Maximizar el ratio Calmar manteniendo drawdown p95 ≤ 15% y preservando capital por encima del 50%.
+- **Metodología de validación:** Pipeline walk-forward con etapas de entrenamiento, validación, walk y out-of-sample, más simulaciones Monte Carlo para stress de rachas y drawdowns.
+- **Reglas de promoción:** El candidato challenger reemplaza al champion cuando mejora el score objetivo en ≥5% y cumple los límites de drawdown y riesgo simulados.
+- **Métricas de riesgo:** Reportamos drawdowns simulados (mediana/p95/p99), probabilidad de ruina y distribución de rachas perdedoras para contextualizar resiliencia operativa.
+
 ## Datasets Curados
 
 - Regenera los parquet tras cambios de indicadores ejecutando `cd backend && poetry run python -m app.scripts.curate --interval all`. Si necesitas un intervalo específico, cambia `--interval`.

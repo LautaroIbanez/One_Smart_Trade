@@ -1,0 +1,70 @@
+.onboarding-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.onboarding-modal {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  width: min(640px, 92vw);
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.onboarding-modal h2 {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.modal-intro {
+  margin: 0 0 10px 0;
+  color: var(--text-secondary);
+}
+
+.modal-list {
+  margin: 0 0 12px 18px;
+}
+
+.modal-list li {
+  margin: 6px 0;
+}
+
+.modal-link {
+  margin: 0 0 12px 0;
+}
+
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 14px 0;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: var(--accent-primary);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+

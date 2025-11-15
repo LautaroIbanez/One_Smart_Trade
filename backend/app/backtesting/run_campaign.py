@@ -102,10 +102,26 @@ def _run_segment(
             "trades": result.get("trades", []),
             "equity_curve": result.get("equity_curve", []),
             "metrics": metrics,
+            "gap_events": result.get("gap_events", []),
+            "integrity": _integrity_snapshot(result.get("trades", [])),
         },
         "cost_scenarios": scenarios,
     }
     return payload
+
+
+def _integrity_snapshot(trades: list[dict[str, Any]]) -> dict[str, float]:
+    if not trades:
+        return {}
+    total = len(trades)
+    partials = sum(1 for trade in trades if trade.get("fill_ratio") is not None and trade.get("fill_ratio", 1.0) < 0.999)
+    entry_slippage = [float(trade.get("avg_entry_slippage_bps", 0.0)) for trade in trades if trade.get("avg_entry_slippage_bps") is not None]
+    exit_slippage = [float(trade.get("exit_slippage_bps", 0.0)) for trade in trades if trade.get("exit_slippage_bps") is not None]
+    return {
+        "partial_fill_rate": partials / total if total else 0.0,
+        "avg_entry_slippage_bps": sum(entry_slippage) / len(entry_slippage) if entry_slippage else 0.0,
+        "avg_exit_slippage_bps": sum(exit_slippage) / len(exit_slippage) if exit_slippage else 0.0,
+    }
 
 
 def main() -> None:
@@ -185,6 +201,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

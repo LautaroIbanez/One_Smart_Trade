@@ -65,11 +65,21 @@ poetry run python -m app.scripts.regenerate_signal
 
 ## Índice
 
+### Incidentes Operacionales
+
 1. [Binance API Down](binance_down.md)
 2. [Datos Incompletos](data_incomplete.md)
 3. [Cálculo de Recomendación Fallido](calc_failure.md)
-4. [Latencia Excesiva](#latencia-excesiva)
-5. [Base de Datos Corrupta](#base-de-datos-corrupta)
+4. [Degradación de Métricas](metrics_degradation.md)
+5. [Latencia Excesiva](#latencia-excesiva)
+6. [Base de Datos Corrupta](#base-de-datos-corrupta)
+
+### Flujos Automáticos
+
+7. [Flujos Automáticos](automated_flows.md)
+   - Ingesta → Clasificación de Régimen
+   - Trigger de Recalibración
+   - Redeploy de Parámetros
 
 ## Binance API Down
 

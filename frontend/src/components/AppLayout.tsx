@@ -1,4 +1,5 @@
 import { ReactNode } from 'react'
+import OnboardingPoliciesModal from './OnboardingPoliciesModal'
 import './AppLayout.css'
 
 type Props = { children: ReactNode }
@@ -6,6 +7,7 @@ type Props = { children: ReactNode }
 export default function AppLayout({ children }: Props) {
   return (
     <div className="app-layout">
+      <OnboardingPoliciesModal />
       <header className="app-header">
         <h1>One Smart Trade</h1>
       </header>

@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { useInvalidateAll, useTodayRecommendation } from '../api/hooks'
+import RiskBadge from './RiskBadge'
+import { ContextualArticles } from './ContextualArticle'
 import './RecommendationCard.css'
+
+const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001'
 
 function RecommendationCard() {
   const [isRetrying, setIsRetrying] = useState(false)
@@ -55,6 +59,112 @@ function RecommendationCard() {
     )
   }
 
+  const formatTimeRemaining = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = seconds % 60
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${secs}s`
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`
+    } else {
+      return `${secs}s`
+    }
+  }
+
+  // Handle cooldown status
+  if (data.status === 'cooldown') {
+    return (
+      <>
+        <div className="recommendation-card cooldown-blocked">
+          <div className="cooldown-blocked-header">
+            <h2>⏸️ Período de Enfriamiento Activo</h2>
+          </div>
+          <div className="cooldown-blocked-content">
+            <p className="cooldown-message">{data.reason || "Operaciones bloqueadas temporalmente"}</p>
+            {data.cooldown_remaining_seconds && (
+              <p className="cooldown-time">
+                Tiempo restante: <strong>{formatTimeRemaining(data.cooldown_remaining_seconds)}</strong>
+              </p>
+            )}
+            {data.cooldown_until && (
+              <p className="cooldown-until">
+                Las operaciones estarán disponibles nuevamente el: {new Date(data.cooldown_until).toLocaleString('es-ES')}
+              </p>
+            )}
+            <p className="cooldown-explanation">
+              Durante este período, se bloquea la generación de nuevas señales para evitar decisiones emocionales tras rachas adversas o sobreoperación.
+            </p>
+          </div>
+        </div>
+        {data.contextual_articles && data.contextual_articles.length > 0 && (
+          <ContextualArticles articles={data.contextual_articles} userId={DEFAULT_USER_ID} />
+        )}
+      </>
+    )
+  }
+
+  // Handle shutdown status
+  if (data.status === 'shutdown') {
+    return (
+      <div className="recommendation-card shutdown-blocked">
+        <div className="shutdown-blocked-header">
+          <h2>🛑 Sistema en Pausa</h2>
+        </div>
+        <div className="shutdown-blocked-content">
+          <p className="shutdown-message">{data.reason || "Operaciones suspendidas"}</p>
+          <p className="shutdown-explanation">
+            El sistema ha detectado condiciones que requieren una revisión manual antes de continuar operando.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle leverage hard stop status
+  if (data.status === 'leverage_hard_stop') {
+    return (
+      <>
+        <div className="recommendation-card leverage-blocked">
+          <div className="leverage-blocked-header">
+            <h2>🛑 Hard Stop: Apalancamiento Excesivo</h2>
+          </div>
+          <div className="leverage-blocked-content">
+            <p className="leverage-message">{data.reason || "Operaciones bloqueadas por apalancamiento excesivo"}</p>
+            {data.effective_leverage !== undefined && (
+              <div className="leverage-details">
+                <p className="leverage-value">
+                  Apalancamiento actual: <strong>{data.effective_leverage.toFixed(2)}×</strong>
+                </p>
+                {data.current_equity !== undefined && (
+                  <p className="leverage-equity">
+                    Equity disponible: ${data.current_equity.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                )}
+                {data.total_notional !== undefined && (
+                  <p className="leverage-notional">
+                    Valor nominal total: ${data.total_notional.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                )}
+              </div>
+            )}
+            {data.hard_stop_since && (
+              <p className="leverage-since">
+                Bloqueo activo desde: {new Date(data.hard_stop_since).toLocaleString('es-ES')}
+              </p>
+            )}
+            <p className="leverage-explanation">
+              Reduzca sus posiciones abiertas para disminuir el apalancamiento efectivo por debajo de 3× antes de continuar operando.
+            </p>
+          </div>
+        </div>
+        {data.contextual_articles && data.contextual_articles.length > 0 && (
+          <ContextualArticles articles={data.contextual_articles} userId={DEFAULT_USER_ID} />
+        )}
+      </>
+    )
+  }
+
   const signalClass = `signal-${data.signal.toLowerCase()}`
 
   return (
@@ -88,6 +198,9 @@ function RecommendationCard() {
           <span className="label">Confianza:</span>
           <span className="value">{data.confidence.toFixed(1)}%</span>
         </div>
+        {data.recommended_risk_fraction !== undefined && (
+          <RiskBadge riskFraction={data.recommended_risk_fraction} />
+        )}
         <section aria-labelledby="analysis-heading" className="analysis">
           <h3 id="analysis-heading">Análisis profesional</h3>
           <p className="analysis-text">{data.analysis}</p>

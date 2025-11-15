@@ -7,29 +7,53 @@ import numpy as np
 import pandas as pd
 
 from .ingestion import INTERVALS
-from .storage import CURATED_ROOT, RAW_ROOT, ensure_dirs, read_parquet, write_parquet
+from .storage import CURATED_ROOT, RAW_ROOT, ensure_dirs, ensure_partition_dirs, get_curated_path, get_raw_path, read_parquet, write_parquet
+from .universe import AssetSpec, MarketUniverseConfig
 
 
 class DataCuration:
     """Produce curated datasets with indicators for the quant engine."""
 
-    def __init__(self) -> None:
+    def __init__(self, universe: MarketUniverseConfig | None = None) -> None:
+        self.universe = universe
         ensure_dirs()
 
-    def curate_interval(self, interval: str, *, lookback_files: int = 60) -> dict[str, Any]:
+    def curate_interval(
+        self,
+        interval: str,
+        *,
+        lookback_files: int = 60,
+        venue: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Curate data for a specific interval, optionally filtered by venue and symbol.
+        
+        If venue/symbol are provided, uses partitioned paths {venue}/{symbol}/{interval}.
+        Otherwise, falls back to legacy flat structure for backward compatibility.
+        """
         if interval not in INTERVALS:
             return {
                 "status": "error",
                 "interval": interval,
                 "error": f"Unsupported interval {interval}",
             }
-        raw_dir = RAW_ROOT / interval
+
+        if venue and symbol:
+            raw_dir = get_raw_path(venue, symbol, interval).parent
+            curated_path = get_curated_path(venue, symbol, interval)
+        else:
+            raw_dir = RAW_ROOT / interval
+            curated_path = CURATED_ROOT / interval / "latest.parquet"
+
         files = sorted(raw_dir.glob("*.parquet"))
         if not files:
             return {
                 "status": "no_data",
                 "interval": interval,
                 "error": "No raw files found",
+                "venue": venue,
+                "symbol": symbol,
             }
 
         selected = files[-lookback_files:]
@@ -40,6 +64,8 @@ class DataCuration:
                 "status": "no_data",
                 "interval": interval,
                 "error": "Raw dataframe empty",
+                "venue": venue,
+                "symbol": symbol,
             }
 
         numeric_columns = [
@@ -67,32 +93,54 @@ class DataCuration:
 
         df = self._add_indicators(df)
         df["interval"] = interval
-        output = CURATED_ROOT / interval / "latest.parquet"
-        output.parent.mkdir(parents=True, exist_ok=True)
+        if venue and symbol:
+            df["venue"] = venue
+            df["symbol"] = symbol
+            ensure_partition_dirs(venue, symbol, interval)
+
+        curated_path.parent.mkdir(parents=True, exist_ok=True)
         write_parquet(
             df,
-            output,
+            curated_path,
             metadata={
                 "interval": interval,
                 "rows": len(df),
                 "generated_at": datetime.utcnow().isoformat(),
+                "venue": venue,
+                "symbol": symbol,
             },
         )
         return {
             "status": "success",
             "interval": interval,
             "rows": len(df),
-            "path": str(output),
+            "path": str(curated_path),
+            "venue": venue,
+            "symbol": symbol,
         }
 
     def curate_timeframe(self, interval: str, *, lookback_files: int = 60) -> dict[str, Any]:
         """Backward-compatible alias used by scripts/tests."""
         return self.curate_interval(interval, lookback_files=lookback_files)
 
-    def get_latest_curated(self, interval: str) -> pd.DataFrame:
-        path = CURATED_ROOT / interval / "latest.parquet"
+    def get_latest_curated(
+        self,
+        interval: str,
+        *,
+        venue: str | None = None,
+        symbol: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        Get latest curated dataset for interval, optionally filtered by venue/symbol.
+        
+        Falls back to legacy flat structure if venue/symbol not provided.
+        """
+        if venue and symbol:
+            path = get_curated_path(venue, symbol, interval)
+        else:
+            path = CURATED_ROOT / interval / "latest.parquet"
         if not path.exists():
-            raise FileNotFoundError(f"Curated dataset not found for {interval}")
+            raise FileNotFoundError(f"Curated dataset not found for {interval} (venue={venue}, symbol={symbol})")
         return read_parquet(path)
 
     def get_historical_curated(
@@ -101,8 +149,16 @@ class DataCuration:
         days: int = 365 * 5,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        *,
+        venue: str | None = None,
+        symbol: str | None = None,
     ) -> pd.DataFrame:
-        df = self.get_latest_curated(interval)
+        """
+        Get historical curated data with optional venue/symbol filtering.
+        
+        Falls back to legacy flat structure if venue/symbol not provided.
+        """
+        df = self.get_latest_curated(interval, venue=venue, symbol=symbol)
         cutoff = df["open_time"].max() - timedelta(days=days)
         filtered = df[df["open_time"] >= cutoff].copy()
         if start_date is not None:
@@ -110,6 +166,43 @@ class DataCuration:
         if end_date is not None:
             filtered = filtered[filtered["open_time"] <= end_date]
         return filtered.reset_index(drop=True)
+
+    def curate_asset(
+        self,
+        asset: AssetSpec,
+        interval: str,
+        *,
+        lookback_files: int = 60,
+    ) -> dict[str, Any]:
+        """Curate data for a specific asset specification."""
+        return self.curate_interval(
+            interval,
+            lookback_files=lookback_files,
+            venue=asset.venue,
+            symbol=asset.symbol,
+        )
+
+    def curate_universe(
+        self,
+        interval: str,
+        *,
+        lookback_files: int = 60,
+        universe: MarketUniverseConfig | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Curate data for all assets in the universe.
+        
+        Returns a nested dict: {asset.symbol: {status, ...}}
+        """
+        config = universe or self.universe
+        if config is None:
+            raise ValueError("Universe configuration required for curate_universe")
+        
+        results: dict[str, dict[str, Any]] = {}
+        for asset in config.assets:
+            result = self.curate_asset(asset, interval, lookback_files=lookback_files)
+            results[asset.symbol] = result
+        return results
 
     def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         data = df.copy()

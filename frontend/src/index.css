@@ -9,6 +9,7 @@
   --accent-warning: #f59e0b;
   --accent-danger: #ef4444;
   --border-color: #333333;
+  --bg-hover: rgba(59, 130, 246, 0.1);
 }
 
 /* Accessibility: Ensure sufficient contrast */

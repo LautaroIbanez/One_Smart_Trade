@@ -104,6 +104,28 @@ Binance API → Data Ingestion → Raw Storage (Parquet)
                             API Exposure
 ```
 
+## Gobernanza Cuantitativa
+
+### Objetivo cuantitativo
+
+- Maximizar el ratio Calmar manteniendo el drawdown p95 ≤ 15% y evitando que el capital simulado caiga por debajo del 50%.
+
+### Metodología de validación
+
+- Pipeline walk-forward con etapas de entrenamiento, validación, segmentos caminantes y evaluación out-of-sample.
+- Simulaciones Monte Carlo de trayectorias de equity y bootstrap de retornos para proyectar drawdowns extremos y rachas perdedoras.
+
+### Reglas champion/challenger
+
+- Un challenger reemplaza al champion cuando incrementa el score objetivo ≥ 5% sin violar límites de drawdown real ni simulado.
+- Candidatos que incumplen umbrales de riesgo se marcan como `invalid` y quedan excluidos de la selección.
+
+### Lectura de métricas de riesgo
+
+- **Drawdown simulado (mediana/p95/p99):** Estima retrocesos esperados en escenarios normales y extremos.
+- **Probabilidad de ruina:** Mide la frecuencia con la que el capital cae bajo el umbral operativo (50%).
+- **Rachas perdedoras:** Describe la duración máxima de secuencias negativas y la probabilidad de superar el umbral definido para planes de capital y psicología operativa.
+
 ## Frontend
 
 ### Stack Tecnológico
@@ -198,4 +220,18 @@ El scheduler (APScheduler) ejecuta:
 - Caching con Redis
 - WebSockets para actualizaciones en tiempo real
 - Tests de integración E2E
+
+## Documentación Adicional
+
+- **[Robustez y Adaptabilidad](architecture/robustness.md)**: Arquitectura completa del sistema de robustez
+  - Arquitectura multi-activo
+  - Clasificación probabilística de régimen
+  - Reoptimización y triggers automáticos
+  - Análisis de sensibilidad integral
+  - Monitoreo continuo de performance
+  - Operativa en cambios de régimen
+- **[Runbooks Automáticos](runbooks/automated_flows.md)**: Flujos automáticos del sistema
+  - Ingesta → Clasificación de Régimen
+  - Trigger de Recalibración
+  - Redeploy de Parámetros
 

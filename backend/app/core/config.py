@@ -30,10 +30,37 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # Risk alerts
+    RISK_RUIN_ALERT_THRESHOLD: float = 0.05
+    PRODUCTION_DD_ALERT_BUFFER: float = 0.9
+
     # Data paths
     DATA_DIR: str = "./data"
     RAW_DATA_DIR: str = "./data/raw"
     CURATED_DATA_DIR: str = "./data/curated"
+
+    # User management (for single-user system)
+    DEFAULT_USER_ID: str = "00000000-0000-0000-0000-000000000001"
+
+    # Cooldown limits
+    COOLDOWN_LOSING_STREAK_THRESHOLD: int = 3
+    COOLDOWN_LOSING_STREAK_HOURS: int = 24
+    COOLDOWN_MAX_TRADES_24H: int = 8
+    COOLDOWN_OVERTRADING_HOURS: int = 12
+
+    # Leverage limits
+    LEVERAGE_WARNING_THRESHOLD: float = 2.0
+    LEVERAGE_HARD_STOP_THRESHOLD: float = 3.0
+    LEVERAGE_HARD_STOP_PERSISTENCE_MINUTES: int = 60  # Must persist for 60 minutes to trigger hard stop
+
+    # Livelihood defaults
+    DEFAULT_EXPENSES_TARGET_USD: float = 1200.0
+    MARKET_EXPENSES_OVERRIDES_JSON: str = "{}"  # Optional JSON mapping market->default expenses
+
+    # Compliance and retention
+    WORM_RETENTION_DAYS: int = 365
+    HASH_TTL_DAYS: int = 365
+    EXPORT_ROLES_ALLOWED: str = "admin,analyst,read-only"
 
     class Config:
         env_file = ".env"
