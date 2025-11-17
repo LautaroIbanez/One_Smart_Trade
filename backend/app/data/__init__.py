@@ -1,6 +1,6 @@
 """Data layer utilities for ingestion and curation."""
 from .binance_client import BinanceClient
-from .curation import DataCuration
+from .curation import DataCuration, DataIntegrityError
 from .derivatives import DerivativesDataCollector
 from .ingestion import DataIngestion, INTERVALS
 from .multi_ingestion import MultiVenueIngestion
@@ -22,6 +22,7 @@ __all__ = [
     "BinanceClient",
     "DataIngestion",
     "DataCuration",
+    "DataIntegrityError",
     "INTERVALS",
     "MultiVenueIngestion",
     "DerivativesDataCollector",

@@ -17,3 +17,4 @@ def downgrade() -> None:
     op.drop_column("strategy_champions", "params_version")
 
 
+

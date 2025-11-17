@@ -546,3 +546,4 @@ desired_size = (capital * position_size_pct_dynamic) / entry_price
 Ver `docs/architecture/robustness.md` para configuración completa de variables de entorno y thresholds.
 
 
+

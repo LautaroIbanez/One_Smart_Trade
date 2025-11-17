@@ -24,6 +24,7 @@ from app.core.logging import logger
 from app.db.crud import calculate_production_drawdown
 from app.quant.signal_engine import generate_signal
 from app.services.alert_service import AlertService
+from app.signals.loggers import SignalLogRecord, log_signal_event
 
 
 class RecommendationService:
@@ -43,6 +44,79 @@ class RecommendationService:
         self.shutdown_manager = shutdown_manager or AutoShutdownManager(
             policy=AutoShutdownPolicy()
         )
+
+    def _log_signal_emission(self, rec, signal_payload: dict[str, Any]) -> int | None:
+        """Persist structured signal metadata for calibration."""
+        try:
+            timestamp = signal_payload.get("timestamp")
+            decision_ts = datetime.utcnow()
+            if isinstance(timestamp, str):
+                try:
+                    decision_ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    decision_ts = datetime.utcnow()
+
+            factors = signal_payload.get("factors") or {}
+            signal_breakdown = signal_payload.get("signal_breakdown") or {}
+            votes = signal_payload.get("votes")
+            risk_metrics = signal_payload.get("risk_metrics")
+
+            market_regime = (
+                factors.get("market_regime")
+                or factors.get("regime_label")
+                or factors.get("regime_name")
+            )
+
+            vol_bucket = None
+            for key in ("vol_regime_1d", "vol_regime_4h", "vol_regime_1h"):
+                if key in factors:
+                    idx = factors.get(key)
+                    if isinstance(idx, (int, float)):
+                        bucket_map = {0: "low", 1: "balanced", 2: "high"}
+                        vol_bucket = bucket_map.get(int(idx), f"bucket_{int(idx)}")
+                        break
+
+            horizon_minutes = signal_payload.get("horizon_minutes") or 1440
+            strategy_id = self._resolve_strategy_id(signal_payload)
+
+            metadata = {
+                "signal_breakdown": signal_breakdown,
+                "votes": votes,
+                "risk_metrics": risk_metrics,
+                "entry_range": signal_payload.get("entry_range"),
+                "stop_loss_take_profit": signal_payload.get("stop_loss_take_profit"),
+            }
+
+            record = SignalLogRecord(
+                strategy_id=strategy_id,
+                signal=signal_payload["signal"],
+                confidence_raw=float(signal_payload["confidence"]),
+                decision_timestamp=decision_ts,
+                confidence_calibrated=signal_payload.get("confidence_calibrated"),
+                recommendation_id=rec.id,
+                market_regime=market_regime,
+                vol_bucket=vol_bucket,
+                features_regimen=factors,
+                metadata=metadata,
+                outcome="open",
+                horizon_minutes=horizon_minutes,
+            )
+            log_id = log_signal_event(record, session=self.session)
+            return log_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to log signal emission",
+                extra={"recommendation_id": getattr(rec, "id", None), "error": str(exc)},
+            )
+            return None
+
+    def _resolve_strategy_id(self, signal_payload: dict[str, Any]) -> str:
+        champion_cfg = signal_payload.get("champion_config") or self._champion_cache or {}
+        for key in ("params_id", "params_digest", "objective"):
+            value = champion_cfg.get(key)
+            if value:
+                return str(value)
+        return "ensemble_core"
 
     def _get_open_recommendation(self):
         if self.session is not None:
@@ -331,6 +405,7 @@ class RecommendationService:
             signal["champion_config"] = self._champion_cache
 
         rec = None
+        signal_log_id: int | None = None
 
         # Save recommendation if session is provided
         if self.session:
@@ -344,7 +419,11 @@ class RecommendationService:
                     db.close()
 
         logger.info(f"Generated and saved recommendation: {signal['signal']}")
+        if rec:
+            signal_log_id = self._log_signal_emission(rec, signal)
         result = self._cache_result(rec) if rec else signal
+        if signal_log_id and isinstance(result, dict):
+            result["signal_log_id"] = signal_log_id
         
         # Add shutdown status if applicable
         if self.shutdown_manager:

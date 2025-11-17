@@ -1,129 +1,464 @@
-# Backtest Operacional y Metodología Estadística
+# Backtest Engine - Flujo Completo
 
-## Convención Operacional
+## Visión General
 
-### Orquestación Temporal
+El motor de backtesting (`BacktestEngine`) ejecuta simulaciones históricas de estrategias de trading con modelado realista de ejecución, fricciones y gestión de riesgo. Este documento describe el flujo completo desde la ingesta de datos hasta la generación de reportes.
 
-Todas las campañas utilizan `TimeSplitPipeline` para generar ventanas `train`, `validation`, `test` y walk-forward sin solapamientos. Cada dataset se materializa estrictamente hasta el corte (`open_time ≤ end`) para evitar fugas de información.
+## Arquitectura del Flujo
 
-**Walk-Forward:** Los segmentos se ejecutan secuencialmente, avanzando la ventana temporal sin retroceder. Cada segmento usa datos históricos disponibles hasta su fecha de inicio.
-
-### Convención Intrabar Conservadora
-
-**Regla SL-First:** Las velas se evalúan con política conservadora donde el Stop Loss (SL) tiene prioridad sobre Take Profit (TP). Si en la misma barra se tocan ambos niveles, se registra la salida por stop loss.
-
-**Lógica de Resolución:**
-1. **Gap exits:** Se evalúan primero. Si el `open` de la barra cruza SL o TP (con gap), se ejecuta inmediatamente con penalización.
-2. **Intrabar exits:** Si no hay gap, se evalúa si el rango `high-low` de la barra toca SL o TP.
-   - Para posiciones LONG: si `low ≤ SL` → salida por SL; si `high ≥ TP` → salida por TP (solo si SL no se tocó primero).
-   - Para posiciones SHORT: si `high ≥ SL` → salida por SL; si `low ≤ TP` → salida por TP (solo si SL no se tocó primero).
-
-**Gaps:**
-- Cuando hay gap (apertura fuera del rango esperado), se ejecuta en `open` ajustado por penalización (`gap_penalty = 0.2%`).
-- Los eventos de gap se etiquetan como `SL_GAP` o `TP_GAP` y se registran en `gap_events` para trazabilidad.
-
-### Ejecución Dinámica
-
-**Slippage Modelado:**
-El modelo de ejecución (`ExecutionModel`) infiere slippage según:
-- **Volatilidad reciente:** Usa `ATR`, `realized_vol_7`, `realized_vol_90`, o `volatility_30` (en ese orden de preferencia).
-- **Profundidad estimada:** Basado en order book (`bid_depth`, `ask_depth`) o volumen (`volume * volume_scale`).
-- **Gaps:** Penalización adicional cuando `|gap_open| ≥ gap_threshold (1%)`.
-
-**Fórmula de slippage:**
 ```
-slippage_bps = base_bps (5) + vol_coeff (40) * volatility + depth_term
-depth_term = (notional / depth) * depth_coeff (0.00004)
+┌─────────────────┐
+│  Data Ingestion │  ← Binance API, multi-venue
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Data Curation   │  ← Quality pipeline, reconciliation
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Temporal        │  ← Chronological validation, gap detection
+│ Validation      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Order           │  ← Signal → Orders (Market/Limit/Stop)
+│ Generation      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Execution       │  ← Order book simulation, slippage, fees
+│ Simulation      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Equity Tracking │  ← Theoretical vs Realistic curves
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Returns         │  ← Daily/Weekly/Monthly (date-based)
+│ Calculation     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Reporting       │  ← Metrics, validation, export
+└─────────────────┘
 ```
 
-**Fills Parciales:**
-- Las órdenes pueden rellenarse parcialmente si el tamaño excede la profundidad disponible.
-- El tamaño pendiente se reintenta en barras posteriores hasta completar o cerrar posición.
-- `fill_ratio = filled_size / requested_size` se registra en cada trade.
+## 1. Ingesta de Datos
 
-**Trazabilidad:**
-- Cada trade registra: `avg_entry_slippage_bps`, `exit_slippage_bps`, `fill_ratio`.
-- Los eventos de gap quedan trazados en `gap_events` con timestamp, tipo, y precio de ejecución.
+### Fuentes
+- **Binance API**: Klines (OHLCV), order books, funding rates, open interest
+- **Multi-venue**: Soporte para múltiples exchanges (Binance, Coinbase, Bitstamp, Bybit)
+- **Derivatives**: Funding, OI, liquidaciones
 
-## Metodología Estadística
+### Componentes
+- `DataIngestion`: Pipeline de ingesta con batching y rate limiting
+- `MultiVenueIngestion`: Coordinación multi-venue
+- `DerivativesDataCollector`: Recolección de datos de derivados
+- `OrderBookCollector`: Snapshots de order books
 
-### Objetivo Cuantitativo
+### Validaciones
+- Rate limiting: Ventana configurable (`BINANCE_RATE_LIMIT_*`)
+- Backoff exponencial para errores 429
+- Checksums y auditoría de ventanas faltantes
 
-**Métrica objetivo:** Calmar ratio = CAGR / Max Drawdown
+## 2. Curación de Datos
 
-**Constraints:**
-- Max Drawdown ≤ 15% (hard limit)
-- Si el drawdown excede 15%, el candidato se marca como inválido (`status = "invalid"`).
+### Pipeline de Calidad
 
-**Estrategia de optimización:**
-Maximizar el Calmar ratio respetando el límite de drawdown. En campañas de optimización, solo se retienen candidatos que mejoran el score objetivo en al menos `min_improvement (5%)`.
+1. **Curación Básica**:
+   - Casting numérico
+   - Drop de duplicados
+   - Drop de NaN en OHLC
 
-### Métricas Core
+2. **DataQualityPipeline** (Limpieza Estadística):
+   - Detección de outliers por z-score (retornos > 6σ)
+   - Detección de outliers por MAD (volumen)
+   - Winsorización (0.5% / 99.5%)
+   - Interpolación temporal
 
-**Retorno y riesgo:**
-- **CAGR:** Compounded Annual Growth Rate (anualizado).
-- **Sharpe:** Ratio de Sharpe anualizado (retorno / volatilidad, ajustado por √252).
-- **Sortino:** Similar a Sharpe pero solo usa desviación downside.
-- **Calmar:** CAGR / Max Drawdown (métrica objetivo).
+3. **CrossVenueReconciler** (Reconciliación Multi-venue):
+   - Comparación de precios entre venues
+   - Tolerancia configurable (default: 5 bps)
+   - Flagging de discrepancias
+   - Abort si tasa de discrepancia > umbral (default: 3%)
 
-**Performance operativa:**
-- **Win Rate:** Porcentaje de trades ganadores.
-- **Profit Factor:** Suma de ganancias / Suma de pérdidas.
-- **Expectancy:** Valor esperado por trade (promedio ponderado de wins y losses).
+### Política de Datos
+**Ningún dataset pasa a backtests sin `quality_pass = True`**
 
-### Simulaciones de Riesgo (Monte Carlo)
+- Todos los datasets curados deben tener `quality_applied = True`
+- En modo multi-venue, `reconciler_applied = True` es obligatorio
+- Tasa de discrepancia > 3% aborta la curación automáticamente
 
-**Risk of Ruin:**
-- Se modela usando 5,000 trayectorias bootstrap sobre retornos por trade.
-- Horizonte: 250 trades (aproximadamente 1 año).
-- Threshold de ruina: 50% del capital inicial (`ruin_threshold = -0.5`).
-- Resultado: Probabilidad de alcanzar el threshold durante el horizonte.
+## 3. Validación Temporal
 
-**Longest Losing Streak:**
-- Se calcula directamente del histórico de trades.
-- También se simula vía bootstrap para obtener percentiles (P50, P95, P99).
+### Validación Cronológica Estricta
 
-**Drawdown Paths:**
-- `simulate_drawdown_paths` modela trayectorias de equity usando bootstrap.
-- Proporciona percentiles de worst drawdown: P50, P95, P99.
+El motor valida que los datos estén en orden cronológico:
 
-**Parámetros de simulación:**
 ```python
-trials = 5000
-horizon_trades = 250
-ruin_threshold = -0.5  # 50% capital loss
-streak_threshold = configurable (default: 10 trades)
+if prev_bar_ts is not None and bar_date <= prev_bar_ts:
+    raise BacktestTemporalError(
+        f"Non-chronological data: {prev_bar_ts} >= {bar_date}",
+        details={...}
+    )
 ```
 
-### Controles de Integridad
+### Detección de Gaps
 
-**Semáforos de Slippage Dinámico:**
-- 🟢 **NORMAL:** Promedio < 15 bps, máximo < 30 bps, P95 < 20 bps
-- 🟡 **ATENCIÓN:** Promedio 15-25 bps, máximo 30-50 bps, P95 20-30 bps
-- 🔴 **CRÍTICO:** Promedio > 25 bps, máximo > 50 bps, P95 > 30 bps
+- **Gap Threshold**: `timeframe_duration × gap_threshold_multiplier` (default: 2×)
+- **Gaps Significativos**: > threshold → `logger.warning()`
+- **Gaps Menores**: ≤ threshold → `logger.info()`
 
-**Semáforos de Fills Parciales:**
-- 🟢 **NORMAL:** Tasa < 5%
-- 🟡 **ATENCIÓN:** Tasa 5-15%
-- 🔴 **CRÍTICO:** Tasa > 15%
+### Validación Post-Procesamiento
 
-**Auditoría de Datasets:**
-- Hash SHA256 de datasets curated (1d y 1h) se registra en metadata.
-- Hash de parámetros de estrategia (`params.yaml`) se registra para reproducibilidad.
-- Cada segmento muestra los hashes y rango de fechas utilizados.
+- **Gap Ratio**: `gap_count / total_bars`
+- **Umbral**: `max_gap_ratio` (default: 10%)
+- **Resultado**: Si `gap_ratio > max_gap_ratio` → `status = "FAILED_TEMPORAL_VALIDATION"`
 
-### Validación Estadística
+### Métricas de Validación Temporal
 
-**Suite de tests parametrizados** (`test_statistical_validation.py`):
-- **Propiedad de aislamiento:** Verifica que no hay trades con timestamp anterior a la señal.
-- **Estrategias sintéticas:** Random walk sin edge produce Sharpe ~0 (validado con t-test).
-- **Convención intrabar:** Tests parametrizados verifican SL-first cuando ambos niveles se tocan.
-- **Métricas de riesgo:** Fixtures con series generadas validan risk of ruin y longest losing streak.
+```python
+"temporal_validation": {
+    "status": "PASS" | "FAILED_TEMPORAL_VALIDATION",
+    "gap_count": int,
+    "significant_gap_count": int,
+    "total_bars": int,
+    "gap_ratio": float,
+    "max_gap_ratio": float,
+}
+```
 
-## Buenas Prácticas
+## 4. Generación de Órdenes
 
-- Ejecutar `python -m app.data.backfill` para reproducir los datasets antes de lanzar campañas.
-- Revisar `docs/backtest-report.md` tras cada corrida; se generan gráficos y tablas con los semáforos operativos descritos.
-- Validar periódicamente la suite de tests (`pytest backend/tests/backtesting/test_backtest_engine.py`) para asegurar que la convención intrabar y los controles estadísticos se mantienen.
+### Señales de Estrategia
 
+La estrategia implementa `StrategyProtocol`:
 
+```python
+def on_bar(self, context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action": "enter" | "exit" | "stop_loss" | "take_profit" | "trailing_stop" | "adjust" | "hold",
+        "side": "BUY" | "SELL",  # Para enter
+        "entry_price": float,  # Para enter
+        "stop_loss": float,  # Para stop_loss
+        "take_profit": float,  # Para take_profit
+        "trailing_distance": float,  # Para trailing_stop
+        "trailing_distance_pct": float,  # Alternativa a trailing_distance
+        "size": float,  # Para adjust (positivo = scale in, negativo = scale out)
+    }
+```
+
+### Validación de Señales
+
+Cada señal es validada antes de procesar:
+
+- **enter**: Requiere `side` y `entry_price`
+- **exit**: Requiere posición abierta
+- **stop_loss**: Requiere posición y `stop_loss` price
+- **take_profit**: Requiere posición y `take_profit` price
+- **trailing_stop**: Requiere posición y `trailing_distance` o `trailing_distance_pct`
+- **adjust**: Requiere posición y `size`
+
+Señales inválidas lanzan `InvalidSignalError` y se registran como warnings.
+
+### Tipos de Órdenes
+
+1. **MarketOrder**: Ejecución inmediata a precio de mercado
+2. **LimitOrder**: Ejecución solo al precio límite o mejor (take profit)
+3. **StopOrder**: Se dispara cuando precio cruza stop level (stop loss)
+
+### Órdenes Activas
+
+- **active_orders**: Lista de órdenes pendientes (stops, limits)
+- **trailing_stop_price**: Precio actual del trailing stop
+- **trailing_stop_distance**: Distancia configurada
+
+Las órdenes activas se procesan cada bar antes de procesar señales nuevas.
+
+## 5. Simulación de Ejecución
+
+### ExecutionSimulator
+
+Simula ejecución realista usando order books:
+
+```python
+exec_result = await execution_simulator.simulate_execution(
+    order,
+    bar,
+    timestamp=bar_date,
+    symbol=instrument,
+)
+```
+
+### Validación de Status
+
+- **FILLED**: Orden ejecutada completamente
+- **PARTIALLY_FILLED**: Ejecución parcial
+- **CANCELLED/REJECTED**: Orden no ejecutada → se registra y se salta
+
+### Manejo de Fills Parciales
+
+Si `fill_ratio < 1.0`:
+- Se crea `PartialFill` record
+- Se ajusta `order.qty` a `filled_qty`
+- Se calculan fees proporcionales
+- Se actualiza posición con tamaño real
+
+### Modelado de Fricciones
+
+1. **Slippage**:
+   - **Dinámico**: Basado en volatilidad y profundidad del order book
+   - **Fijo**: Porcentaje configurable (default: 5 bps)
+   - **Fallback**: Estimación basada en spread si no hay order book
+
+2. **Comisiones**:
+   - Configurable por trade (default: 0.1%)
+   - Proporcionales a `filled_qty`
+
+3. **Sizing Realista**:
+   - `RiskManagedPositionSizer` ajusta riesgo basado en drawdown
+   - Reducción de exposición cuando `drawdown > 50%`
+
+## 6. Tracking de Equity
+
+### Estructura de Datos
+
+Las curvas de equity se almacenan como DataFrame:
+
+```python
+equity_curve: pd.DataFrame
+# Columnas:
+# - timestamp: pd.Timestamp
+# - equity_theoretical: float (sin fricciones)
+# - equity_realistic: float (con slippage + fees)
+# - equity_divergence_pct: float ((realistic - theoretical) / theoretical * 100)
+```
+
+### Validación de Divergencia
+
+**Regla**: `equity_realistic` nunca debe exceder `equity_theoretical` sin justificación.
+
+- **Tolerancia**: 0.1% para redondeo
+- **Validación**: Se ejecuta después de cada actualización de equity
+- **Logging**: Warnings si divergencia > 0.1%
+
+### Actualización de Equity
+
+```python
+state.update_equity(theoretical, realistic, timestamp)
+```
+
+Calcula automáticamente:
+- `equity_divergence_pct`
+- Actualiza `peak_equity` y `current_drawdown`
+- Añade fila al DataFrame
+
+## 7. Cálculo de Retornos
+
+### Retornos Periódicos Basados en Fechas
+
+Los retornos se calculan usando fechas reales, no índices fijos:
+
+```python
+# Daily returns
+if (bar_date - state.last_daily_ts).days >= 1:
+    prev_equity = _get_equity_at_or_before(state.last_daily_ts, state)
+    daily_return = (state.equity_realistic - prev_equity) / prev_equity
+    state.returns_daily.append(daily_return)
+```
+
+### Manejo de Gaps
+
+- `_get_equity_at_or_before()` busca el último valor de equity ≤ timestamp objetivo
+- Si hay gaps, usa el último valor conocido (no asume espaciado uniforme)
+- Funciona con cualquier timeframe (1h, 4h, 1d, etc.)
+
+### Retornos Calculados
+
+- **Daily**: Cuando transcurre ≥ 1 día desde último corte
+- **Weekly**: Cuando transcurre ≥ 7 días desde último corte
+- **Monthly**: Cuando transcurre ≥ 30 días desde último corte
+
+## 8. Reporting
+
+### Estructura del Resultado
+
+```python
+{
+    "start_date": str,
+    "end_date": str,
+    "initial_capital": float,
+    "final_capital": float,
+    "trades": list[TradeFill],
+    "equity_curve": list[dict],  # DataFrame serializado
+    "equity_theoretical": list[float],  # Legacy compatibility
+    "equity_realistic": list[float],  # Legacy compatibility
+    "equity_divergence_metrics": {
+        "max_divergence_pct": float,
+        "min_divergence_pct": float,
+        "avg_divergence_pct": float,
+    },
+    "returns_per_period": {
+        "daily": list[float],
+        "weekly": list[float],
+        "monthly": list[float],
+    },
+    "temporal_validation": {...},
+    "execution_stats": {...},
+    "metadata": {...},
+}
+```
+
+### Métricas de Divergencia
+
+- **max_divergence_pct**: Máxima divergencia (debería ser ≤ 0.1%)
+- **min_divergence_pct**: Mínima divergencia (debería ser negativa)
+- **avg_divergence_pct**: Divergencia promedio
+
+### Validaciones en Resultado
+
+- **temporal_validation.status**: "PASS" o "FAILED_TEMPORAL_VALIDATION"
+- **execution_stats**: Conteo de fills parciales y órdenes rechazadas
+- **equity_divergence_metrics**: Resumen de divergencia teórico/realista
+
+## Validaciones en CI
+
+### Tests de Divergencia
+
+```python
+def test_equity_realistic_never_exceeds_theoretical():
+    # Verifica que realistic <= theoretical (con tolerancia)
+    assert realistic <= theoretical * 1.001
+```
+
+### Tests de Validación Temporal
+
+```python
+def test_raises_exception_on_non_chronological_data():
+    # Verifica que datos fuera de orden lanzan BacktestTemporalError
+    with pytest.raises(BacktestTemporalError):
+        engine.run_backtest(...)
+```
+
+### Tests de Retornos
+
+```python
+def test_returns_calculation_with_gaps():
+    # Verifica que retornos se calculan correctamente con gaps
+    assert len(returns_daily) == expected_count
+```
+
+## Flujo de Ejecución Detallado
+
+### Bucle Principal
+
+```python
+for bar in candle_series.stream():
+    # 1. Validación temporal
+    if bar_date <= prev_bar_ts:
+        raise BacktestTemporalError(...)
+    
+    # 2. Detección de gaps
+    if gap_duration > threshold:
+        logger.warning("Significant gap detected")
+    
+    # 3. Procesar órdenes activas (stops, limits, trailing stops)
+    orders_from_active = _process_active_orders(state, bar, bar_date, request)
+    
+    # 4. Obtener señal de estrategia
+    signal = strategy.on_bar(ctx)
+    
+    # 5. Validar señal
+    _validate_signal(signal, state)
+    
+    # 6. Generar órdenes desde señal
+    if signal["action"] == "enter":
+        orders.append(MarketOrder(...))
+    elif signal["action"] == "stop_loss":
+        state.active_orders.append(StopOrder(...))
+    # ... etc
+    
+    # 7. Ejecutar órdenes
+    for order in orders:
+        exec_result = await execution_simulator.simulate_execution(...)
+        
+        if exec_result.status != FILLED:
+            state.rejected_orders.append(...)
+            continue
+        
+        if exec_result.fill_ratio < 1.0:
+            # Handle partial fill
+            state.partial_fills.append(...)
+        
+        # Update position and equity
+        ...
+    
+    # 8. Actualizar equity curves
+    state.update_equity(theoretical, realistic, bar_date)
+    
+    # 9. Validar divergencia
+    _validate_equity_divergence(state, bar_date)
+    
+    # 10. Calcular retornos periódicos
+    if (bar_date - last_daily_ts).days >= 1:
+        prev_equity = _get_equity_at_or_before(last_daily_ts, state)
+        daily_return = (realistic - prev_equity) / prev_equity
+        state.returns_daily.append(daily_return)
+```
+
+### Post-Procesamiento
+
+```python
+# Validación temporal final
+gap_ratio = gap_count / total_bars
+if gap_ratio > max_gap_ratio:
+    temporal_status = "FAILED_TEMPORAL_VALIDATION"
+
+# Calcular métricas de divergencia
+max_divergence_pct = equity_curve["equity_divergence_pct"].max()
+min_divergence_pct = equity_curve["equity_divergence_pct"].min()
+avg_divergence_pct = equity_curve["equity_divergence_pct"].mean()
+
+# Construir resultado
+return {
+    "equity_curve": equity_curve.to_dict(orient="records"),
+    "equity_divergence_metrics": {...},
+    "temporal_validation": {...},
+    ...
+}
+```
+
+## Mejores Prácticas
+
+### Para Estrategias
+
+1. **Validar señales**: Asegurar que todas las señales tienen campos requeridos
+2. **Manejar errores**: Implementar try/except en `on_bar()` para evitar crashes
+3. **Gestión de riesgo**: Usar stop loss y take profit para limitar pérdidas
+
+### Para Backtests
+
+1. **Validar datos**: Verificar `quality_pass = True` antes de ejecutar
+2. **Revisar gaps**: Confirmar que `temporal_validation.status = "PASS"`
+3. **Verificar divergencia**: `equity_divergence_metrics.max_divergence_pct` debería ser ≤ 0.1%
+4. **Revisar ejecución**: Verificar `execution_stats` para fills parciales y rechazos
+
+### Para Operación
+
+1. **Monitoreo**: Revisar logs para warnings de divergencia o gaps
+2. **Auditoría**: Revisar reportes de discrepancias en `data/audits/`
+3. **Reproducibilidad**: Usar seeds fijos para resultados reproducibles
+
+## Referencias
+
+- [Data Pipeline](./data-pipeline.md): Detalles de ingesta y curación
+- [Objective](./objective.md): Definición de métricas objetivo y guardrails
+- [Risk Management](./risk-management.md): Políticas de gestión de riesgo

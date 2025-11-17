@@ -293,3 +293,4 @@ Las métricas se exponen en Prometheus para monitoreo continuo:
 Ver `backend/app/observability/execution_metrics.py` para detalles.
 
 
+

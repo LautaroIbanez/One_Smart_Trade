@@ -270,3 +270,4 @@ async def mark_article_as_read_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+

@@ -6,8 +6,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.backtesting.advanced_metrics import MetricsReport
 from app.backtesting.execution_metrics import ExecutionMetrics
 from app.backtesting.risk import RuinSimulator, run_risk_simulations
+from app.backtesting.ruin_simulation import monte_carlo_ruin
 
 
 def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, float]:
@@ -162,10 +164,36 @@ def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, fl
             "p99_divergence": tracking_error.get("p99_divergence", 0.0),
         }
     
+    # Add advanced metrics report if returns_per_period available
+    returns_per_period = backtest_result.get("returns_per_period", {})
+    if returns_per_period:
+        try:
+            # Use monthly returns if available, otherwise daily
+            returns_series = returns_per_period.get("monthly") or returns_per_period.get("daily") or []
+            if returns_series:
+                equity_realistic = backtest_result.get("equity_realistic", backtest_result.get("equity_curve", []))
+                days = (pd.to_datetime(backtest_result["end_date"]) - pd.to_datetime(backtest_result["start_date"])).days
+                
+                advanced_report = MetricsReport.from_returns(
+                    returns_series,
+                    equity_curve=equity_realistic if equity_realistic else None,
+                    initial_capital=initial_capital,
+                    total_days=days,
+                    bootstrap_trials=5000,
+                    seed=backtest_result.get("seed"),
+                )
+                
+                # Merge advanced metrics
+                metrics_dict.update(advanced_report.metrics)
+                metrics_dict["confidence_intervals"] = advanced_report.confidence_intervals
+                metrics_dict["advanced_metrics"] = advanced_report.to_dict()
+        except Exception as exc:
+            logger.warning("Failed to calculate advanced metrics", extra={"error": str(exc)})
+
     # Add execution metrics if provided
     execution_metrics = kwargs.get("execution_metrics")
     if execution_metrics and isinstance(execution_metrics, ExecutionMetrics):
-        metrics["execution_friction"] = {
+        metrics_dict["execution_friction"] = {
             "total_orders": execution_metrics.total_orders,
             "filled_orders": execution_metrics.filled_orders,
             "partially_filled_orders": execution_metrics.partially_filled_orders,

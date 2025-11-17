@@ -167,3 +167,4 @@ class DynamicCapitalAllocator:
         return size_pct / self.rules.base_size_pct
 
 
+

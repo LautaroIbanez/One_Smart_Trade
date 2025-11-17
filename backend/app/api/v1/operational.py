@@ -183,3 +183,4 @@ async def get_operational_report(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+

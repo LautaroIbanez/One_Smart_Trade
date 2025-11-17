@@ -8,8 +8,11 @@ Ingestar datos de BTCUSDT desde la API pública de Binance en múltiples timefra
 Binance API → BinanceClient (httpx, backoff, rate limit)
            → Ingestion (batching, colas por timeframe, gaps)
            → Storage RAW (Parquet data/raw/<interval>/)
-           → Curation (agregados diarios, VWAP/ATR/vol)
-           → Curated (Parquet data/curated/)
+           → Curation Básica (casting, dropna, dedupe)
+           → DataQualityPipeline (sanitización estadística)
+           → CrossVenueReconciler (reconciliación multi-venue)
+           → Indicadores Técnicos (VWAP/ATR/vol/RSI/etc)
+           → Curated (Parquet data/curated/) con quality_pass=True
 ```
 
 ## Componentes
@@ -27,7 +30,19 @@ Binance API → BinanceClient (httpx, backoff, rate limit)
   - RAW: `data/raw/<interval>/<SYMBOL>_<interval>_<YYYYMMDD>.parquet` con metadatos (fuente, latencia, fetched_at, interval, symbol).
   - Curated: `data/curated/<interval>_curated_<YYYYMMDD>.parquet`.
 - `app/data/curation.py`: Curación y agregados.
-  - Cálculo de `vwap`, `atr`, `realized_volatility`, `returns`, `key levels` (support/resistance/pivot), consistencia temporal y orden cronológico.
+  - Curación básica: casting numérico, dropna, deduplicación.
+  - **DataQualityPipeline**: Limpieza estadística avanzada:
+    - Detección de outliers por z-score (retornos > 6σ)
+    - Detección de outliers por MAD (volumen)
+    - Winsorización (0.5% / 99.5%)
+    - Interpolación temporal
+  - **CrossVenueReconciler**: Reconciliación multi-venue:
+    - Comparación de precios entre venues
+    - Tolerancia configurable (default: 5 bps)
+    - Flagging de discrepancias
+    - Abort si tasa de discrepancia > umbral (default: 3%)
+  - Cálculo de indicadores técnicos: `vwap`, `atr`, `realized_volatility`, `returns`, `key levels` (support/resistance/pivot), consistencia temporal y orden cronológico.
+  - Persistencia de reportes de discrepancias en `data/audits/`
 
 ## Cronograma de Actualizaciones
 - Ingesta:
@@ -38,6 +53,61 @@ Binance API → BinanceClient (httpx, backoff, rate limit)
 
 ## Requisitos de Almacenamiento
 - Formato columnar Parquet con compresión `snappy`.
+- Metadata incluye flags: `quality_applied`, `reconciler_applied`, `quality_pass`, `quality_stats`, `discrepancies`.
+
+## Pipeline de Calidad de Datos
+
+### DataQualityPipeline
+
+Aplica limpieza estadística avanzada:
+
+1. **Detección de outliers por retornos**:
+   - Calcula z-scores de log returns
+   - Marca como NaN valores con |z| > 6.0 (configurable)
+
+2. **Detección de outliers por volumen**:
+   - Usa Median Absolute Deviation (MAD)
+   - Marca como NaN volúmenes con desviación > 10× MAD (configurable)
+
+3. **Winsorización**:
+   - Limita valores extremos a percentiles 0.5% / 99.5% (configurable)
+
+4. **Interpolación**:
+   - Interpola valores faltantes usando método temporal
+   - Límite: 2 períodos consecutivos (configurable)
+
+### CrossVenueReconciler
+
+Valida consistencia entre múltiples venues:
+
+1. **Alineación temporal**: Alinea timestamps de diferentes venues
+2. **Comparación de precios**: Calcula diferencias en bps
+3. **Detección de discrepancias**: Flaggea diferencias > tolerancia (default: 5 bps)
+4. **Validación de tasa**: Aborta si tasa de discrepancia > umbral (default: 3%)
+
+### Gestión de Discrepancias
+
+- **Reportes persistidos**: `data/audits/<venue>/<symbol>/discrepancies_<interval>_<timestamp>.json`
+- **Flags en dataset**: Columna `reconciled_flag` marca filas con discrepancias
+- **Abort automático**: `DataIntegrityError` si tasa > umbral
+
+## Checklist Operativo
+
+Antes de usar datos curados en backtests:
+
+- [ ] Revisar reporte de discrepancias diario en `data/audits/`
+- [ ] Confirmar `quality_pass = True` en metadata del dataset
+- [ ] Verificar `quality_stats` muestra saneamiento razonable
+- [ ] Si hay discrepancias, revisar `discrepancies` en metadata
+- [ ] Confirmar `reconciled_flag` no tiene falsos en períodos críticos
+
+## Política de Datos
+
+**Ningún dataset pasa a backtests sin `quality_pass = True`**
+
+- Todos los datasets curados deben tener `quality_applied = True`
+- En modo multi-venue, `reconciler_applied = True` es obligatorio
+- Tasa de discrepancia > 3% aborta la curación automáticamente
 - Particiones por `interval` y fecha (YYYYMMDD) para facilitar housekeeping.
 - Directorios configurables: `RAW_DATA_DIR`, `CURATED_DATA_DIR`.
 

@@ -6,9 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.backtesting.engine import BacktestEngine
+import pandas as pd
+
+from app.backtesting.engine import BacktestEngine, BacktestRunRequest
+from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.backtesting.metrics import calculate_metrics
 from app.backtesting.objectives import CalmarUnderDrawdown, Objective
+from app.backtesting.validation import CampaignAbort, CampaignValidator
+from app.backtesting.walk_forward import WalkForwardPipeline
 from app.core.logging import logger
 
 PersistRecordFn = Callable[[dict[str, Any]], None]
@@ -39,15 +44,38 @@ class CampaignOptimizer:
         *,
         max_ruin_probability: float | None = None,
         max_negative_month_prob: float | None = None,
+        enable_validation: bool = True,
+        enable_guardrails: bool = True,
+        enable_walk_forward: bool = False,
+        guardrail_config: GuardrailConfig | None = None,
     ) -> None:
+        """
+        Initialize campaign optimizer.
+
+        Args:
+            objective: Objective function (default: CalmarUnderDrawdown)
+            persist_fn: Function to persist records
+            max_ruin_probability: Max ruin probability filter
+            max_negative_month_prob: Max negative month probability filter
+            enable_validation: Enable pre-execution validation (default: True)
+            enable_guardrails: Enable guardrail checks (default: True)
+            enable_walk_forward: Enable walk-forward analysis (default: False)
+            guardrail_config: Guardrail configuration (uses defaults if None)
+        """
         self.objective = objective or CalmarUnderDrawdown()
         self.persist_fn = persist_fn
         self.best: CandidateResult | None = None
         self.records: list[dict[str, Any]] = []
         self.max_ruin_probability = max_ruin_probability
         self.max_negative_month_prob = max_negative_month_prob
+        self.enable_validation = enable_validation
+        self.enable_guardrails = enable_guardrails
+        self.enable_walk_forward = enable_walk_forward
+        self.validator = CampaignValidator() if enable_validation else None
+        self.guardrail_checker = GuardrailChecker(guardrail_config) if enable_guardrails else None
+        self.walk_forward_pipeline = WalkForwardPipeline() if enable_walk_forward else None
 
-    def evaluate(
+    async def evaluate(
         self,
         *,
         start,
@@ -64,9 +92,29 @@ class CampaignOptimizer:
             execution_overrides = variant.get("execution_overrides", {})
             engine_args = variant.get("engine_args", {})
 
+            # Pre-execution validation
+            if self.validator:
+                try:
+                    start_ts = pd.to_datetime(start) if not isinstance(start, pd.Timestamp) else start
+                    end_ts = pd.to_datetime(end) if not isinstance(end, pd.Timestamp) else end
+                    validation_result = self.validator.validate_window(start_ts, end_ts)
+                    validation_result.raise_if_invalid()
+                except CampaignAbort as exc:
+                    logger.warning(
+                        "Campaign validation failed",
+                        extra={"params_id": params_id, "reason": exc.reason, "details": exc.details},
+                    )
+                    continue
+
             try:
                 engine = BacktestEngine(**execution_overrides)
-                backtest_result = engine.run_backtest(start, end, **engine_args)
+                backtest_result = await engine.run_backtest(start, end, **engine_args)
+            except CampaignAbort as exc:
+                logger.warning(
+                    "Campaign aborted",
+                    extra={"params_id": params_id, "reason": exc.reason, "details": exc.details},
+                )
+                continue
             except Exception as exc:
                 logger.warning(
                     "Campaign candidate failed during backtest",
@@ -93,6 +141,28 @@ class CampaignOptimizer:
                 if neg_prob is not None and neg_prob > self.max_negative_month_prob:
                     logger.info("Candidate filtered by negative month probability", extra={"params_id": params_id, "negative_month_prob": neg_prob})
                     continue
+            # Guardrail checks
+            if self.guardrail_checker:
+                duration_days = (pd.to_datetime(end) - pd.to_datetime(start)).days
+                # Extract Calmar CI if available
+                calmar_ci_low = None
+                if "confidence_intervals" in metrics and "calmar" in metrics.get("confidence_intervals", {}):
+                    calmar_ci_low = metrics["confidence_intervals"]["calmar"].get("p5")
+                
+                guardrail_result = self.guardrail_checker.check_all(
+                    max_drawdown_pct=metrics.get("max_drawdown"),
+                    risk_of_ruin=metrics.get("risk_of_ruin"),
+                    trade_count=metrics.get("total_trades", 0),
+                    duration_days=duration_days,
+                    calmar_ci_low=calmar_ci_low,
+                )
+                if not guardrail_result.passed:
+                    logger.info(
+                        "Candidate rejected by guardrails",
+                        extra={"params_id": params_id, "reason": guardrail_result.reason, "details": guardrail_result.details},
+                    )
+                    continue
+
             score = self.objective.score(metrics)
             objective_value = metrics.get(self.objective.config.target_metric, 0.0)
 

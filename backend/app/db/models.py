@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,34 @@ class RecommendationORM(Base):
     dataset_version: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     params_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class SignalOutcomeORM(Base):
+    """Log raw signal emissions and realised outcomes for calibration."""
+
+    __tablename__ = "signal_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("recommendations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    strategy_id: Mapped[str] = mapped_column(String(64), index=True)
+    signal: Mapped[str] = mapped_column(String(8))
+    decision_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    confidence_raw: Mapped[float] = mapped_column(Float)
+    confidence_calibrated: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_regime: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    vol_bucket: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    features_regimen: Mapped[dict] = mapped_column(JSON, default=dict)
+    metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    horizon_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class RunLogORM(Base):

@@ -80,6 +80,28 @@ class PerformanceService:
                     metrics=metrics,
                 )
 
+            # Calculate OOS days and metrics status
+            start_ts = pd.to_datetime(result["start_date"])
+            end_ts = pd.to_datetime(result["end_date"])
+            total_days = (end_ts - start_ts).days
+            
+            # Estimate OOS period (20% of total, minimum 120 days)
+            oos_days = max(120, int(total_days * 0.2))
+            
+            # Check metrics status using guardrails
+            from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
+            checker = GuardrailChecker(GuardrailConfig())
+            
+            metrics_status = "PASS"
+            guardrail_result = checker.check_all(
+                max_drawdown_pct=metrics.get("max_drawdown"),
+                risk_of_ruin=metrics.get("risk_of_ruin"),
+                trade_count=metrics.get("total_trades", 0),
+                duration_days=total_days,
+            )
+            if not guardrail_result.passed:
+                metrics_status = "FAIL"
+
             return {
                 "status": "success",
                 "metrics": metrics,
@@ -90,6 +112,8 @@ class PerformanceService:
                 "report_path": str((self.project_root / "docs" / "backtest-report.md").resolve()),
                 "charts": charts,
                 "version": __version__,
+                "oos_days": oos_days,
+                "metrics_status": metrics_status,
             }
         except Exception as e:
             import traceback

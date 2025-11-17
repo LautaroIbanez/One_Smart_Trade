@@ -30,3 +30,4 @@ export function RiskBadge({ riskFraction, className = '' }: RiskBadgeProps) {
 export default RiskBadge
 
 
+

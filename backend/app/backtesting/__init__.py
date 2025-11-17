@@ -10,6 +10,23 @@ from .risk import RuinSimulator
 from .risk_sizing import AdaptiveRiskSizer, DrawdownController, RiskManager, RiskSizer
 from .volatility_targeting import CombinedSizer, KellySizer, VolatilityTargeting
 from .unified_risk_manager import RiskMetrics, UnifiedRiskManager
+from .engine import (
+    BacktestEngine,
+    BacktestRunRequest,
+    BacktestState,
+    BacktestTemporalError,
+    CandleSeries,
+    InvalidSignalError,
+    PartialFill,
+    RiskManagedPositionSizer,
+    StrategyProtocol,
+    TradeFill,
+)
+from .persistence import (
+    BacktestResultRepository,
+    BacktestRunResult,
+    save_backtest_result,
+)
 from .order_types import (
     BaseOrder,
     LimitOrder,
@@ -22,6 +39,12 @@ from .order_types import (
 )
 from .position import Position, PositionConfig, PositionManager, PositionSide, PositionState
 from .sensitivity import SensitivityRunner, SensitivityResult
+from .validation import CampaignAbort, CampaignValidator, ValidationResult
+from .walk_forward import TrainValOOSSplit, WalkForwardPipeline, WalkForwardResult, WalkForwardWindow
+from .guardrails import CampaignRejectedReason, GuardrailChecker, GuardrailConfig, GuardrailResult
+from .observability import CampaignMetrics, CampaignObservability
+from .advanced_metrics import MetricsReport, calmar_penalized
+from .ruin_simulation import RuinSimulationResult, monte_carlo_ruin
 from .visualization import plot_parameter_distributions, plot_response_surface, plot_tornado_chart
 
 __all__ = [
@@ -78,5 +101,35 @@ __all__ = [
     "ExecutionSimulationResult",
     "StopRebalancer",
     "StopRebalanceEvent",
+    "BacktestEngine",
+    "BacktestRunRequest",
+    "BacktestState",
+    "BacktestTemporalError",
+    "CandleSeries",
+    "InvalidSignalError",
+    "PartialFill",
+    "RiskManagedPositionSizer",
+    "StrategyProtocol",
+    "TradeFill",
+    "BacktestResultRepository",
+    "BacktestRunResult",
+    "save_backtest_result",
+    "CampaignAbort",
+    "CampaignValidator",
+    "ValidationResult",
+    "WalkForwardPipeline",
+    "WalkForwardResult",
+    "WalkForwardWindow",
+    "TrainValOOSSplit",
+    "CampaignRejectedReason",
+    "GuardrailChecker",
+    "GuardrailConfig",
+    "GuardrailResult",
+    "CampaignMetrics",
+    "CampaignObservability",
+    "MetricsReport",
+    "calmar_penalized",
+    "RuinSimulationResult",
+    "monte_carlo_ruin",
 ]
 

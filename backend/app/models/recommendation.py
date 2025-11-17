@@ -47,6 +47,7 @@ class Recommendation(BaseModel):
     exit_reason: str | None = Field(default=None, description="Reason for closing the trade")
     exit_price: float | None = Field(default=None, description="Exit price when trade closed")
     exit_price_pct: float | None = Field(default=None, description="Return percentage realised at exit")
+    signal_log_id: int | None = Field(default=None, description="ID of the signal_outcomes log entry")
     recommended_risk_fraction: float = Field(
         default=0.01,
         ge=0.0,
@@ -81,6 +82,10 @@ class RecommendationResponse(BaseModel):
     exit_reason: str | None = None
     exit_price: float | None = None
     exit_price_pct: float | None = None
+    signal_log_id: int | None = Field(
+        default=None,
+        description="ID of the signal_outcomes log entry linked to this recommendation",
+    )
     recommended_risk_fraction: float = Field(
         default=0.01,
         ge=0.0,

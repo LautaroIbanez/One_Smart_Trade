@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import asc
 
+from app.core.logging import logger
+
 from app.db.models import (
     BacktestResultORM,
     CooldownEventORM,
@@ -242,11 +244,43 @@ def close_recommendation(
     rec.exit_price_pct = exit_pct
 
     db.add(rec)
-    
-    # Update user risk state if user_id provided
+
+    pnl_pct: float | None = None
+    outcome_label: str | None = None
+    entry = float(rec.entry_optimal or 0.0)
+    if entry > 0:
+        if rec.signal == "BUY":
+            pnl_pct = (exit_price - entry) / entry * 100.0
+        elif rec.signal == "SELL":
+            pnl_pct = (entry - exit_price) / entry * 100.0
+        else:
+            pnl_pct = 0.0
+        if pnl_pct is not None:
+            eps = 0.05
+            if pnl_pct > eps:
+                outcome_label = "win"
+            elif pnl_pct < -eps:
+                outcome_label = "loss"
+            else:
+                outcome_label = "breakeven"
+
     if user_id:
         from app.db.crud import update_user_risk_state
+
         update_user_risk_state(db, user_id, closed_trade=rec)
+
+    try:
+        if outcome_label:
+            from app.signals.loggers import update_signal_outcome_for_recommendation
+
+            update_signal_outcome_for_recommendation(
+                rec.id,
+                outcome=outcome_label,
+                pnl_pct=pnl_pct,
+                session=db,
+            )
+    except Exception:
+        logger.warning("Failed to update signal outcome for recommendation", exc_info=True, extra={"recommendation_id": rec.id})
 
     db.commit()
     db.refresh(rec)

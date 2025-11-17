@@ -1,6 +1,7 @@
 """Performance endpoints."""
 from fastapi import APIRouter, HTTPException
 
+from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.models.performance import (
     PerformanceMetrics,
     PerformancePeriod,
@@ -10,6 +11,7 @@ from app.models.performance import (
 )
 from app.services.monitoring_service import ContinuousMonitoringService
 from app.services.performance_service import PerformanceService
+from app.core.logging import logger
 
 router = APIRouter()
 performance_service = PerformanceService()
@@ -66,6 +68,36 @@ async def get_performance_summary():
             start=period_dict.get("start", ""),
             end=period_dict.get("end", ""),
         ) if period_dict else None
+
+        # Deployment guardrails: prevent publishing if criteria not met
+        oos_days = result.get("oos_days")
+        metrics_status = result.get("metrics_status", "UNKNOWN")
+        
+        if oos_days is not None and oos_days < 120:
+            logger.warning(
+                "Summary blocked: insufficient OOS period",
+                extra={"oos_days": oos_days, "required": 120}
+            )
+            return PerformanceSummaryResponse(
+                status="error",
+                message=f"Results cannot be published: OOS period ({oos_days} days) is less than required minimum (120 days)",
+                metrics=None,
+                period=period,
+                report_path=None,
+            )
+        
+        if metrics_status != "PASS":
+            logger.warning(
+                "Summary blocked: metrics status not PASS",
+                extra={"metrics_status": metrics_status}
+            )
+            return PerformanceSummaryResponse(
+                status="error",
+                message=f"Results cannot be published: metrics status is '{metrics_status}' (required: 'PASS')",
+                metrics=None,
+                period=period,
+                report_path=None,
+            )
 
         return PerformanceSummaryResponse(
             status="success",

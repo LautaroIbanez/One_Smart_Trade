@@ -72,3 +72,4 @@ def downgrade() -> None:
     op.drop_column("user_risk_state", "cooldown_until")
 
 
+

@@ -64,3 +64,4 @@ def downgrade() -> None:
     op.drop_column('recommendations', 'code_commit')
 
 
+

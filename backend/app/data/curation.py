@@ -6,16 +6,46 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.logging import logger
 from .ingestion import INTERVALS
+from .quality import CrossVenueReconciler, DataQualityPipeline
 from .storage import CURATED_ROOT, RAW_ROOT, ensure_dirs, ensure_partition_dirs, get_curated_path, get_raw_path, read_parquet, write_parquet
 from .universe import AssetSpec, MarketUniverseConfig
+
+
+class DataIntegrityError(Exception):
+    """Raised when data quality checks fail."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
 
 
 class DataCuration:
     """Produce curated datasets with indicators for the quant engine."""
 
-    def __init__(self, universe: MarketUniverseConfig | None = None) -> None:
+    def __init__(
+        self,
+        universe: MarketUniverseConfig | None = None,
+        *,
+        quality_config: dict[str, Any] | None = None,
+        apply_quality: bool = True,
+        apply_reconciler: bool = True,
+    ) -> None:
+        """
+        Initialize data curation pipeline.
+
+        Args:
+            universe: Market universe configuration
+            quality_config: Quality pipeline configuration
+            apply_quality: Whether to apply statistical cleaning (default: True)
+            apply_reconciler: Whether to apply cross-venue reconciliation (default: True)
+        """
         self.universe = universe
+        self.apply_quality = apply_quality
+        self.apply_reconciler = apply_reconciler
+        self.quality_config = quality_config or {}
         ensure_dirs()
 
     def curate_interval(
@@ -91,6 +121,109 @@ class DataCuration:
 
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
 
+        # Apply statistical quality pipeline
+        quality_stats = {}
+        if self.apply_quality:
+            quality_pipeline = DataQualityPipeline(
+                max_return_z=self.quality_config.get("max_return_z", 6.0),
+                max_volume_mad=self.quality_config.get("max_volume_mad", 10.0),
+                winsor_limits=tuple(self.quality_config.get("winsor_limits", [0.005, 0.995])),
+                interpolation_limit=self.quality_config.get("interpolation_limit", 2),
+            )
+            
+            rows_before = len(df)
+            df = quality_pipeline.sanitize(df)
+            rows_after = len(df)
+            
+            quality_stats = {
+                "rows_before": rows_before,
+                "rows_after": rows_after,
+                "rows_removed": rows_before - rows_after,
+                "quality_applied": True,
+            }
+            
+            logger.info(
+                "Quality pipeline applied",
+                extra={
+                    "interval": interval,
+                    "venue": venue,
+                    "symbol": symbol,
+                    **quality_stats,
+                },
+            )
+
+        # Apply cross-venue reconciliation if multi-venue mode
+        discrepancies = None
+        if self.apply_reconciler and "venue" in df.columns:
+            venues = df["venue"].unique()
+            if len(venues) > 1:
+                reconciler = CrossVenueReconciler(
+                    tolerance_bps=self.quality_config.get("tolerance_bps", 5.0),
+                    benchmark=self.quality_config.get("benchmark_venue"),
+                )
+                
+                # Split by venue and prepare for reconciliation
+                venue_frames = {}
+                for v in venues:
+                    venue_df = df[df["venue"] == v].copy()
+                    if not venue_df.empty:
+                        venue_frames[v] = venue_df
+                
+                if len(venue_frames) > 1:
+                    discrepancies_df = reconciler.compare(venue_frames)
+                    
+                    if not discrepancies_df.empty:
+                        discrepancy_rate = len(discrepancies_df) / len(df)
+                        max_discrepancy_rate = self.quality_config.get("max_discrepancy_rate", 0.03)
+                        
+                        logger.warning(
+                            "Cross-venue discrepancies detected",
+                            extra={
+                                "interval": interval,
+                                "symbol": symbol,
+                                "discrepancy_count": len(discrepancies_df),
+                                "discrepancy_rate": discrepancy_rate,
+                                "max_allowed": max_discrepancy_rate,
+                            },
+                        )
+                        
+                        # Mark reconciled rows
+                        df["reconciled_flag"] = True
+                        if "open_time" in discrepancies_df.columns:
+                            discrepancy_times = set(discrepancies_df["open_time"])
+                            df.loc[df["open_time"].isin(discrepancy_times), "reconciled_flag"] = False
+                        
+                        # Persist discrepancy report
+                        self._persist_discrepancy_report(
+                            discrepancies_df,
+                            interval=interval,
+                            venue=venue,
+                            symbol=symbol,
+                        )
+                        
+                        # Raise error if discrepancy rate exceeds threshold
+                        if discrepancy_rate > max_discrepancy_rate:
+                            raise DataIntegrityError(
+                                f"Cross-venue discrepancy rate ({discrepancy_rate:.2%}) exceeds maximum ({max_discrepancy_rate:.2%})",
+                                details={
+                                    "discrepancy_count": len(discrepancies_df),
+                                    "discrepancy_rate": discrepancy_rate,
+                                    "max_allowed": max_discrepancy_rate,
+                                },
+                            )
+                        
+                        discrepancies = {
+                            "count": len(discrepancies_df),
+                            "rate": discrepancy_rate,
+                        }
+                    else:
+                        df["reconciled_flag"] = True
+                        discrepancies = {"count": 0, "rate": 0.0}
+                else:
+                    df["reconciled_flag"] = True
+            else:
+                df["reconciled_flag"] = True
+
         df = self._add_indicators(df)
         df["interval"] = interval
         if venue and symbol:
@@ -110,14 +243,42 @@ class DataCuration:
                 "symbol": symbol,
             },
         )
-        return {
+        result = {
             "status": "success",
             "interval": interval,
             "rows": len(df),
             "path": str(curated_path),
             "venue": venue,
             "symbol": symbol,
+            "quality_stats": quality_stats,
+            "discrepancies": discrepancies,
+            "quality_pass": True,
         }
+        
+        # Update metadata with quality flags
+        metadata = {
+            "interval": interval,
+            "rows": len(df),
+            "generated_at": datetime.utcnow().isoformat(),
+            "venue": venue,
+            "symbol": symbol,
+            "quality_applied": self.apply_quality,
+            "reconciler_applied": self.apply_reconciler,
+            "quality_pass": True,
+        }
+        if quality_stats:
+            metadata["quality_stats"] = quality_stats
+        if discrepancies:
+            metadata["discrepancies"] = discrepancies
+        
+        # Re-write with updated metadata
+        write_parquet(
+            df,
+            curated_path,
+            metadata=metadata,
+        )
+        
+        return result
 
     def curate_timeframe(self, interval: str, *, lookback_files: int = 60) -> dict[str, Any]:
         """Backward-compatible alias used by scripts/tests."""
@@ -281,3 +442,38 @@ class DataCuration:
         low_close = (df["low"] - df["close"].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         return true_range.rolling(window=period, min_periods=period).mean()
+
+    def _persist_discrepancy_report(
+        self,
+        discrepancies_df: pd.DataFrame,
+        *,
+        interval: str,
+        venue: str | None,
+        symbol: str | None,
+    ) -> None:
+        """Persist discrepancy report to audit directory."""
+        from pathlib import Path
+        import json
+
+        audit_dir = Path("data/audits")
+        if venue and symbol:
+            audit_dir = audit_dir / venue / symbol
+        else:
+            audit_dir = audit_dir / "default"
+        
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        report_path = audit_dir / f"discrepancies_{interval}_{timestamp}.json"
+        
+        report = {
+            "timestamp": timestamp,
+            "interval": interval,
+            "venue": venue,
+            "symbol": symbol,
+            "discrepancy_count": len(discrepancies_df),
+            "discrepancies": discrepancies_df.to_dict(orient="records"),
+        }
+        
+        report_path.write_text(json.dumps(report, indent=2, default=str))
+        logger.info(f"Discrepancy report persisted to {report_path}")
