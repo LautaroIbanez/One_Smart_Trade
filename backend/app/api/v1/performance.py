@@ -1,5 +1,5 @@
 """Performance endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.models.performance import (
@@ -11,11 +11,13 @@ from app.models.performance import (
 )
 from app.services.monitoring_service import ContinuousMonitoringService
 from app.services.performance_service import PerformanceService
+from app.services.kpis_reporting_service import KPIsReportingService
 from app.core.logging import logger
 
 router = APIRouter()
 performance_service = PerformanceService()
 monitoring_service = ContinuousMonitoringService(asset="BTCUSDT", venue="binance")
+kpis_service = KPIsReportingService()
 
 
 @router.get("/summary", response_model=PerformanceSummaryResponse)
@@ -490,4 +492,49 @@ async def export_monthly_report(
             "X-Export-Type": "monthly_report",
         },
     )
+
+
+@router.get("/metrics")
+async def get_daily_kpis(lookback_days: int = Query(30, ge=1, le=365, description="Number of days to look back")):
+    """
+    Get daily KPIs: win-rate 30d, avg RR, DD, HOLD count.
+    
+    Returns real-time KPI metrics calculated from recent recommendations.
+    """
+    try:
+        kpis = kpis_service.calculate_daily_kpis(lookback_days=lookback_days)
+        return {
+            "status": "success",
+            "kpis": kpis,
+        }
+    except Exception as e:
+        logger.error(f"Failed to calculate daily KPIs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/metrics/export")
+async def export_daily_kpis(
+    format: str = Query("json", regex="^(json|csv)$", description="Export format"),
+    lookback_days: int = Query(30, ge=1, le=365, description="Number of days to look back"),
+):
+    """
+    Export daily KPI report in JSON or CSV format.
+    
+    Returns downloadable file with KPI metrics.
+    """
+    from fastapi.responses import Response
+    
+    try:
+        report = kpis_service.generate_report(format=format, lookback_days=lookback_days)
+        
+        return Response(
+            content=report["content"],
+            media_type=report["media_type"],
+            headers={
+                "Content-Disposition": f'attachment; filename="{report["filename"]}"',
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to export daily KPIs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 

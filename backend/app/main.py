@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import analytics, diagnostics, execution, export, knowledge, market, observability, operational, orderbook, orders, performance, positions, recommendation, risk, transparency, user_risk
+from app.api.v1 import analytics, diagnostics, execution, export, knowledge, market, observability, operational, orderbook, orders, performance, positions, recommendation, risk, sltp_validation, transparency, user_risk
 from app.services.transparency_service import TransparencyService
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
@@ -64,6 +64,7 @@ app.include_router(execution.router, prefix="/api/v1/execution", tags=["executio
 app.include_router(operational.router, prefix="/api/v1/operational", tags=["operational"])
 app.include_router(user_risk.router, prefix="/api/v1/user-risk", tags=["user-risk"])
 app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["knowledge"])
+app.include_router(sltp_validation.router, prefix="/api/v1/sltp-validation", tags=["sltp-validation"])
 
 
 @app.get("/")
@@ -156,54 +157,160 @@ async def job_transparency_checks() -> None:
         logger.error(f"Error running transparency checks: {exc}", exc_info=True)
 
 
-@scheduler.scheduled_job("cron", hour=12, minute=0, id="generate_signal")
-async def job_generate_signal() -> None:
-    """Scheduled job to generate daily trading signal."""
+@scheduler.scheduled_job("cron", hour=12, minute=0, id="daily_pipeline")
+async def job_daily_pipeline() -> None:
+    """
+    Deterministic daily pipeline: ingestion → checks → signal generation.
+    
+    This is the single source of truth for daily signal generation.
+    Runs at a fixed time (12:00 UTC) and logs complete outcome with run_id.
+    """
     import time
+    import uuid
+    from datetime import datetime
 
     from app.core.logging import logger
-    from app.data.ingestion import INTERVALS
+    from app.data.ingestion import INTERVALS, DataIngestion
     from app.observability.metrics import record_signal_generation
     from app.services.recommendation_service import RecommendationService
 
-    curation = DataCuration()
+    # Generate unique run_id for this pipeline execution
+    run_id = str(uuid.uuid4())
+    pipeline_start = datetime.utcnow()
     start_time = time.time()
-
-    # Regenerate curated datasets before calculating signals
-    for interval in INTERVALS:
-        try:
-            curation.curate_interval(interval)
-        except FileNotFoundError:
-            logger.warning("Skipping interval %s because raw data is missing", interval)
-
+    
     db = SessionLocal()
+    outcome_details: dict[str, Any] = {
+        "run_id": run_id,
+        "pipeline_start": pipeline_start.isoformat(),
+        "steps": {},
+    }
+    
     try:
+        logger.info(f"Starting daily pipeline run_id={run_id}")
+        
+        # Step 1: Data ingestion
+        ingestion_start = time.time()
+        ingestion = DataIngestion()
+        try:
+            ingestion_results = await ingestion.ingest_all_timeframes()
+            ingestion_duration = time.time() - ingestion_start
+            total_rows = sum(item.get("rows", 0) for item in ingestion_results)
+            outcome_details["steps"]["ingestion"] = {
+                "status": "success",
+                "duration_seconds": round(ingestion_duration, 2),
+                "total_rows": total_rows,
+                "results": ingestion_results,
+            }
+            logger.info(f"Pipeline {run_id}: Ingestion completed - {total_rows} rows in {ingestion_duration:.2f}s")
+        except Exception as exc:
+            ingestion_duration = time.time() - ingestion_start
+            outcome_details["steps"]["ingestion"] = {
+                "status": "failed",
+                "duration_seconds": round(ingestion_duration, 2),
+                "error": str(exc),
+            }
+            logger.error(f"Pipeline {run_id}: Ingestion failed - {exc}", exc_info=True)
+            raise
+        
+        # Step 2: Data curation
+        curation_start = time.time()
+        curation = DataCuration()
+        curation_results = {}
+        for interval in INTERVALS:
+            try:
+                curation.curate_interval(interval)
+                curation_results[interval] = "success"
+            except FileNotFoundError:
+                logger.warning(f"Pipeline {run_id}: Skipping interval {interval} - raw data missing")
+                curation_results[interval] = "skipped_no_data"
+            except Exception as exc:
+                logger.warning(f"Pipeline {run_id}: Curation failed for {interval} - {exc}")
+                curation_results[interval] = f"error: {str(exc)}"
+        curation_duration = time.time() - curation_start
+        outcome_details["steps"]["curation"] = {
+            "status": "completed",
+            "duration_seconds": round(curation_duration, 2),
+            "results": curation_results,
+        }
+        logger.info(f"Pipeline {run_id}: Curation completed in {curation_duration:.2f}s")
+        
+        # Step 3: Signal generation
+        signal_start = time.time()
         service = RecommendationService(session=db)
-        # Generate recommendation (will use curated data)
-        recommendation = await service.generate_recommendation()
-        if recommendation is None:
-            raise ValueError("Failed to generate recommendation")
-
-        duration = time.time() - start_time
-
+        try:
+            recommendation = await service.generate_recommendation()
+            signal_duration = time.time() - signal_start
+            
+            if recommendation is None:
+                raise ValueError("generate_recommendation returned None")
+            
+            signal = recommendation.get("signal", "UNKNOWN")
+            confidence = recommendation.get("confidence", 0.0)
+            
+            outcome_details["steps"]["signal_generation"] = {
+                "status": "success",
+                "duration_seconds": round(signal_duration, 2),
+                "signal": signal,
+                "confidence": confidence,
+                "recommendation_id": recommendation.get("id"),
+            }
+            
+            logger.info(
+                f"Pipeline {run_id}: Signal generated - {signal} (confidence: {confidence:.1f}%) in {signal_duration:.2f}s"
+            )
+            
+            record_signal_generation(signal_duration, True)
+            
+        except Exception as exc:
+            signal_duration = time.time() - signal_start
+            outcome_details["steps"]["signal_generation"] = {
+                "status": "failed",
+                "duration_seconds": round(signal_duration, 2),
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+            logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
+            record_signal_generation(signal_duration, False, str(type(exc).__name__))
+            raise
+        
+        # Pipeline completed successfully
+        total_duration = time.time() - start_time
+        outcome_details["pipeline_end"] = datetime.utcnow().isoformat()
+        outcome_details["total_duration_seconds"] = round(total_duration, 2)
+        outcome_details["overall_status"] = "success"
+        
         log_run(
             db,
-            "signal_generation",
+            "daily_pipeline",
             "success",
-            "Signal generated",
+            f"Daily pipeline completed successfully - run_id={run_id}",
+            details=outcome_details,
+            run_id=run_id,
+            started_at=pipeline_start,
         )
-
-        record_signal_generation(duration, True)
+        
+        logger.info(f"Pipeline {run_id}: Completed successfully in {total_duration:.2f}s")
+        
     except Exception as exc:
-        duration = time.time() - start_time
-        logger.exception("Signal generation failed")
+        total_duration = time.time() - start_time
+        outcome_details["pipeline_end"] = datetime.utcnow().isoformat()
+        outcome_details["total_duration_seconds"] = round(total_duration, 2)
+        outcome_details["overall_status"] = "failed"
+        outcome_details["error"] = str(exc)
+        outcome_details["error_type"] = type(exc).__name__
+        
         log_run(
             db,
-            "signal_generation",
+            "daily_pipeline",
             "failed",
-            str(exc),
+            f"Daily pipeline failed - run_id={run_id} - {str(exc)}",
+            details=outcome_details,
+            run_id=run_id,
+            started_at=pipeline_start,
         )
-        record_signal_generation(duration, False, str(type(exc).__name__))
+        
+        logger.error(f"Pipeline {run_id}: Failed after {total_duration:.2f}s - {exc}", exc_info=True)
     finally:
         db.close()
 
@@ -313,6 +420,63 @@ async def job_auto_close_trades() -> None:
 
     service = RecommendationService()
     await service.auto_close_open_trade()
+
+
+@scheduler.scheduled_job("cron", hour="*/1", minute=30, id="monitor_tracking_errors")
+async def job_monitor_tracking_errors() -> None:
+    """Scheduled job to monitor and calculate tracking errors for closed recommendations."""
+    from app.core.logging import logger
+    from app.services.tracking_error_service import TrackingErrorService
+    
+    try:
+        service = TrackingErrorService()
+        result = await service.monitor_tracking_errors()
+        if result.get("status") == "success":
+            updated = result.get("updated", 0)
+            alerts = result.get("alerts", [])
+            if updated > 0:
+                logger.info(f"Tracking error monitoring: updated {updated} recommendations")
+            if alerts:
+                logger.warning(
+                    f"Tracking error monitoring: {len(alerts)} recommendations exceeded threshold",
+                    extra={"alerts_count": len(alerts), "alerts": alerts},
+                )
+    except Exception as exc:
+        logger.error(f"Tracking error monitoring job failed: {exc}", exc_info=True)
+
+
+@scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_daily_kpis_report")
+async def job_generate_daily_kpis_report() -> None:
+    """Scheduled job to generate and archive daily KPI reports."""
+    from app.core.logging import logger
+    from app.services.kpis_reporting_service import KPIsReportingService
+    import os
+    
+    try:
+        service = KPIsReportingService()
+        
+        # Archive reports (JSON and CSV)
+        result = service.archive_daily_report()
+        if result.get("status") == "success":
+            logger.info(
+                f"Daily KPI report archived successfully",
+                extra={"results": result.get("results")},
+            )
+        else:
+            logger.warning(f"Daily KPI report archiving completed with errors: {result}")
+        
+        # Send email if configured
+        if os.getenv("SMTP_HOST") and os.getenv("ALERT_TO"):
+            try:
+                email_result = service.send_report_by_email()
+                if email_result.get("status") == "sent":
+                    logger.info(f"Daily KPI report sent by email to {email_result.get('to')}")
+                elif email_result.get("status") != "not_configured":
+                    logger.warning(f"Failed to send KPI report by email: {email_result.get('error')}")
+            except Exception as e:
+                logger.warning(f"Email sending failed (non-critical): {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(f"Daily KPI report generation job failed: {exc}", exc_info=True)
 
 
 @scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_risk_reports")

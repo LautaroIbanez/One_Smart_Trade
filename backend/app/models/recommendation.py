@@ -86,6 +86,18 @@ class Recommendation(BaseModel):
     )
 
 
+class ExecutionPlan(BaseModel):
+    """Manual execution playbook for trading recommendations."""
+    
+    operational_window: dict = Field(..., description="Time window for executing the trade")
+    order_type: str = Field(..., description="Recommended order type (limit, market, stop)")
+    suggested_size: dict = Field(..., description="Suggested position size based on minimum capital")
+    instructions: str = Field(..., description="Step-by-step execution instructions")
+    minimum_capital_required: float | None = Field(None, description="Minimum capital required in USD")
+    risk_per_trade_pct: float | None = Field(None, description="Risk percentage per trade")
+    notes: list[str] = Field(default_factory=list, description="Additional execution notes and warnings")
+
+
 class RecommendationResponse(BaseModel):
     """API response schema for recommendations with raw dictionaries."""
 
@@ -145,11 +157,22 @@ class RecommendationResponse(BaseModel):
     )
     tracking_error_rmse: float | None = Field(None, description="Tracking error RMSE (Root Mean Squared Error)")
     tracking_error_max: float | None = Field(None, description="Maximum tracking error (basis points)")
+    backtest_run_id: str | None = Field(None, description="Backtest run ID for traceability")
+    backtest_cagr: float | None = Field(None, description="Backtest CAGR (Compound Annual Growth Rate) percentage")
+    backtest_win_rate: float | None = Field(None, description="Backtest win rate percentage")
+    backtest_risk_reward_ratio: float | None = Field(None, description="Backtest risk/reward ratio")
+    backtest_max_drawdown: float | None = Field(None, description="Backtest maximum drawdown percentage")
+    backtest_slippage_bps: float | None = Field(None, description="Backtest average slippage in basis points")
+    tracking_error_bps: float | None = Field(None, description="Tracking error in basis points (difference between target SL/TP and actual exit price)")
     orderbook_fallback_events: int | None = Field(None, description="Number of orderbook fallback events")
     disclaimer: str
     suggested_sizing: dict | None = Field(
         None,
         description="Suggested position sizing information (calculated with user portfolio data when available)",
+    )
+    execution_plan: dict | None = Field(
+        None,
+        description="Manual execution playbook with operational window, order type, sizing, and instructions",
     )
 
 
@@ -226,8 +249,19 @@ class RecommendationHistoryItem(BaseModel):
     divergence_flag: bool = False
     code_commit: str | None = None
     dataset_version: str | None = None
+    ingestion_timestamp: str | None = None
+    seed: int | None = None
+    params_digest: str | None = None
+    config_version: str | None = None
     snapshot_url: str | None = None
     risk_metrics: dict[str, Any] | None = None
+    backtest_run_id: str | None = None
+    backtest_cagr: float | None = None
+    backtest_win_rate: float | None = None
+    backtest_risk_reward_ratio: float | None = None
+    backtest_max_drawdown: float | None = None
+    backtest_slippage_bps: float | None = None
+    tracking_error_bps: float | None = None
 
 
 class RecommendationHistoryResponse(BaseModel):

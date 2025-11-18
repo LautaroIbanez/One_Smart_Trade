@@ -25,7 +25,13 @@ def get_git_commit_hash() -> str:
 
 
 def calculate_dataset_hash(dataset_paths: list[str] | None = None) -> str:
-    """Calculate SHA-256 hash of dataset files or metadata."""
+    """
+    Calculate SHA-256 hash of dataset files for deterministic versioning.
+    
+    Uses file checksum for reproducibility: same file content produces same hash.
+    This ensures that reproducing a recommendation with the same dataset version
+    will produce identical results.
+    """
     if not dataset_paths:
         return "unknown"
 
@@ -34,14 +40,23 @@ def calculate_dataset_hash(dataset_paths: list[str] | None = None) -> str:
         path = Path(path_str)
         if path.exists():
             try:
-                stat = path.stat()
-                # Include path and modification time in hash
-                hasher.update(f"{path}:{stat.st_mtime}".encode())
-                # For parquet files, also hash first N bytes as sample
+                # Include normalized path in hash
+                normalized_path = str(path.resolve())
+                hasher.update(normalized_path.encode())
+                
+                # For parquet files, hash the entire file content for determinism
                 if path.suffix == ".parquet":
                     with open(path, "rb") as f:
-                        sample = f.read(1024)
-                        hasher.update(sample)
+                        # Read file in chunks to handle large files
+                        while True:
+                            chunk = f.read(8192)
+                            if not chunk:
+                                break
+                            hasher.update(chunk)
+                else:
+                    # For non-parquet files, use file modification time as fallback
+                    stat = path.stat()
+                    hasher.update(f"{stat.st_mtime}".encode())
             except Exception as e:
                 logger.warning(f"Could not hash dataset file {path}: {e}")
 

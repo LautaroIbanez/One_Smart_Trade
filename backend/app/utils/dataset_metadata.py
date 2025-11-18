@@ -1,4 +1,8 @@
 """Utilities for tracking dataset versions and hashes."""
+from __future__ import annotations
+
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,17 +12,27 @@ from app.utils.hashing import calculate_dataset_hash
 from app.core.logging import logger
 
 
-def get_dataset_version_hash(interval: str = "1d", venue: str | None = None, symbol: str | None = None) -> str:
-    """Get hash representing the version of curated datasets used."""
+def get_dataset_version_hash(interval: str = "1d", venue: str | None = None, symbol: str | None = None, include_both: bool = True) -> str:
+    """
+    Get hash representing the version of curated datasets used.
+    
+    Args:
+        interval: Primary interval (for backward compatibility)
+        venue: Optional venue filter
+        symbol: Optional symbol filter
+        include_both: If True, always include both 1h and 1d datasets (default: True for recommendations)
+    
+    Returns:
+        SHA-256 hash of dataset files
+    """
     from app.data.storage import get_curated_path
-    from app.core.config import settings
 
     curation = DataCuration()
     try:
         # Get paths to latest curated datasets
         dataset_paths: list[str] = []
 
-        # Get 1d dataset path
+        # Always get 1d dataset path
         try:
             if venue and symbol:
                 path_1d = get_curated_path(venue=venue, symbol=symbol, interval="1d")
@@ -37,8 +51,8 @@ def get_dataset_version_hash(interval: str = "1d", venue: str | None = None, sym
         except Exception as e:
             logger.warning(f"Could not get 1d dataset path: {e}")
 
-        # Get 1h dataset path
-        if interval != "1d":
+        # Get 1h dataset path if include_both is True or interval is not 1d
+        if include_both or interval != "1d":
             try:
                 if venue and symbol:
                     path_1h = get_curated_path(venue=venue, symbol=symbol, interval="1h")
@@ -72,15 +86,78 @@ def get_dataset_version_hash(interval: str = "1d", venue: str | None = None, sym
         return "unknown"
 
 
+def get_ingestion_timestamp(venue: str | None = None, symbol: str | None = None) -> datetime | None:
+    """
+    Get the ingestion timestamp from the latest curated datasets.
+    
+    Returns the most recent ingestion timestamp from 1h and 1d datasets.
+    This represents when the data used for the recommendation was ingested.
+    
+    Args:
+        venue: Optional venue filter
+        symbol: Optional symbol filter
+    
+    Returns:
+        Datetime of most recent ingestion, or None if not found
+    """
+    from app.data.storage import get_curated_path
+
+    curation = DataCuration()
+    timestamps: list[datetime] = []
+    
+    for interval in ["1d", "1h"]:
+        try:
+            if venue and symbol:
+                path = get_curated_path(venue=venue, symbol=symbol, interval=interval)
+            else:
+                path = Path(settings.DATA_DIR) / "curated" / interval / "latest.parquet"
+            
+            # Try to read metadata from .meta.json file
+            meta_path = path.with_suffix(".meta.json")
+            if meta_path.exists():
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        metadata = json.load(f)
+                        # Try different timestamp fields
+                        for field in ["generated_at", "fetched_at", "created_at"]:
+                            if field in metadata:
+                                ts_str = metadata[field]
+                                try:
+                                    # Parse ISO format timestamp
+                                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                                    timestamps.append(ts)
+                                    break
+                                except (ValueError, AttributeError):
+                                    continue
+                except Exception as e:
+                    logger.debug(f"Could not read metadata from {meta_path}: {e}")
+            
+            # Fallback: use file modification time
+            if path.exists() and not timestamps:
+                stat = path.stat()
+                ts = datetime.fromtimestamp(stat.st_mtime)
+                timestamps.append(ts)
+        except Exception as e:
+            logger.debug(f"Could not get ingestion timestamp for {interval}: {e}")
+    
+    if timestamps:
+        # Return the most recent timestamp
+        return max(timestamps)
+    
+    return None
+
+
 def get_params_digest() -> str:
-    """Get hash representing the current parameters configuration."""
-    from app.utils.hashing import calculate_params_hash
-    from app.quant.params import STRATEGY_PARAMS
+    """
+    Get hash representing the current parameters configuration.
+    
+    Uses SignalConfigManager to ensure consistent digest calculation
+    from versioned configuration files.
+    """
+    from app.quant.config_manager import get_signal_config_digest
 
     try:
-        # Convert to dict if needed
-        params_dict = dict(STRATEGY_PARAMS) if hasattr(STRATEGY_PARAMS, "items") else STRATEGY_PARAMS
-        return calculate_params_hash(params_dict)
+        return get_signal_config_digest()
     except Exception as e:
         logger.error(f"Error calculating params digest: {e}")
         return "unknown"

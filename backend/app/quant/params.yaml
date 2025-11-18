@@ -1,3 +1,8 @@
+# Signal configuration file - versioned and tracked via digest
+# Optional: Add a 'version' field at the top level for human-readable versioning
+# Example: version: "1.0.0"
+# If not provided, version will be auto-generated from hash (e.g., "hash:abc123def456")
+
 momentum:
   confidence_buy: 72.0
   confidence_sell: 72.0

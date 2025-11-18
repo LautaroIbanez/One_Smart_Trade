@@ -20,23 +20,43 @@ One Smart Trade/
 - Poetry (gestión de dependencias Python)
 - pnpm (gestión de dependencias Node)
 
-## Instalación Rápida
+## Inicio Rápido
 
-### Backend
+### Instalación (5 min)
 
 ```bash
+# Backend
 cd backend
 poetry install
-poetry run python -m pytest
-```
 
-### Frontend
-
-```bash
+# Frontend
 cd frontend
 pnpm install
-pnpm run build
 ```
+
+### Ejecución (2 min)
+
+```bash
+# Terminal 1: Backend
+cd backend
+poetry run uvicorn app.main:app --reload --port 8000
+
+# Terminal 2: Frontend (opcional)
+cd frontend
+pnpm run dev
+```
+
+### Verificar (1 min)
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Obtener recomendación
+curl http://localhost:8000/api/v1/recommendation/today
+```
+
+**📖 Para onboarding completo**: Ver [docs/ONBOARDING.md](docs/ONBOARDING.md) (≤30 min)
 
 ## Ejecución
 
@@ -59,10 +79,24 @@ pnpm run dev
 Ver `docs/INSTALLATION.md` para instrucciones completas de despliegue.
 
 ## Documentación
-- [Instalación](docs/INSTALLATION.md)
-- [Metodología](docs/methodology.md)
-- [Backtest Report](docs/backtest-report.md)
-- [Runbooks](docs/runbooks/)
+
+### Guías Principales
+- [Flujo End-to-End](docs/E2E_FLOW.md) - Flujo completo del sistema desde datos hasta publicación
+- [Paper Trading Playbook](docs/PAPER_TRADING_PLAYBOOK.md) - Guía para ejecutar trading manual
+- [Instalación](docs/INSTALLATION.md) - Setup completo del sistema
+- [Metodología](docs/methodology.md) - Metodología cuantitativa
+
+### Referencia Técnica
+- [API Documentation](docs/api.md) - Endpoints y ejemplos
+- [Backtest Report](docs/backtest-report.md) - Sistema de backtesting
+- [Execution Model](docs/execution.md) - Modelo de ejecución y tracking error
+- [Risk Management](docs/risk-management.md) - Gestión de riesgo
+
+### Operaciones
+- [Runbooks](docs/runbooks/) - Guías operativas
+  - [Generación de Señal Diaria](docs/runbooks/daily_signal_generation.md)
+  - [Flujos Automatizados](docs/runbooks/automated_flows.md)
+  - [Troubleshooting](docs/runbooks/)
 
 ## Objetivo Cuantitativo y Gobernanza
 

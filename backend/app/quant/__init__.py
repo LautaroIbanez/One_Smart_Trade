@@ -6,11 +6,12 @@ from .regime import HmmRegimeClassifier, KMeansRegimeClassifier, RegimeClassifie
 from .capital_allocation import CapitalAllocationRules, DynamicCapitalAllocator, KellyAllocation
 from .regime_playbooks import RegimePlaybook, RegimePlaybookManager
 from .regime_transition import RegimeTransitionConfig, RegimeTransitionDetector, RegimeTransitionManager
-from .signal_engine import generate_signal
+from .signal_engine import DailySignalEngine, generate_signal
 
 __all__ = [
     "calculate_all",
     "cross_timeframe",
+    "DailySignalEngine",
     "generate_signal",
     "build_narrative",
     "HmmRegimeClassifier",

@@ -65,18 +65,22 @@ poetry run python -m app.scripts.regenerate_signal
 
 ## Índice
 
+### Operaciones Diarias
+
+1. [Generación de Señal Diaria](daily_signal_generation.md) - Pipeline diario y troubleshooting
+
 ### Incidentes Operacionales
 
-1. [Binance API Down](binance_down.md)
-2. [Datos Incompletos](data_incomplete.md)
-3. [Cálculo de Recomendación Fallido](calc_failure.md)
-4. [Degradación de Métricas](metrics_degradation.md)
-5. [Latencia Excesiva](#latencia-excesiva)
-6. [Base de Datos Corrupta](#base-de-datos-corrupta)
+2. [Binance API Down](binance_down.md)
+3. [Datos Incompletos](data_incomplete.md)
+4. [Cálculo de Recomendación Fallido](calc_failure.md)
+5. [Degradación de Métricas](metrics_degradation.md)
+6. [Latencia Excesiva](#latencia-excesiva)
+7. [Base de Datos Corrupta](#base-de-datos-corrupta)
 
 ### Flujos Automáticos
 
-7. [Flujos Automáticos](automated_flows.md)
+8. [Flujos Automáticos](automated_flows.md)
    - Ingesta → Clasificación de Régimen
    - Trigger de Recalibración
    - Redeploy de Parámetros

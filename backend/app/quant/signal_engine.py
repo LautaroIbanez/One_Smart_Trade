@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.data.signal_data_provider import SignalDataInputs
 from app.quant import indicators as ind
 from app.quant.factors import cross_timeframe
 from app.quant.regime import RegimeClassifier
@@ -16,6 +17,7 @@ from app.quant.strategies import (
     volatility_strategy,
     PARAMS as STRATEGY_PARAMS,
 )
+from app.utils.seeding import generate_deterministic_seed
 
 
 def _entry_range(df: pd.DataFrame, signal: str, current_price: float) -> dict[str, float]:
@@ -111,7 +113,7 @@ def _sl_tp(df: pd.DataFrame, signal: str, entry: float) -> dict[str, float]:
     }
 
 
-def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials: int = 2000) -> float:
+def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials: int = 2000, seed: int | None = None) -> float:
     rets = np.log(df["close"]).diff().dropna().tail(750)
     if len(rets) < 50:
         return 50.0
@@ -119,7 +121,12 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
     vol = float(rets.std())
     dt = 1.0 / 24.0
     steps = 72
-    shocks = np.random.normal(drift * dt, vol * np.sqrt(dt), size=(trials, steps))
+    # Use deterministic seed if provided
+    if seed is not None:
+        rng = np.random.default_rng(seed)
+        shocks = rng.normal(drift * dt, vol * np.sqrt(dt), size=(trials, steps))
+    else:
+        shocks = np.random.normal(drift * dt, vol * np.sqrt(dt), size=(trials, steps))
     price_paths = entry * np.exp(np.cumsum(shocks, axis=1))
     price_paths = np.concatenate([np.full((trials, 1), entry), price_paths], axis=1)
     hit_tp = np.maximum.accumulate((price_paths >= tp).astype(int), axis=1)[:, -1].astype(bool)
@@ -131,8 +138,19 @@ def _mc_confidence(df: pd.DataFrame, entry: float, sl: float, tp: float, trials:
     return float(np.clip(adjusted * 100.0, 5.0, 95.0))
 
 
-def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int | None = None) -> dict[str, Any]:
-    """Generate trading signal from 1h and 1d dataframes."""
+def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int | None = None, seed: int | None = None) -> dict[str, Any]:
+    """
+    Generate trading signal from 1h and 1d dataframes.
+    
+    Args:
+        df_1h: Hourly dataframe
+        df_1d: Daily dataframe
+        mc_trials: Number of Monte Carlo trials (optional)
+        seed: Random seed for deterministic Monte Carlo (optional, will be auto-generated if None)
+    
+    Returns:
+        Dictionary with signal, confidence, entry_range, stop_loss_take_profit, seed, etc.
+    """
     # Validate inputs
     if df_1d is None or df_1d.empty:
         raise ValueError("df_1d is required and cannot be empty")
@@ -146,6 +164,29 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
             raise ValueError(f"Missing required column '{col}' in df_1d")
         if col not in df_1h.columns:
             raise ValueError(f"Missing required column '{col}' in df_1h")
+    
+    # Generate deterministic seed if not provided
+    if seed is None:
+        # Extract date from latest candle
+        if "open_time" in df_1d.columns:
+            latest_date = df_1d["open_time"].iloc[-1]
+            if hasattr(latest_date, "date"):
+                date_str = latest_date.date().isoformat()
+            elif hasattr(latest_date, "strftime"):
+                date_str = latest_date.strftime("%Y-%m-%d")
+            else:
+                date_str = str(latest_date)[:10]
+        else:
+            # Fallback: use current date
+            from datetime import datetime
+            date_str = datetime.utcnow().date().isoformat()
+        
+        # Extract symbol from dataframe if available
+        symbol = "BTCUSDT"  # Default
+        if "symbol" in df_1d.columns:
+            symbol = str(df_1d["symbol"].iloc[-1]) if not df_1d["symbol"].empty else "BTCUSDT"
+        
+        seed = generate_deterministic_seed(date_str, symbol)
 
     # Calculate indicators
     ind_1d = ind.calculate_all(df_1d)
@@ -322,7 +363,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
         reward = 0.0
 
     if final_signal in {"BUY", "SELL"} and mc_trials_effective > 0:
-        mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"], trials=mc_trials_effective)
+        mc_conf = _mc_confidence(df_1d, entry["optimal"], levels["stop_loss"], levels["take_profit"], trials=mc_trials_effective, seed=seed)
     else:
         mc_conf = base_conf
 
@@ -407,6 +448,7 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
         "risk_metrics": risk_metrics,
         "votes": votes,
         "signals": signals,
+        "seed": seed,  # Include seed for reproducibility
         "signal_breakdown": {
             "vectors": {label: float(val) for label, val in zip(strat_labels, signal_vectors)},
             "narrative": [
@@ -422,5 +464,60 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
     }
 
     return payload
+
+
+class DailySignalEngine:
+    """
+    Unified signal engine that consolidates strategies, filters, and guardrails.
+    
+    This is the single entry point for generating BUY/SELL/HOLD signals.
+    It combines multiple strategies, applies risk filters, and enforces guardrails
+    to produce deterministic, reproducible trading signals.
+    
+    Usage:
+        engine = DailySignalEngine()
+        signal = engine.generate(df_1h, df_1d)
+    """
+    
+    def __init__(self, mc_trials: int | None = None):
+        """
+        Initialize the daily signal engine.
+        
+        Args:
+            mc_trials: Number of Monte Carlo trials for confidence calculation.
+                      If None, uses default from strategy parameters.
+        """
+        self.mc_trials = mc_trials
+    
+    def generate(self, df_1h: pd.DataFrame, df_1d: pd.DataFrame, seed: int | None = None) -> dict[str, Any]:
+        """
+        Generate a trading signal from 1h and 1d dataframes.
+        
+        This is the single entry point that produces BUY/SELL/HOLD signals.
+        It consolidates all strategies, applies filters, and enforces guardrails.
+        
+        Args:
+            df_1h: Hourly dataframe with OHLCV data
+            df_1d: Daily dataframe with OHLCV data
+            seed: Optional deterministic seed for reproducibility.
+                  If None, a seed will be auto-generated based on date and symbol.
+        
+        Returns:
+            Dictionary containing:
+            - signal: "BUY", "SELL", or "HOLD"
+            - confidence: Confidence score (0-100)
+            - entry_range: Min/max/optimal entry prices
+            - stop_loss_take_profit: SL/TP levels and percentages
+            - risk_metrics: Risk/reward ratio, probabilities, etc.
+            - indicators: Technical indicators
+            - factors: Cross-timeframe factors
+            - signal_breakdown: Detailed breakdown of signal components
+            - seed: Seed used for deterministic calculations
+            - And other metadata
+        
+        Raises:
+            ValueError: If required data is missing or invalid
+        """
+        return generate_signal(df_1h, df_1d, mc_trials=self.mc_trials, seed=seed)
 
 

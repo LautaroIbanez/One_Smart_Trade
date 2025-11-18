@@ -47,8 +47,18 @@ class RecommendationORM(Base):
     exit_price_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     code_commit: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     dataset_version: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    ingestion_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    seed: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     params_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    config_version: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    backtest_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    backtest_cagr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    backtest_win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    backtest_risk_reward_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    backtest_max_drawdown: Mapped[float | None] = mapped_column(Float, nullable=True)
+    backtest_slippage_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tracking_error_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SignalOutcomeORM(Base):
@@ -82,9 +92,11 @@ class SignalOutcomeORM(Base):
 class RunLogORM(Base):
     __tablename__ = "run_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_type: Mapped[str] = mapped_column(String(32))  # ingestion|signal
-    status: Mapped[str] = mapped_column(String(16))  # success|error
+    run_type: Mapped[str] = mapped_column(String(32))  # ingestion|signal|daily_pipeline
+    status: Mapped[str] = mapped_column(String(16))  # success|failed|error
     message: Mapped[str] = mapped_column(String(255), default="")
+    run_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)  # Unique run identifier
+    outcome_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Detailed outcome information
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

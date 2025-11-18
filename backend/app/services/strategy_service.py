@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.config import settings
 from app.core.logging import logger
 
 try:  # pragma: no cover - optional dependency
@@ -78,16 +79,66 @@ class StrategyService:
         self._apply_config(signal, market_df, config)
 
         guardrail_reason = await self._apply_guardrails(signal, config, resolved_symbol)
+        risk_metrics = signal.setdefault("risk_metrics", {})
+        
         if guardrail_reason:
             signal["signal"] = "HOLD"
-            risk_metrics = signal.setdefault("risk_metrics", {})
             risk_metrics["guardrail_reason"] = guardrail_reason
+            # Ensure liquidity_check_passed is set even if guardrail fails
+            if "liquidity_check_passed" not in risk_metrics:
+                risk_metrics["liquidity_check_passed"] = False
             self.alerts.notify(
                 "risk.guardrail_triggered",
                 f"Signal degraded to HOLD due to {guardrail_reason}",
                 payload={"symbol": resolved_symbol, "regime": regime},
             )
+        else:
+            # If no guardrail reason, ensure liquidity_check_passed is True
+            if "liquidity_check_passed" not in risk_metrics:
+                risk_metrics["liquidity_check_passed"] = True
+        
         return signal
+
+    async def apply_guardrails(
+        self,
+        signal: dict[str, Any],
+        market_df: pd.DataFrame,
+        *,
+        symbol: str | None = None,
+    ) -> str | None:
+        """
+        Apply guardrails (RR minimum and liquidity checks) to a signal.
+        
+        This is a public method that can be called directly after signal generation.
+        It automatically detects regime and loads config from optimizer.
+        
+        Args:
+            signal: Signal payload to validate
+            market_df: Market dataframe for regime detection
+            symbol: Trading symbol (defaults to self.default_symbol)
+            
+        Returns:
+            Reason string if guardrail fails (signal should be degraded to HOLD),
+            None if all guardrails pass.
+        """
+        if not signal:
+            return None
+        
+        resolved_symbol = symbol or signal.get("symbol") or self.default_symbol
+        regime = self._detect_regime(market_df)
+        config = self.optimizer.load_config(resolved_symbol, regime)
+        
+        # If no config found, use conservative defaults
+        if not config:
+            fallback_config = {
+                "regime": regime,
+                "rr_threshold": self.rr_floor,
+                "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True},
+            }
+            config = fallback_config
+        
+        # Apply guardrails
+        return await self._apply_guardrails(signal, config, resolved_symbol)
 
     def _detect_regime(self, df: pd.DataFrame) -> str:
         if df is None or df.empty:
@@ -186,28 +237,165 @@ class StrategyService:
         config: dict[str, Any],
         symbol: str,
     ) -> str | None:
+        """
+        Apply guardrails: RR minimum and liquidity checks.
+        
+        Returns reason string if guardrail fails, None if all pass.
+        """
         risk_metrics = signal.get("risk_metrics") or {}
         rr_ratio = float(risk_metrics.get("risk_reward_ratio") or 0.0)
         rr_threshold = float(config.get("rr_threshold", self.rr_floor))
+        
+        # Validate RR minimum
         if rr_ratio and rr_ratio < rr_threshold:
+            risk_metrics["liquidity_check_passed"] = False
+            risk_metrics["liquidity_check_reason"] = f"RR ratio {rr_ratio:.2f} below threshold {rr_threshold:.2f}"
             return "rr_threshold"
 
         sl_tp = signal.get("stop_loss_take_profit") or {}
         stop_loss = sl_tp.get("stop_loss")
-        if stop_loss is None:
-            return None
+        take_profit = sl_tp.get("take_profit")
+        entry_range = signal.get("entry_range") or {}
+        entry_price = entry_range.get("optimal") or signal.get("current_price")
+        
+        if stop_loss is None or entry_price is None:
+            risk_metrics["liquidity_check_passed"] = False
+            risk_metrics["liquidity_check_reason"] = "Missing SL or entry price"
+            return "missing_levels"
 
+        # Check liquidity at SL and TP levels
+        liquidity_passed = False
+        liquidity_reason = None
         try:
-            in_liquidity_zone = await self._stop_in_liquidity_zone(symbol, float(stop_loss))
+            liquidity_passed, liquidity_reason = await self._check_liquidity_depth(
+                symbol=symbol,
+                entry_price=float(entry_price),
+                stop_loss=float(stop_loss),
+                take_profit=float(take_profit) if take_profit else None,
+                signal_direction=signal.get("signal", "HOLD"),
+                min_notional_usd=settings.LIQUIDITY_MIN_NOTIONAL_USD,
+                tolerance_pct=settings.LIQUIDITY_TOLERANCE_PCT,
+            )
         except Exception as exc:
-            logger.warning("Liquidity zone evaluation failed: %s", exc)
-            in_liquidity_zone = False
+            logger.warning("Liquidity depth check failed: %s", exc, exc_info=True)
+            liquidity_passed = False
+            liquidity_reason = f"Liquidity check error: {str(exc)}"
 
-        if in_liquidity_zone:
-            return "liquidity_zone"
+        risk_metrics["liquidity_check_passed"] = liquidity_passed
+        if not liquidity_passed:
+            risk_metrics["liquidity_check_reason"] = liquidity_reason
+            return "insufficient_liquidity"
+        
         return None
 
+    async def _check_liquidity_depth(
+        self,
+        symbol: str,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float | None,
+        signal_direction: str,
+        *,
+        min_notional_usd: float = 1000.0,
+        tolerance_pct: float = 0.5,
+    ) -> tuple[bool, str | None]:
+        """
+        Check if sufficient liquidity exists at SL/TP levels using Binance Futures orderbook depth.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            take_profit: Take profit price (optional)
+            signal_direction: "BUY" or "SELL"
+            min_notional_usd: Minimum notional value required in USD
+            tolerance_pct: Price tolerance percentage for depth check (default: 0.5%)
+        
+        Returns:
+            Tuple of (passed: bool, reason: str | None)
+        """
+        if self.orderbook_repo is None:
+            return False, "OrderBookRepository not available"
+        
+        if entry_price <= 0 or stop_loss <= 0:
+            return False, "Invalid entry or stop loss price"
+        
+        # Get latest orderbook snapshot
+        try:
+            now = pd.Timestamp.utcnow().tz_localize("UTC")
+            snapshot = await self.orderbook_repo.get_snapshot(symbol, now, tolerance_seconds=60)
+            
+            if snapshot is None:
+                # Try loading from recent window
+                start = now - pd.Timedelta(minutes=5)
+                snapshots = await self.orderbook_repo.load(symbol, start, now)
+                if not snapshots:
+                    return False, "No orderbook data available"
+                snapshot = snapshots[-1]  # Use most recent
+        except Exception as exc:
+            logger.warning(f"Failed to get orderbook snapshot for {symbol}: {exc}")
+            return False, f"Orderbook fetch error: {str(exc)}"
+        
+        if snapshot is None:
+            return False, "No orderbook snapshot available"
+        
+        # Determine which side to check based on signal direction
+        # For BUY: need liquidity to sell at SL (asks), buy at TP (bids)
+        # For SELL: need liquidity to buy at SL (bids), sell at TP (asks)
+        
+        checks_passed = []
+        reasons = []
+        
+        # Check stop loss liquidity
+        sl_tolerance = stop_loss * tolerance_pct / 100.0
+        if signal_direction == "BUY":
+            # SL is below entry - need to sell (asks side)
+            sl_depth = snapshot.depth_at_price(stop_loss + sl_tolerance, side="ask")
+            sl_notional = sl_depth * stop_loss if sl_depth else 0.0
+            if sl_notional < min_notional_usd:
+                checks_passed.append(False)
+                reasons.append(f"SL liquidity insufficient: ${sl_notional:.2f} < ${min_notional_usd:.2f}")
+            else:
+                checks_passed.append(True)
+        else:  # SELL
+            # SL is above entry - need to buy (bids side)
+            sl_depth = snapshot.depth_at_price(stop_loss - sl_tolerance, side="bid")
+            sl_notional = sl_depth * stop_loss if sl_depth else 0.0
+            if sl_notional < min_notional_usd:
+                checks_passed.append(False)
+                reasons.append(f"SL liquidity insufficient: ${sl_notional:.2f} < ${min_notional_usd:.2f}")
+            else:
+                checks_passed.append(True)
+        
+        # Check take profit liquidity if provided
+        if take_profit and take_profit > 0:
+            tp_tolerance = take_profit * tolerance_pct / 100.0
+            if signal_direction == "BUY":
+                # TP is above entry - need to sell (asks side)
+                tp_depth = snapshot.depth_at_price(take_profit - tp_tolerance, side="ask")
+                tp_notional = tp_depth * take_profit if tp_depth else 0.0
+                if tp_notional < min_notional_usd:
+                    checks_passed.append(False)
+                    reasons.append(f"TP liquidity insufficient: ${tp_notional:.2f} < ${min_notional_usd:.2f}")
+                else:
+                    checks_passed.append(True)
+            else:  # SELL
+                # TP is below entry - need to buy (bids side)
+                tp_depth = snapshot.depth_at_price(take_profit + tp_tolerance, side="bid")
+                tp_notional = tp_depth * take_profit if tp_depth else 0.0
+                if tp_notional < min_notional_usd:
+                    checks_passed.append(False)
+                    reasons.append(f"TP liquidity insufficient: ${tp_notional:.2f} < ${min_notional_usd:.2f}")
+                else:
+                    checks_passed.append(True)
+        
+        all_passed = all(checks_passed) if checks_passed else False
+        reason = "; ".join(reasons) if reasons else None
+        
+        return all_passed, reason
+
     async def _stop_in_liquidity_zone(self, symbol: str, price: float) -> bool:
+        """Legacy method - kept for backward compatibility."""
         if price <= 0:
             return False
         if self.orderbook_repo is None:
@@ -227,6 +415,7 @@ class StrategyService:
         return latest >= threshold
 
     def _liquidity_near_price(self, snapshot: OrderBookSnapshot | None, price: float) -> float | None:
+        """Legacy method - kept for backward compatibility."""
         if snapshot is None:
             return None
         band = price * self.liquidity_zone_bps / 10_000

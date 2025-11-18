@@ -1,29 +1,16 @@
 """Strategy implementations producing signals and trade metadata."""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
-import yaml
+
+from app.quant.config_manager import get_signal_params
 
 Signal = Literal["BUY", "SELL", "HOLD"]
 
-PARAMS_PATH = Path(__file__).with_name("params.yaml")
-
-
-def _load_params() -> dict[str, Any]:
-    if not PARAMS_PATH.exists():
-        return {}
-    try:
-        with PARAMS_PATH.open() as fh:
-            loaded = yaml.safe_load(fh) or {}
-    except yaml.YAMLError:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-PARAMS = _load_params()
+# Load params using config manager for versioning support
+PARAMS = get_signal_params()
 
 
 def momentum_strategy(df: pd.DataFrame, ind: dict[str, pd.Series]) -> dict[str, Any]:

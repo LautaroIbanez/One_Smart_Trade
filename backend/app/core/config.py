@@ -68,6 +68,30 @@ class Settings(BaseSettings):
     HASH_TTL_DAYS: int = 365
     EXPORT_ROLES_ALLOWED: str = "admin,analyst,read-only"
 
+    # Data freshness validation
+    DATA_FRESHNESS_THRESHOLD_MINUTES: int = 90  # Maximum age (minutes) for latest candles before rejecting recommendation
+    
+    # Data gap validation
+    DATA_GAP_TOLERANCE_CANDLES: int = 2  # Maximum number of missing candles allowed before blocking recommendation
+    DATA_GAP_CHECK_LOOKBACK_DAYS: int = 30  # Number of days to check for gaps before generating recommendation
+    
+    # Liquidity guardrails
+    LIQUIDITY_MIN_NOTIONAL_USD: float = 1000.0  # Minimum notional value required at SL/TP levels
+    LIQUIDITY_TOLERANCE_PCT: float = 0.5  # Price tolerance percentage for depth check (0.5%)
+    RR_FLOOR: float = 1.2  # Minimum risk/reward ratio required (configurable per strategy)
+    
+    # Backtest validation (mandatory before signal publication)
+    BACKTEST_ENABLED: bool = True  # Enable mandatory backtesting
+    BACKTEST_LOOKBACK_DAYS: int = 90  # Days of historical data for backtest
+    BACKTEST_MIN_SHARPE: float = 0.0  # Minimum Sharpe ratio required (0.0 = non-negative)
+    BACKTEST_MAX_DRAWDOWN_PCT: float = 50.0  # Maximum drawdown percentage allowed
+    BACKTEST_COMMISSION_RATE: float = 0.001  # 0.1% commission rate
+    BACKTEST_SLIPPAGE_BPS: float = 5.0  # 5 basis points slippage
+    
+    # Tracking error monitoring (SL/TP achievability)
+    TRACKING_ERROR_THRESHOLD_BPS: float = 50.0  # Alert if tracking error exceeds 50 bps (0.5%)
+    TRACKING_ERROR_CHECK_LOOKAHEAD_DAYS: int = 7  # Days to look ahead for price evaluation
+
     class Config:
         env_file = ".env"
         case_sensitive = True

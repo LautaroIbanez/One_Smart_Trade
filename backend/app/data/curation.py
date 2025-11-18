@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from app.core.config import settings
+from app.core.exceptions import DataFreshnessError, DataGapError
 from app.core.logging import logger
 from .ingestion import INTERVALS
 from .quality import CrossVenueReconciler, DataQualityPipeline
@@ -303,6 +305,195 @@ class DataCuration:
         if not path.exists():
             raise FileNotFoundError(f"Curated dataset not found for {interval} (venue={venue}, symbol={symbol})")
         return read_parquet(path)
+
+    def validate_data_freshness(
+        self,
+        interval: str,
+        *,
+        venue: str | None = None,
+        symbol: str | None = None,
+        threshold_minutes: int | None = None,
+        reference_time: datetime | None = None,
+    ) -> None:
+        """
+        Validate that the latest candle for the given interval is fresh enough.
+        
+        Args:
+            interval: Timeframe to check (e.g., '1h', '1d')
+            venue: Optional venue filter
+            symbol: Optional symbol filter
+            threshold_minutes: Maximum age in minutes (defaults to settings.DATA_FRESHNESS_THRESHOLD_MINUTES)
+            reference_time: Time to compare against (defaults to current UTC time)
+            
+        Raises:
+            DataFreshnessError: If data is missing or stale
+            FileNotFoundError: If curated dataset doesn't exist
+        """
+        if threshold_minutes is None:
+            threshold_minutes = settings.DATA_FRESHNESS_THRESHOLD_MINUTES
+        
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        elif reference_time.tzinfo is None:
+            reference_time = reference_time.replace(tzinfo=timezone.utc)
+        
+        try:
+            df = self.get_latest_curated(interval, venue=venue, symbol=symbol)
+        except FileNotFoundError as e:
+            raise DataFreshnessError(
+                reason=f"Curated dataset not found for interval {interval}",
+                interval=interval,
+                context_data={"venue": venue, "symbol": symbol, "error": str(e)},
+            ) from e
+        
+        if df is None or df.empty:
+            raise DataFreshnessError(
+                reason=f"Empty dataset for interval {interval}",
+                interval=interval,
+                context_data={"venue": venue, "symbol": symbol},
+            )
+        
+        if "open_time" not in df.columns:
+            raise DataFreshnessError(
+                reason=f"Dataset missing 'open_time' column for interval {interval}",
+                interval=interval,
+                context_data={"venue": venue, "symbol": symbol, "columns": list(df.columns)},
+            )
+        
+        # Get the latest candle timestamp
+        latest_timestamp = df["open_time"].max()
+        
+        # Ensure timestamp is timezone-aware
+        if isinstance(latest_timestamp, pd.Timestamp):
+            if latest_timestamp.tz is None:
+                latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+            else:
+                latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+            latest_dt = latest_timestamp.to_pydatetime()
+        elif isinstance(latest_timestamp, datetime):
+            if latest_timestamp.tzinfo is None:
+                latest_dt = latest_timestamp.replace(tzinfo=timezone.utc)
+            else:
+                latest_dt = latest_timestamp.astimezone(timezone.utc)
+        else:
+            # Try to convert
+            latest_dt = pd.to_datetime(latest_timestamp)
+            if latest_dt.tz is None:
+                latest_dt = latest_dt.tz_localize(timezone.utc)
+            else:
+                latest_dt = latest_dt.tz_convert(timezone.utc)
+            latest_dt = latest_dt.to_pydatetime()
+        
+        # Calculate age
+        age_delta = reference_time - latest_dt
+        age_minutes = age_delta.total_seconds() / 60.0
+        
+        if age_minutes > threshold_minutes:
+            raise DataFreshnessError(
+                reason=f"Data stale for interval {interval}: latest candle is {age_minutes:.1f} minutes old (threshold: {threshold_minutes} minutes)",
+                interval=interval,
+                latest_timestamp=latest_dt.isoformat(),
+                threshold_minutes=threshold_minutes,
+                context_data={
+                    "venue": venue,
+                    "symbol": symbol,
+                    "age_minutes": age_minutes,
+                    "reference_time": reference_time.isoformat(),
+                },
+            )
+        
+        logger.debug(
+            f"Data freshness check passed for {interval}",
+            extra={
+                "interval": interval,
+                "venue": venue,
+                "symbol": symbol,
+                "latest_timestamp": latest_dt.isoformat(),
+                "age_minutes": age_minutes,
+                "threshold_minutes": threshold_minutes,
+            },
+        )
+
+    def validate_data_gaps(
+        self,
+        interval: str,
+        *,
+        venue: str | None = None,
+        symbol: str | None = None,
+        lookback_days: int | None = None,
+        tolerance_candles: int | None = None,
+    ) -> None:
+        """
+        Validate that data has no gaps exceeding tolerance threshold.
+        
+        Args:
+            interval: Timeframe to check (e.g., '1h', '1d')
+            venue: Optional venue filter
+            symbol: Optional symbol filter
+            lookback_days: Number of days to check (defaults to settings.DATA_GAP_CHECK_LOOKBACK_DAYS)
+            tolerance_candles: Maximum number of missing candles allowed (defaults to settings.DATA_GAP_TOLERANCE_CANDLES)
+            
+        Raises:
+            DataGapError: If gaps exceed tolerance threshold
+        """
+        from app.data.ingestion import DataIngestion
+        
+        if lookback_days is None:
+            lookback_days = settings.DATA_GAP_CHECK_LOOKBACK_DAYS
+        
+        if tolerance_candles is None:
+            tolerance_candles = settings.DATA_GAP_TOLERANCE_CANDLES
+        
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=lookback_days)
+        
+        ingestion = DataIngestion()
+        gaps = ingestion.check_gaps(interval, start_time, end_time)
+        
+        if not gaps:
+            logger.debug(
+                f"Data gap check passed for {interval}",
+                extra={
+                    "interval": interval,
+                    "venue": venue,
+                    "symbol": symbol,
+                    "lookback_days": lookback_days,
+                },
+            )
+            return
+        
+        # Filter gaps that exceed tolerance
+        critical_gaps = [gap for gap in gaps if gap.get("missing_candles", 0) > tolerance_candles]
+        
+        if critical_gaps:
+            total_missing = sum(gap.get("missing_candles", 0) for gap in critical_gaps)
+            raise DataGapError(
+                reason=f"Data gaps detected for interval {interval}: {len(critical_gaps)} gap(s) with {total_missing} total missing candles (tolerance: {tolerance_candles} candles)",
+                interval=interval,
+                gaps=critical_gaps,
+                tolerance_candles=tolerance_candles,
+                context_data={
+                    "venue": venue,
+                    "symbol": symbol,
+                    "lookback_days": lookback_days,
+                    "total_gaps": len(gaps),
+                    "critical_gaps": len(critical_gaps),
+                    "total_missing_candles": total_missing,
+                },
+            )
+        
+        # Log non-critical gaps as warnings
+        if gaps:
+            logger.warning(
+                f"Non-critical gaps detected for {interval} (within tolerance)",
+                extra={
+                    "interval": interval,
+                    "venue": venue,
+                    "symbol": symbol,
+                    "gaps": gaps,
+                    "tolerance_candles": tolerance_candles,
+                },
+            )
 
     def get_historical_curated(
         self,

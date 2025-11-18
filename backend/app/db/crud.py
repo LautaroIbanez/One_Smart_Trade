@@ -73,7 +73,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
     from app.quant.narrative import build_narrative
     from app.models.audit import RecommendationSnapshot
     from app.utils.hashing import get_git_commit_hash, calculate_params_hash
-    from app.utils.dataset_metadata import get_dataset_version_hash, get_params_digest
+    from app.utils.dataset_metadata import get_dataset_version_hash, get_ingestion_timestamp, get_params_digest
     from app.utils.worm_storage import WormRepository
     from app.core.logging import logger
 
@@ -97,15 +97,34 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         open_rec.analysis = data["analysis"]
         open_rec.created_at = now
 
-        # Update traceability fields if provided
+        # Update traceability fields - always ensure params_digest is set
         if data.get("code_commit"):
             open_rec.code_commit = data["code_commit"]
         if data.get("dataset_version"):
             open_rec.dataset_version = data["dataset_version"]
-        if data.get("params_digest"):
-            open_rec.params_digest = data["params_digest"]
+        if data.get("ingestion_timestamp"):
+            open_rec.ingestion_timestamp = data["ingestion_timestamp"]
+        if data.get("seed"):
+            open_rec.seed = data["seed"]
+        # Always ensure params_digest and config_version are set (use provided or calculate)
+        open_rec.params_digest = data.get("params_digest") or get_params_digest()
+        if not open_rec.config_version:
+            from app.quant.config_manager import get_signal_config_version
+            open_rec.config_version = data.get("config_version") or get_signal_config_version()
         if data.get("snapshot_json"):
             open_rec.snapshot_json = data["snapshot_json"]
+        if data.get("backtest_run_id"):
+            open_rec.backtest_run_id = data["backtest_run_id"]
+        if data.get("backtest_cagr") is not None:
+            open_rec.backtest_cagr = data["backtest_cagr"]
+        if data.get("backtest_win_rate") is not None:
+            open_rec.backtest_win_rate = data["backtest_win_rate"]
+        if data.get("backtest_risk_reward_ratio") is not None:
+            open_rec.backtest_risk_reward_ratio = data["backtest_risk_reward_ratio"]
+        if data.get("backtest_max_drawdown") is not None:
+            open_rec.backtest_max_drawdown = data["backtest_max_drawdown"]
+        if data.get("backtest_slippage_bps") is not None:
+            open_rec.backtest_slippage_bps = data["backtest_slippage_bps"]
 
         db.add(open_rec)
         db.commit()
@@ -118,8 +137,14 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
 
     # Get traceability metadata
     code_commit = get_git_commit_hash()
-    dataset_version = get_dataset_version_hash()
+    # Always include both 1h and 1d datasets for recommendations
+    dataset_version = get_dataset_version_hash(include_both=True)
+    ingestion_timestamp = get_ingestion_timestamp()
+    seed = data.get("seed")  # Get seed from signal generation
     params_digest = get_params_digest()
+    # Get human-readable config version
+    from app.quant.config_manager import get_signal_config_version
+    config_version = get_signal_config_version()
 
     # Create snapshot for WORM storage
     snapshot_json: dict[str, Any] | None = None
@@ -164,8 +189,17 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         "analysis": data["analysis"],
         "code_commit": code_commit,
         "dataset_version": dataset_version,
+        "ingestion_timestamp": ingestion_timestamp,
+        "seed": seed,
         "params_digest": params_digest,
+        "config_version": config_version,
         "snapshot_json": snapshot_json,
+        "backtest_run_id": data.get("backtest_run_id"),
+        "backtest_cagr": data.get("backtest_cagr"),
+        "backtest_win_rate": data.get("backtest_win_rate"),
+        "backtest_risk_reward_ratio": data.get("backtest_risk_reward_ratio"),
+        "backtest_max_drawdown": data.get("backtest_max_drawdown"),
+        "backtest_slippage_bps": data.get("backtest_slippage_bps"),
         "created_at": now,
         "status": "open" if data["signal"] in {"BUY", "SELL"} else "inactive",
         "opened_at": now if data["signal"] in {"BUY", "SELL"} else None,
@@ -231,6 +265,42 @@ def get_latest_recommendation(db: Session) -> RecommendationORM | None:
     return db.execute(stmt).scalars().first()
 
 
+def _calculate_tracking_error_for_recommendation(
+    rec: RecommendationORM,
+    exit_price: float,
+    exit_reason: str,
+) -> float | None:
+    """
+    Calculate tracking error for a closed recommendation.
+    
+    Tracking error is the difference between the target price (SL or TP) and
+    the actual exit price, expressed in basis points.
+    
+    Args:
+        rec: Recommendation with SL/TP levels
+        exit_price: Actual exit price
+        exit_reason: Exit reason (TP, SL, etc.)
+    
+    Returns:
+        Tracking error in basis points, or None if cannot be calculated
+    """
+    # Determine target price based on exit reason
+    target_price = None
+    if exit_reason.upper() in ("TP", "TAKE_PROFIT", "take_profit"):
+        target_price = rec.take_profit
+    elif exit_reason.upper() in ("SL", "STOP_LOSS", "stop_loss"):
+        target_price = rec.stop_loss
+    
+    if not target_price or target_price <= 0:
+        return None
+    
+    # Calculate tracking error as percentage difference
+    tracking_error_pct = abs((exit_price - target_price) / target_price) * 100.0
+    tracking_error_bps = tracking_error_pct * 100.0  # Convert to basis points
+    
+    return round(tracking_error_bps, 2)
+
+
 def close_recommendation(
     db: Session,
     rec: RecommendationORM,
@@ -247,6 +317,12 @@ def close_recommendation(
     rec.exit_reason = exit_reason
     rec.closed_at = exit_at
     rec.exit_price_pct = exit_pct
+    
+    # Calculate tracking error if not already set
+    if rec.tracking_error_bps is None:
+        tracking_error_bps = _calculate_tracking_error_for_recommendation(rec, exit_price, exit_reason)
+        if tracking_error_bps is not None:
+            rec.tracking_error_bps = tracking_error_bps
 
     db.add(rec)
 
@@ -292,17 +368,45 @@ def close_recommendation(
     return rec
 
 
-def log_run(db: Session, run_type: str, status: str, message: str = "", details: dict | None = None) -> RunLogORM:
+def log_run(
+    db: Session,
+    run_type: str,
+    status: str,
+    message: str = "",
+    details: dict | None = None,
+    run_id: str | None = None,
+    started_at: datetime | None = None,
+) -> RunLogORM:
+    """
+    Log a run execution with optional run_id and outcome details.
+    
+    Args:
+        db: Database session
+        run_type: Type of run (e.g., "ingestion", "signal_generation", "daily_pipeline")
+        status: Status ("success", "failed", "error")
+        message: Human-readable message
+        details: Optional dictionary with outcome details
+        run_id: Optional unique run identifier
+        started_at: Optional start time (defaults to now)
+    """
     now = datetime.utcnow()
+    start_time = started_at or now
+    
+    # Store details separately in outcome_details, keep message concise
+    # If run_id is provided, include it in message for quick reference
     formatted_message = message
-    if details:
-        try:
-            details_json = json.dumps(details, default=str)
-        except TypeError:
-            details_json = str(details)
-        formatted_message = f"{message} | details={details_json}" if message else details_json
+    if run_id and run_id not in message:
+        formatted_message = f"{message} (run_id={run_id})" if message else f"run_id={run_id}"
 
-    rl = RunLogORM(run_type=run_type, status=status, message=formatted_message, started_at=now, finished_at=now)
+    rl = RunLogORM(
+        run_type=run_type,
+        status=status,
+        message=formatted_message,
+        run_id=run_id,
+        outcome_details=details,  # Store full details in JSON field
+        started_at=start_time,
+        finished_at=now,
+    )
     db.add(rl)
     db.commit()
     db.refresh(rl)

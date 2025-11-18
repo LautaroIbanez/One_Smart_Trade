@@ -65,6 +65,138 @@ def test_today_recommendation_includes_confidence_fields(monkeypatch, sample_rec
     assert "analysis" in data and "Confianza" in data["analysis"]
 
 
+def test_today_recommendation_includes_backtest_metrics(monkeypatch, sample_recommendation):
+    """Test that backtest metrics are included in /today endpoint response."""
+    sample_recommendation.update({
+        "backtest_run_id": "test-run-123",
+        "backtest_cagr": 15.5,
+        "backtest_win_rate": 65.0,
+        "backtest_risk_reward_ratio": 1.8,
+        "backtest_max_drawdown": 12.3,
+        "backtest_slippage_bps": 5.0,
+    })
+
+    async def fake_get_today_recommendation():
+        return sample_recommendation
+
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_today_recommendation",
+        fake_get_today_recommendation,
+    )
+
+    response = client.get("/api/v1/recommendation/today")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["backtest_run_id"] == "test-run-123"
+    assert data["backtest_cagr"] == pytest.approx(15.5)
+    assert data["backtest_win_rate"] == pytest.approx(65.0)
+    assert data["backtest_risk_reward_ratio"] == pytest.approx(1.8)
+    assert data["backtest_max_drawdown"] == pytest.approx(12.3)
+    assert data["backtest_slippage_bps"] == pytest.approx(5.0)
+
+
+def test_today_recommendation_includes_execution_plan(monkeypatch, sample_recommendation):
+    """Test that execution plan is included in /today endpoint response."""
+    sample_recommendation.update({
+        "execution_plan": {
+            "operational_window": {
+                "optimal_start": "2025-11-17T12:00:00+00:00",
+                "optimal_end": "2025-11-17T16:00:00+00:00",
+                "acceptable_end": "2025-11-18T12:00:00+00:00",
+                "timezone": "UTC",
+                "description": "Óptima: 12:00 - 16:00 UTC, Aceptable: hasta 12:00 UTC",
+            },
+            "order_type": "limit",
+            "suggested_size": {
+                "units": 0.05,
+                "notional_usd": 505.0,
+                "risk_amount_usd": 10.0,
+                "risk_pct": 1.0,
+                "capital_used": 1000.0,
+                "sizing_method": "risk_based",
+            },
+            "instructions": "1. Verifica la señal: COMPRA\n2. Precio actual: $10,150.00",
+            "minimum_capital_required": 1000.0,
+            "risk_per_trade_pct": 1.0,
+            "notes": [],
+        },
+    })
+
+    async def fake_get_today_recommendation():
+        return sample_recommendation
+
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_today_recommendation",
+        fake_get_today_recommendation,
+    )
+
+    response = client.get("/api/v1/recommendation/today")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "execution_plan" in data
+    plan = data["execution_plan"]
+    assert plan["order_type"] == "limit"
+    assert "operational_window" in plan
+    assert "suggested_size" in plan
+    assert "instructions" in plan
+    assert "minimum_capital_required" in plan
+    assert plan["operational_window"]["timezone"] == "UTC"
+    assert "optimal_start" in plan["operational_window"]
+    assert "optimal_end" in plan["operational_window"]
+    assert "acceptable_end" in plan["operational_window"]
+
+
+def test_history_endpoint_includes_backtest_metrics(monkeypatch):
+    """Test that backtest metrics are included in /history endpoint response."""
+    sample_item = {
+        "id": 1,
+        "timestamp": "2025-11-17T00:00:00Z",
+        "date": "2025-11-17",
+        "signal": "BUY",
+        "status": "closed",
+        "execution_status": "TP",
+        "backtest_run_id": "test-run-456",
+        "backtest_cagr": 20.0,
+        "backtest_win_rate": 70.0,
+        "backtest_risk_reward_ratio": 2.0,
+        "backtest_max_drawdown": 10.0,
+        "backtest_slippage_bps": 4.5,
+    }
+
+    async def fake_history(**kwargs):
+        return {
+            "items": [sample_item],
+            "next_cursor": None,
+            "has_more": False,
+            "filters": kwargs,
+            "insights": {"sparkline_series": {}, "stats": {}},
+            "download_url": "/api/v1/recommendation/history?format=csv",
+        }
+
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_recommendation_history",
+        fake_history,
+    )
+
+    response = client.get("/api/v1/recommendation/history")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert len(data["items"]) == 1
+    item = data["items"][0]
+    assert item["backtest_run_id"] == "test-run-456"
+    assert item["backtest_cagr"] == pytest.approx(20.0)
+    assert item["backtest_win_rate"] == pytest.approx(70.0)
+    assert item["backtest_risk_reward_ratio"] == pytest.approx(2.0)
+    assert item["backtest_max_drawdown"] == pytest.approx(10.0)
+    assert item["backtest_slippage_bps"] == pytest.approx(4.5)
+
+
 def test_history_endpoint_passes_filters(monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -269,3 +401,71 @@ def test_history_endpoint_limit_validation(monkeypatch):
     # Test valid limit
     response = client.get("/api/v1/recommendation/history", params={"limit": 50})
     assert response.status_code == 200
+
+
+def test_today_recommendation_rejects_stale_data(monkeypatch):
+    """Test that recommendation generation is blocked when data is stale."""
+    async def fake_get_today_recommendation():
+        # Simulate stale data response from service
+        return {
+            "status": "data_stale",
+            "reason": "Data stale for interval 1d: latest candle is 120.0 minutes old (threshold: 90 minutes)",
+            "interval": "1d",
+            "latest_timestamp": "2025-01-01T10:00:00Z",
+            "threshold_minutes": 90,
+        }
+    
+    # Mock the service to return stale data status
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_today_recommendation",
+        fake_get_today_recommendation,
+    )
+    
+    response = client.get("/api/v1/recommendation/today")
+    # The endpoint should return 503 Service Unavailable for stale data
+    assert response.status_code == 503
+    data = response.json()
+    assert data["detail"]["status"] == "data_stale"
+    assert "stale" in data["detail"]["reason"].lower()
+    assert data["detail"]["interval"] == "1d"
+    assert data["detail"]["threshold_minutes"] == 90
+
+
+def test_today_recommendation_rejects_data_gaps(monkeypatch):
+    """Test that recommendation generation is blocked when data has gaps."""
+    async def fake_get_today_recommendation():
+        # Simulate data gaps response from service
+        return {
+            "status": "data_gaps",
+            "reason": "Data gaps detected for interval 1d: 1 gap(s) with 3 total missing candles (tolerance: 2 candles)",
+            "interval": "1d",
+            "gaps": [
+                {
+                    "status": "gap",
+                    "interval": "1d",
+                    "start": "2025-01-10T00:00:00Z",
+                    "end": "2025-01-13T00:00:00Z",
+                    "missing_candles": 3,
+                }
+            ],
+            "tolerance_candles": 2,
+        }
+    
+    # Mock the service to return data gaps status
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_today_recommendation",
+        fake_get_today_recommendation,
+    )
+    
+    response = client.get("/api/v1/recommendation/today")
+    # The endpoint should return 503 Service Unavailable for data gaps
+    assert response.status_code == 503
+    data = response.json()
+    assert data["detail"]["status"] == "data_gaps"
+    assert "gaps" in data["detail"]["reason"].lower()
+    assert data["detail"]["interval"] == "1d"
+    assert data["detail"]["tolerance_candles"] == 2
+    assert len(data["detail"]["gaps"]) == 1
+    assert data["detail"]["gaps"][0]["missing_candles"] == 3

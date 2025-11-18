@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 import csv
 import io
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -15,7 +15,7 @@ import yaml
 from app.analytics.trade_efficiency import TradeEfficiencyAnalyzer, TradeEfficiencyEvaluation
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.exceptions import RiskValidationError
+from app.core.exceptions import DataFreshnessError, DataGapError, RiskValidationError
 from sqlalchemy import and_, case, desc, func, or_, select
 from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
 from app.backtesting.risk_sizing import RiskSizer
@@ -31,8 +31,10 @@ from app.db.crud import (
     get_open_recommendation,
     get_recommendation_history as db_history,
 )
+from app.data.curation import DataCuration
+from app.data.signal_data_provider import SignalDataProvider
 from app.db.models import RecommendationORM
-from app.quant.signal_engine import generate_signal
+from app.quant.signal_engine import DailySignalEngine
 from app.services.alert_service import AlertService
 from app.services.strategy_service import StrategyService
 from app.services.user_portfolio_service import UserPortfolioService
@@ -41,6 +43,7 @@ from app.services.exposure_ledger_service import ExposureLedgerService
 from app.services.trade_activity_ledger import TradeActivityLedger
 from app.signals.loggers import SignalLogRecord, log_signal_event
 from app.confidence.service import ConfidenceService
+from app.services.preflight_audit_service import PreflightAuditService
 from app.observability.risk_metrics import (
     USER_RISK_REJECTIONS_TOTAL,
     USER_RUIN_PROBABILITY,
@@ -74,6 +77,9 @@ class RecommendationService:
         self.exposure_ledger_service = ExposureLedgerService(session=session)
         self.trade_activity_ledger = TradeActivityLedger(session=session)
         self.tracking_error_threshold_pct = self._load_tracking_error_threshold()
+        self.preflight_audit = PreflightAuditService()
+        # Unified signal engine - single entry point for BUY/SELL/HOLD signals
+        self.signal_engine = DailySignalEngine()
         # Risk manager will be initialized per-user with real equity
         self._default_risk_manager = UnifiedRiskManager(
             base_capital=10000.0,
@@ -349,6 +355,11 @@ class RecommendationService:
         
         # Add disclaimer
         result.setdefault("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk. Position sizing requires your portfolio data or explicit capital input via /api/v1/risk/sizing.")
+        
+        # Build execution plan
+        sizing_for_plan = result.get("suggested_sizing")
+        execution_plan = self._build_execution_plan(result, sizing_result=sizing_for_plan, user_id=user_id)
+        result["execution_plan"] = execution_plan
         
         return result
     
@@ -785,6 +796,171 @@ class RecommendationService:
         )
         
         return result
+
+    def _build_execution_plan(
+        self,
+        recommendation: dict[str, Any],
+        sizing_result: dict[str, Any] | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Build manual execution playbook with operational window, order type, sizing, and instructions.
+        
+        Args:
+            recommendation: Recommendation dict with signal, entry_range, stop_loss_take_profit, etc.
+            sizing_result: Result from _calculate_position_sizing (can be None if sizing unavailable)
+            user_id: Optional user ID for personalized sizing
+            
+        Returns:
+            Execution plan dict or None if signal is HOLD or invalid
+        """
+        signal = recommendation.get("signal")
+        if signal == "HOLD" or not signal:
+            return None
+        
+        entry_range = recommendation.get("entry_range", {})
+        stop_loss_tp = recommendation.get("stop_loss_take_profit", {})
+        entry_min = entry_range.get("min")
+        entry_max = entry_range.get("max")
+        entry_optimal = entry_range.get("optimal")
+        stop_loss = stop_loss_tp.get("stop_loss")
+        take_profit = stop_loss_tp.get("take_profit")
+        current_price = recommendation.get("current_price", entry_optimal)
+        
+        if not entry_optimal or not stop_loss:
+            return None
+        
+        # Calculate operational window (recommendation is generated at 12:00 UTC daily)
+        # Best execution window: within 4 hours of signal generation (12:00-16:00 UTC)
+        # Acceptable window: up to 24 hours (until next signal)
+        from datetime import timezone
+        recommendation_time = recommendation.get("timestamp")
+        if recommendation_time:
+            try:
+                # Parse ISO format timestamp, handling both Z and +00:00 formats
+                ts_str = recommendation_time.replace("Z", "+00:00")
+                rec_dt = datetime.fromisoformat(ts_str)
+                # Ensure timezone-aware (UTC)
+                if rec_dt.tzinfo is None:
+                    rec_dt = rec_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                rec_dt = datetime.now(timezone.utc)
+        else:
+            rec_dt = datetime.now(timezone.utc)
+        
+        # Operational window: 4 hours optimal, 24 hours acceptable
+        optimal_window_start = rec_dt
+        optimal_window_end = rec_dt + timedelta(hours=4)
+        acceptable_window_end = rec_dt + timedelta(hours=24)
+        
+        # Determine order type recommendation
+        # Prefer limit orders for better execution, but market if price is already in range
+        price_in_range = entry_min <= current_price <= entry_max if entry_min and entry_max else False
+        order_type = "limit" if not price_in_range else "market"
+        if price_in_range and abs(current_price - entry_optimal) / entry_optimal < 0.001:  # Within 0.1% of optimal
+            order_type = "market"
+        
+        # Calculate minimum capital required (based on minimum position size + fees)
+        # Minimum size: 0.001 BTC (from RiskSizer defaults)
+        min_units = 0.001
+        risk_per_unit = abs(entry_optimal - stop_loss) if entry_optimal and stop_loss else 0.0
+        min_risk_amount = min_units * risk_per_unit if risk_per_unit > 0 else 0.0
+        # Assume 1% risk budget for minimum capital calculation
+        min_capital_required = (min_risk_amount / 0.01) if min_risk_amount > 0 else 0.0
+        # Add estimated fees (0.1% entry + 0.1% exit)
+        estimated_fees = min_units * entry_optimal * 0.002 if entry_optimal else 0.0
+        min_capital_required = min_capital_required + estimated_fees
+        
+        # Build suggested size based on sizing result or minimum capital
+        if sizing_result and sizing_result.get("units") and sizing_result.get("units") > 0:
+            suggested_size = {
+                "units": sizing_result.get("units", 0.0),
+                "notional_usd": sizing_result.get("notional", 0.0),
+                "risk_amount_usd": sizing_result.get("risk_amount", 0.0),
+                "risk_pct": sizing_result.get("risk_pct", sizing_result.get("risk_percentage", 0.0)),
+                "capital_used": sizing_result.get("capital_used", 0.0),
+                "sizing_method": sizing_result.get("sizing_method", "risk_based"),
+            }
+            risk_per_trade_pct = sizing_result.get("risk_pct", sizing_result.get("risk_percentage", 0.0))
+        else:
+            # Use minimum sizing if user sizing unavailable
+            suggested_size = {
+                "units": min_units,
+                "notional_usd": min_units * entry_optimal if entry_optimal else 0.0,
+                "risk_amount_usd": min_risk_amount,
+                "risk_pct": 1.0,  # Default 1% risk
+                "capital_used": min_capital_required,
+                "sizing_method": "minimum",
+                "note": "Sizing basado en capital mínimo. Para sizing personalizado, conecta tu cuenta o usa /api/v1/risk/sizing",
+            }
+            risk_per_trade_pct = 1.0
+        
+        # Build step-by-step instructions
+        signal_side = "COMPRA" if signal == "BUY" else "VENTA"
+        instructions_parts = [
+            f"1. Verifica la señal: {signal_side}",
+            f"2. Precio actual: ${current_price:,.2f}",
+            f"3. Rango de entrada: ${entry_min:,.2f} - ${entry_max:,.2f} (óptimo: ${entry_optimal:,.2f})",
+            f"4. Stop Loss: ${stop_loss:,.2f} ({stop_loss_tp.get('stop_loss_pct', 0.0):.2f}%)",
+            f"5. Take Profit: ${take_profit:,.2f} ({stop_loss_tp.get('take_profit_pct', 0.0):.2f}%)",
+        ]
+        
+        if order_type == "limit":
+            instructions_parts.append(
+                f"6. Tipo de orden: LIMIT a ${entry_optimal:,.2f} (preferido para mejor ejecución)"
+            )
+            instructions_parts.append(
+                f"7. Si el precio no alcanza el límite en 4 horas, considera ajustar o cancelar"
+            )
+        else:
+            instructions_parts.append(
+                f"6. Tipo de orden: MARKET (precio actual está en rango óptimo)"
+            )
+        
+        instructions_parts.append(
+            f"8. Tamaño sugerido: {suggested_size['units']:.4f} unidades (${suggested_size['notional_usd']:,.2f})"
+        )
+        instructions_parts.append(
+            f"9. Riesgo por trade: ${suggested_size['risk_amount_usd']:,.2f} ({suggested_size['risk_pct']:.2f}% del capital)"
+        )
+        instructions_parts.append(
+            f"10. Configura Stop Loss y Take Profit INMEDIATAMENTE después de la entrada"
+        )
+        instructions_parts.append(
+            f"11. Ventana operativa: Óptima hasta {optimal_window_end.strftime('%Y-%m-%d %H:%M UTC')}, aceptable hasta {acceptable_window_end.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        
+        instructions = "\n".join(instructions_parts)
+        
+        # Build notes/warnings
+        notes = []
+        if not sizing_result or sizing_result.get("status") == "missing_equity":
+            notes.append("⚠️ Sizing basado en capital mínimo. Conecta tu cuenta para sizing personalizado.")
+        if sizing_result and sizing_result.get("ruin_adjustment"):
+            notes.append("⚠️ Tamaño ajustado por riesgo de ruina.")
+        if sizing_result and sizing_result.get("current_drawdown_pct", 0.0) > 10.0:
+            notes.append(f"⚠️ Drawdown actual: {sizing_result.get('current_drawdown_pct', 0.0):.2f}% - considera reducir tamaño.")
+        if order_type == "limit" and price_in_range:
+            notes.append("💡 Precio actual está en rango - puedes usar orden MARKET para entrada inmediata.")
+        
+        # Build execution plan
+        execution_plan = {
+            "operational_window": {
+                "optimal_start": optimal_window_start.isoformat(),
+                "optimal_end": optimal_window_end.isoformat(),
+                "acceptable_end": acceptable_window_end.isoformat(),
+                "timezone": "UTC",
+                "description": f"Óptima: {optimal_window_start.strftime('%H:%M')} - {optimal_window_end.strftime('%H:%M')} UTC, Aceptable: hasta {acceptable_window_end.strftime('%H:%M')} UTC",
+            },
+            "order_type": order_type,
+            "suggested_size": suggested_size,
+            "instructions": instructions,
+            "minimum_capital_required": round(min_capital_required, 2),
+            "risk_per_trade_pct": round(risk_per_trade_pct, 2),
+            "notes": notes,
+        }
+        
+        return execution_plan
 
     def _reset_cache(self) -> None:
         self._cache = None
@@ -1308,8 +1484,39 @@ class RecommendationService:
             latest_hourly = latest_daily
 
         try:
-            signal = generate_signal(latest_hourly, latest_daily)
+            # Generate signal using unified DailySignalEngine
+            signal = self.signal_engine.generate(latest_hourly, latest_daily)
+            
+            # Apply guardrails (RR minimum and liquidity checks) - CRITICAL: before backtest
+            guardrail_reason = await self.strategy_service.apply_guardrails(
+                signal, 
+                latest_daily, 
+                symbol="BTCUSDT"
+            )
+            
+            # If guardrails fail, degrade signal to HOLD
+            if guardrail_reason:
+                risk_metrics = signal.setdefault("risk_metrics", {})
+                signal["signal"] = "HOLD"
+                risk_metrics["guardrail_reason"] = guardrail_reason
+                risk_metrics["liquidity_check_passed"] = False
+                logger.warning(
+                    f"Guardrails failed: {guardrail_reason} - signal degraded to HOLD",
+                    extra={
+                        "guardrail_reason": guardrail_reason,
+                        "original_signal": signal.get("signal", "UNKNOWN"),
+                        "symbol": "BTCUSDT",
+                    }
+                )
+            else:
+                # Ensure liquidity_check_passed is set to True if guardrails pass
+                risk_metrics = signal.setdefault("risk_metrics", {})
+                if "liquidity_check_passed" not in risk_metrics:
+                    risk_metrics["liquidity_check_passed"] = True
+            
+            # Apply SL/TP policy (may further adjust levels)
             signal = await self.strategy_service.apply_sl_tp_policy(signal, latest_daily)
+            
             if "close" in latest_hourly.columns:
                 signal["current_price"] = float(latest_hourly["close"].iloc[-1])
             if "open_time" in latest_hourly.columns:
@@ -1456,6 +1663,141 @@ class RecommendationService:
                 "trade_efficiency": efficiency_eval.to_dict(),
             }
 
+        # MANDATORY BACKTEST VALIDATION (ISSUE-10)
+        backtest_run_id: str | None = None
+        if settings.BACKTEST_ENABLED:
+            try:
+                logger.info("Running mandatory backtest validation before publishing recommendation")
+                
+                # Prepare backtest data
+                end_date = pd.to_datetime(latest_hourly.index[-1]) if not latest_hourly.empty else datetime.utcnow()
+                start_date = end_date - timedelta(days=settings.BACKTEST_LOOKBACK_DAYS)
+                
+                # Create strategy adapter
+                strategy_adapter = DailyStrategyAdapter(
+                    signal_engine=self.signal_engine,
+                    df_1h=latest_hourly,
+                    df_1d=latest_daily,
+                    seed=signal.get("seed"),
+                )
+                
+                # Run backtest
+                backtest_engine = BacktestEngine()
+                backtest_result = await backtest_engine.run_backtest(
+                    start_date=start_date,
+                    end_date=end_date,
+                    instrument="BTCUSDT",
+                    timeframe="1h",
+                    strategy=strategy_adapter,
+                    initial_capital=10000.0,
+                    commission_rate=settings.BACKTEST_COMMISSION_RATE,
+                    fixed_slippage_bps=settings.BACKTEST_SLIPPAGE_BPS,
+                    slippage_model="fixed",
+                    risk_manager=self._default_risk_manager,
+                    seed=signal.get("seed"),
+                )
+                
+                # Calculate metrics
+                metrics = calculate_metrics(backtest_result)
+                
+                # Validate backtest results
+                sharpe = metrics.get("sharpe", 0.0)
+                max_dd = metrics.get("max_drawdown", 0.0)
+                
+                if sharpe < settings.BACKTEST_MIN_SHARPE:
+                    logger.warning(
+                        f"Backtest validation failed: Sharpe {sharpe:.2f} < {settings.BACKTEST_MIN_SHARPE}",
+                        extra={"sharpe": sharpe, "max_drawdown": max_dd, "metrics": metrics},
+                    )
+                    return {
+                        "status": "backtest_failed",
+                        "reason": f"Backtest Sharpe ratio {sharpe:.2f} below minimum {settings.BACKTEST_MIN_SHARPE}",
+                        "backtest_metrics": metrics,
+                    }
+                
+                if max_dd > settings.BACKTEST_MAX_DRAWDOWN_PCT:
+                    logger.warning(
+                        f"Backtest validation failed: Max DD {max_dd:.2f}% > {settings.BACKTEST_MAX_DRAWDOWN_PCT}%",
+                        extra={"sharpe": sharpe, "max_drawdown": max_dd, "metrics": metrics},
+                    )
+                    return {
+                        "status": "backtest_failed",
+                        "reason": f"Backtest max drawdown {max_dd:.2f}% exceeds limit {settings.BACKTEST_MAX_DRAWDOWN_PCT}%",
+                        "backtest_metrics": metrics,
+                    }
+                
+                # Save backtest result and get run_id
+                saved_result = save_backtest_result(backtest_result)
+                backtest_run_id = saved_result.get("run_id")
+                
+                logger.info(
+                    f"Backtest validation passed: Sharpe={sharpe:.2f}, Max DD={max_dd:.2f}%, run_id={backtest_run_id}",
+                    extra={"sharpe": sharpe, "max_drawdown": max_dd, "run_id": backtest_run_id},
+                )
+                
+                # Extract and add backtest metrics to signal for persistence
+                signal["backtest_metrics"] = metrics
+                signal["backtest_run_id"] = backtest_run_id
+                
+                # Extract key KPIs for persistence
+                signal["backtest_cagr"] = metrics.get("cagr")
+                signal["backtest_win_rate"] = metrics.get("win_rate")
+                signal["backtest_max_drawdown"] = metrics.get("max_drawdown")
+                
+                # Calculate risk/reward ratio from profit_factor or avg_win/avg_loss
+                profit_factor = metrics.get("profit_factor", 0.0)
+                if profit_factor > 0:
+                    # Risk/reward ratio is approximately the inverse of profit_factor when win_rate is considered
+                    # For simplicity, use profit_factor as RR ratio (it's gross_profit/gross_loss)
+                    signal["backtest_risk_reward_ratio"] = round(profit_factor, 2)
+                else:
+                    signal["backtest_risk_reward_ratio"] = None
+                
+                # Extract slippage from execution metrics if available
+                execution_metrics = backtest_result.get("execution_stats", {})
+                if execution_metrics and "avg_slippage_bps" in execution_metrics:
+                    signal["backtest_slippage_bps"] = execution_metrics.get("avg_slippage_bps")
+                else:
+                    # Use configured slippage as fallback
+                    signal["backtest_slippage_bps"] = settings.BACKTEST_SLIPPAGE_BPS
+                
+            except Exception as e:
+                logger.error(f"Backtest execution failed: {e}", exc_info=True)
+                return {
+                    "status": "backtest_error",
+                    "reason": f"Backtest execution failed: {str(e)}",
+                }
+
+        # Build execution plan before audit (needed for audit check)
+        sizing_result = self._calculate_position_sizing(signal, user_id=None)
+        execution_plan = self._build_execution_plan(signal, sizing_result=sizing_result, user_id=None)
+        signal["execution_plan"] = execution_plan
+
+        # PREFLIGHT AUDIT: Validate all requirements before publishing
+        logger.info("Running preflight audit before publishing recommendation")
+        audit_result = await self.preflight_audit.audit_recommendation(signal)
+        
+        if not audit_result.all_checks_passed:
+            failed_checks = audit_result.get_failed_checks()
+            failed_names = [check.name for check in failed_checks]
+            logger.error(
+                f"Preflight audit FAILED - blocking recommendation publication. "
+                f"Failed checks: {', '.join(failed_names)}"
+            )
+            return {
+                "status": "audit_failed",
+                "reason": f"Preflight audit failed: {', '.join(failed_names)}",
+                "audit_result": audit_result.to_dict(),
+                "failed_checks": [
+                    {
+                        "name": check.name,
+                        "message": check.message,
+                        "details": check.details,
+                    }
+                    for check in failed_checks
+                ],
+            }
+        
         rec = None
         signal_log_id: int | None = None
 
@@ -1470,6 +1812,10 @@ class RecommendationService:
                 finally:
                     db.close()
 
+        logger.info(
+            f"✅ Preflight audit PASSED - recommendation {rec.id if rec else 'N/A'} published successfully. "
+            f"All {len(audit_result.checks)} checks passed."
+        )
         logger.info(f"Generated and saved recommendation: {signal['signal']}")
         
         # Cache result first to get sizing with risk_of_ruin (this calculates sizing)
@@ -1526,8 +1872,25 @@ class RecommendationService:
         
         return result
 
-    async def get_today_recommendation(self, user_id: str | None = None) -> Optional[dict[str, Any]]:
-        """Get today's recommendation from DB or generate on-demand."""
+    async def get_today_recommendation(
+        self,
+        user_id: str | None = None,
+        *,
+        allow_replay: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Get today's recommendation from DB.
+        
+        By default, does NOT generate new signals - only returns existing ones.
+        Signals should only be generated by the scheduled daily pipeline job.
+        
+        Args:
+            user_id: Optional user ID for personalized position sizing
+            allow_replay: If True, allows on-demand generation (for replays/testing)
+        
+        Returns:
+            Recommendation dict or None if not found
+        """
         today = datetime.utcnow().date()
 
         self._ensure_champion_context(run_alerts=False)
@@ -1560,7 +1923,15 @@ class RecommendationService:
             finally:
                 db.close()
 
-        # Generate on-demand if not present
+        # Only generate on-demand if allow_replay=True (for replays/testing)
+        if not allow_replay:
+            logger.info(
+                "No recommendation found for today. Signal generation is only allowed via scheduled daily pipeline job. "
+                "Use allow_replay=True for manual replays."
+            )
+            return None
+
+        logger.info("Generating recommendation on-demand (replay mode)")
         # CRITICAL: Validate capital BEFORE generating signal
         ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
         if not ctx.has_data or ctx.equity is None or ctx.equity <= 0:
@@ -1596,29 +1967,94 @@ class RecommendationService:
             }
         
         logger.info("Generating recommendation on-demand")
-        dc = DataCuration()
+        
+        # CRITICAL: Use single source-of-truth for signal data inputs
+        # This ensures all strategies receive the same validated datasets
+        data_provider = SignalDataProvider(
+            curation=self.curation,
+            venue="binance",
+            symbol="BTCUSDT",
+        )
+        
         try:
-            df_1d = dc.get_latest_curated("1d")
-        except FileNotFoundError:
-            logger.warning("Cannot generate recommendation: no 1d curated data available")
+            inputs = data_provider.get_validated_inputs(
+                validate_freshness=True,
+                validate_gaps=True,
+            )
+        except DataFreshnessError as e:
+            logger.warning(
+                f"Recommendation generation blocked: data freshness check failed - {e.reason}",
+                extra={
+                    "interval": e.interval,
+                    "latest_timestamp": e.latest_timestamp,
+                    "threshold_minutes": e.threshold_minutes,
+                    "context": e.context_data,
+                },
+            )
+            return {
+                "status": "data_stale",
+                "reason": e.reason,
+                "interval": e.interval,
+                "latest_timestamp": e.latest_timestamp,
+                "threshold_minutes": e.threshold_minutes,
+            }
+        except DataGapError as e:
+            logger.warning(
+                f"Recommendation generation blocked: data gap check failed - {e.reason}",
+                extra={
+                    "interval": e.interval,
+                    "gaps": e.gaps,
+                    "tolerance_candles": e.tolerance_candles,
+                    "context": e.context_data,
+                },
+            )
+            return {
+                "status": "data_gaps",
+                "reason": e.reason,
+                "interval": e.interval,
+                "gaps": e.gaps,
+                "tolerance_candles": e.tolerance_candles,
+            }
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(f"Cannot generate recommendation: {e}")
             return None
+        
+        # Extract validated dataframes from inputs
+        df_1h = inputs.df_1h
+        df_1d = inputs.df_1d
 
         try:
-            df_1h = dc.get_latest_curated("1h")
-        except FileNotFoundError:
-            logger.warning("No 1h data available, using 1d as fallback")
-            df_1h = df_1d
-
-        if df_1d is None or df_1d.empty:
-            logger.warning("Cannot generate recommendation: no 1d curated data available")
-            return None
-
-        if df_1h is None or df_1h.empty:
-            logger.warning("1h dataset empty, using 1d as fallback")
-            df_1h = df_1d
-
-        try:
-            recommendation = generate_signal(df_1h, df_1d)
+            # Generate signal using unified DailySignalEngine
+            recommendation = self.signal_engine.generate(df_1h, df_1d)
+            
+            # Apply guardrails (RR minimum and liquidity checks) - CRITICAL: before backtest
+            guardrail_reason = await self.strategy_service.apply_guardrails(
+                recommendation, 
+                df_1d, 
+                symbol="BTCUSDT"
+            )
+            
+            # If guardrails fail, degrade signal to HOLD
+            if guardrail_reason:
+                risk_metrics = recommendation.setdefault("risk_metrics", {})
+                recommendation["signal"] = "HOLD"
+                risk_metrics["guardrail_reason"] = guardrail_reason
+                risk_metrics["liquidity_check_passed"] = False
+                logger.warning(
+                    f"Guardrails failed: {guardrail_reason} - signal degraded to HOLD",
+                    extra={
+                        "guardrail_reason": guardrail_reason,
+                        "original_signal": recommendation.get("signal", "UNKNOWN"),
+                        "symbol": "BTCUSDT",
+                    }
+                )
+            else:
+                # Ensure liquidity_check_passed is set to True if guardrails pass
+                risk_metrics = recommendation.setdefault("risk_metrics", {})
+                if "liquidity_check_passed" not in risk_metrics:
+                    risk_metrics["liquidity_check_passed"] = True
+            
+            # Apply SL/TP policy (may further adjust levels)
             recommendation = await self.strategy_service.apply_sl_tp_policy(recommendation, df_1d)
             # Add analysis if not present (will be generated in create_recommendation)
             if "analysis" not in recommendation or not recommendation["analysis"]:
@@ -1639,10 +2075,44 @@ class RecommendationService:
                     "trade_efficiency": efficiency_eval.to_dict(),
                 }
 
+            # Build execution plan before audit (needed for audit check)
+            sizing_result = self._calculate_position_sizing(recommendation, user_id=user_id)
+            execution_plan = self._build_execution_plan(recommendation, sizing_result=sizing_result, user_id=user_id)
+            recommendation["execution_plan"] = execution_plan
+
+            # PREFLIGHT AUDIT: Validate all requirements before publishing
+            logger.info("Running preflight audit before publishing recommendation")
+            audit_result = await self.preflight_audit.audit_recommendation(recommendation)
+            
+            if not audit_result.all_checks_passed:
+                failed_checks = audit_result.get_failed_checks()
+                failed_names = [check.name for check in failed_checks]
+                logger.error(
+                    f"Preflight audit FAILED - blocking recommendation publication. "
+                    f"Failed checks: {', '.join(failed_names)}"
+                )
+                return {
+                    "status": "audit_failed",
+                    "reason": f"Preflight audit failed: {', '.join(failed_names)}",
+                    "audit_result": audit_result.to_dict(),
+                    "failed_checks": [
+                        {
+                            "name": check.name,
+                            "message": check.message,
+                            "details": check.details,
+                        }
+                        for check in failed_checks
+                    ],
+                }
+
             result = None
             with SessionLocal() as db:
                 try:
                     rec = create_recommendation(db, recommendation)
+                    logger.info(
+                        f"✅ Preflight audit PASSED - recommendation {rec.id} published successfully. "
+                        f"All {len(audit_result.checks)} checks passed."
+                    )
                     logger.info(f"Generated and saved recommendation: {recommendation['signal']}")
                     result = self._cache_result(rec, user_id=user_id)
                 finally:
@@ -1775,7 +2245,10 @@ class RecommendationService:
                     "divergence_flag",
                     "code_commit",
                     "dataset_version",
+                    "ingestion_timestamp",
+                    "seed",
                     "params_digest",
+                    "config_version",
                     "snapshot_url",
                 ]
             )
@@ -1798,7 +2271,10 @@ class RecommendationService:
                         item.get("divergence_flag", False),
                         item.get("code_commit"),
                         item.get("dataset_version"),
+                        item.get("ingestion_timestamp"),
+                        item.get("seed"),
                         item.get("params_digest"),
+                        item.get("config_version"),
                         item.get("snapshot_url"),
                     ]
                 )
@@ -2144,13 +2620,37 @@ class RecommendationService:
         self._reset_cache()
 
         if updated_rec:
+            # Check if tracking error exceeds threshold and send alert
+            if updated_rec.tracking_error_bps is not None:
+                from app.core.config import settings
+                if updated_rec.tracking_error_bps > settings.TRACKING_ERROR_THRESHOLD_BPS:
+                    try:
+                        await self.alerts.send_alert(
+                            level="warning",
+                            title="Tracking Error Threshold Exceeded",
+                            message=f"Recommendation {updated_rec.id} ({updated_rec.date}) has tracking error of {updated_rec.tracking_error_bps:.2f} bps, exceeding threshold of {settings.TRACKING_ERROR_THRESHOLD_BPS} bps",
+                            metadata={
+                                "recommendation_id": updated_rec.id,
+                                "date": updated_rec.date,
+                                "signal": updated_rec.signal,
+                                "exit_reason": exit_reason,
+                                "tracking_error_bps": updated_rec.tracking_error_bps,
+                                "threshold_bps": settings.TRACKING_ERROR_THRESHOLD_BPS,
+                                "target_price": updated_rec.take_profit if exit_reason.upper() in ("TP", "TAKE_PROFIT") else updated_rec.stop_loss,
+                                "actual_exit_price": exit_price,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send tracking error alert: {e}", exc_info=True)
+            
             logger.info(
-                "Closed recommendation %s (%s) at %.2f due to %s (%.2f%%)",
+                "Closed recommendation %s (%s) at %.2f due to %s (%.2f%%) [tracking_error: %s bps]",
                 updated_rec.id,
                 updated_rec.signal,
                 exit_price,
                 exit_reason,
                 exit_pct if exit_pct is not None else 0.0,
+                f"{updated_rec.tracking_error_bps:.2f}" if updated_rec.tracking_error_bps is not None else "N/A",
             )
 
     def _evaluate_exit_conditions(self, rec) -> tuple[float, str, datetime, float] | None:
@@ -2246,8 +2746,18 @@ class RecommendationService:
             "recommended_risk_fraction": None,  # Will be set by _cache_result if sizing is available
             "code_commit": r.code_commit,
             "dataset_version": r.dataset_version,
+            "ingestion_timestamp": r.ingestion_timestamp.isoformat() if r.ingestion_timestamp else None,
+            "seed": r.seed,
             "params_digest": r.params_digest,
+            "config_version": r.config_version,
             "snapshot_json": r.snapshot_json,
+            "backtest_run_id": r.backtest_run_id,
+            "backtest_cagr": r.backtest_cagr,
+            "backtest_win_rate": r.backtest_win_rate,
+            "backtest_risk_reward_ratio": r.backtest_risk_reward_ratio,
+            "backtest_max_drawdown": r.backtest_max_drawdown,
+            "backtest_slippage_bps": r.backtest_slippage_bps,
+            "tracking_error_bps": r.tracking_error_bps,
             "disclaimer": "This is not financial advice. Trading cryptocurrencies involves significant risk.",
         }
         calibration_meta = payload["signal_breakdown"].get("calibration", {}) if payload["signal_breakdown"] else {}

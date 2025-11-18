@@ -1,0 +1,109 @@
+"""Adapter to wrap DailySignalEngine as StrategyProtocol for backtesting."""
+from __future__ import annotations
+
+from typing import Any
+
+import pandas as pd
+
+from app.backtesting.engine import StrategyProtocol
+from app.quant.signal_engine import DailySignalEngine
+
+
+class DailyStrategyAdapter:
+    """
+    Adapter that wraps DailySignalEngine to implement StrategyProtocol.
+    
+    This allows the daily signal engine to be used in backtesting by converting
+    the bar-by-bar context into the format expected by DailySignalEngine.
+    """
+    
+    def __init__(
+        self,
+        signal_engine: DailySignalEngine,
+        df_1h: pd.DataFrame,
+        df_1d: pd.DataFrame,
+        seed: int | None = None,
+    ):
+        """
+        Initialize the adapter.
+        
+        Args:
+            signal_engine: The DailySignalEngine instance to wrap
+            df_1h: Hourly dataframe (will be sliced per bar)
+            df_1d: Daily dataframe (will be sliced per bar)
+            seed: Optional seed for deterministic signal generation
+        """
+        self.signal_engine = signal_engine
+        self.df_1h_full = df_1h.copy()
+        self.df_1d_full = df_1d.copy()
+        self.seed = seed
+        
+        # Ensure dataframes have timestamp index
+        if not isinstance(self.df_1h_full.index, pd.DatetimeIndex):
+            if "timestamp" in self.df_1h_full.columns:
+                self.df_1h_full["timestamp"] = pd.to_datetime(self.df_1h_full["timestamp"])
+                self.df_1h_full = self.df_1h_full.set_index("timestamp")
+        if not isinstance(self.df_1d_full.index, pd.DatetimeIndex):
+            if "timestamp" in self.df_1d_full.columns:
+                self.df_1d_full["timestamp"] = pd.to_datetime(self.df_1d_full["timestamp"])
+                self.df_1d_full = self.df_1d_full.set_index("timestamp")
+    
+    def on_bar(self, context: dict[str, Any]) -> dict[str, Any]:
+        """
+        Generate signal from bar context (StrategyProtocol interface).
+        
+        Args:
+            context: Bar context with 'timestamp', 'open', 'high', 'low', 'close', 'volume'
+        
+        Returns:
+            Signal dict with 'action' (BUY/SELL/HOLD), 'entry', 'stop_loss', 'take_profit'
+        """
+        timestamp = pd.to_datetime(context.get("timestamp"))
+        
+        # Slice dataframes up to current timestamp
+        df_1h = self.df_1h_full[self.df_1h_full.index <= timestamp].copy()
+        df_1d = self.df_1d_full[self.df_1d_full.index <= timestamp].copy()
+        
+        # Need at least some data to generate signal
+        if df_1h.empty or df_1d.empty:
+            return {"action": "hold"}  # HOLD - no action
+        
+        # Generate signal using DailySignalEngine
+        try:
+            signal = self.signal_engine.generate(df_1h, df_1d, seed=self.seed)
+            
+            # Convert to backtest format
+            signal_type = signal.get("signal", "HOLD")
+            entry_range = signal.get("entry_range", {})
+            sl_tp = signal.get("stop_loss_take_profit", {})
+            entry_price = entry_range.get("optimal", context.get("close", 0))
+            stop_loss = sl_tp.get("stop_loss", 0)
+            take_profit = sl_tp.get("take_profit", 0)
+            
+            # Convert signal type to backtest action
+            # BacktestEngine expects: "enter", "exit", "stop_loss", "take_profit", "trailing_stop", "adjust", or empty dict for HOLD
+            if signal_type == "BUY":
+                return {
+                    "action": "enter",
+                    "side": "BUY",
+                    "entry_price": entry_price,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "confidence": signal.get("confidence", 0.0),
+                }
+            elif signal_type == "SELL":
+                return {
+                    "action": "enter",
+                    "side": "SELL",
+                    "entry_price": entry_price,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "confidence": signal.get("confidence", 0.0),
+                }
+            else:
+                # HOLD - return action="hold" to avoid validation warning
+                return {"action": "hold"}
+        except Exception:
+            # On error, return HOLD action
+            return {"action": "hold"}
+
