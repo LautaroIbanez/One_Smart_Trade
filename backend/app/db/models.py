@@ -264,6 +264,9 @@ class KnowledgeArticleORM(Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)  # Higher priority articles shown first
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     pdf_path: Mapped[str | None] = mapped_column(String(512), nullable=True)  # Path to PDF file if available
+    download_url: Mapped[str | None] = mapped_column(String(512), nullable=True)  # CDN URL for PDF download
+    micro_habits: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)  # Array of actionable micro-habits
+    is_critical: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # Critical articles require reading
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -284,7 +287,22 @@ class UserReadingORM(Base):
     read_count: Mapped[int] = mapped_column(Integer, default=1)
     pdf_downloaded: Mapped[bool] = mapped_column(Boolean, default=False)
     pdf_downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # User marked as completed
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class KnowledgeEngagementORM(Base):
+    """Track user engagement with educational content (downloads, views, etc.)."""
+
+    __tablename__ = "knowledge_engagement"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
+    article_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    engagement_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # download|view|share|complete
+    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Additional context (device, referrer, etc.)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
 
 
 class EnsembleWeightORM(Base):
@@ -304,5 +322,20 @@ class EnsembleWeightORM(Base):
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class RiskAuditORM(Base):
+    """Audit trail for risk validation events and blocked operations."""
+
+    __tablename__ = "risk_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
+    blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    audit_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # capital_missing|overexposed|leverage_hard_stop|cooldown|risk_limit_violation
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    recommendation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    context_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Additional context (equity, leverage, etc.)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
 
 

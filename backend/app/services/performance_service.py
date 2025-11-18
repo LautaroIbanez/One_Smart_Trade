@@ -221,6 +221,9 @@ class PerformanceService:
         )
         if not has_realistic_data:
             banners.append("WARNING: No hay curva realista para comparar contra la teórica.")
+        
+        if not tracking_error_series:
+            banners.append("WARNING: No hay datos de ejecución realista; tracking error no disponible.")
 
         te_config = self.performance_config.get("tracking_error", {})
         initial_capital = backtest_result.get("initial_capital") or 0.0

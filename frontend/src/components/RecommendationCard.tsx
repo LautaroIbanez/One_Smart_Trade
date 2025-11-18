@@ -165,6 +165,124 @@ function RecommendationCard() {
     )
   }
 
+  // Handle capital missing status
+  if (data.status === 'capital_missing') {
+    return (
+      <div className="recommendation-card capital-missing-blocked">
+        <div className="capital-missing-blocked-header">
+          <h2>⚠️ Señal Bloqueada por Seguridad: Capital No Validado</h2>
+        </div>
+        <div className="capital-missing-blocked-content">
+          <p className="capital-missing-message">{data.reason || "Debes conectar tu cuenta o ingresar capital para recibir señales"}</p>
+          <p className="capital-missing-explanation">
+            Para proteger tu capital y recibir recomendaciones personalizadas, necesitamos validar tu capital disponible. 
+            Esto nos permite calcular el tamaño de posición adecuado según tu perfil de riesgo.
+          </p>
+          <div className="capital-missing-actions">
+            <p className="capital-missing-instructions">
+              <strong>Opciones:</strong>
+            </p>
+            <ul className="capital-missing-list">
+              <li>Conecta tu cuenta de trading para sincronizar tu capital automáticamente</li>
+              <li>O ingresa tu capital manualmente usando el endpoint <code>/api/v1/risk/sizing</code></li>
+            </ul>
+          </div>
+          {data.requires_capital_input && (
+            <p className="capital-missing-note">
+              <em>Una vez que valides tu capital, podrás recibir señales de trading personalizadas.</em>
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // Handle daily risk limit exceeded
+  if (data.status === 'daily_risk_limit_exceeded') {
+    return (
+      <div className="recommendation-card risk-limit-blocked">
+        <div className="risk-limit-blocked-header">
+          <h2>🚫 Riesgo Diario Excedido</h2>
+        </div>
+        <div className="risk-limit-blocked-content">
+          <p className="risk-limit-message">{data.message || data.reason || "Has alcanzado el límite diario de riesgo"}</p>
+          {data.daily_limit_pct !== undefined && (
+            <div className="risk-limit-details">
+              <p className="risk-limit-value">
+                Límite diario: <strong>{data.daily_limit_pct}%</strong> del equity
+              </p>
+              {data.daily_risk_pct !== undefined && (
+                <p className="risk-limit-current">
+                  Riesgo acumulado hoy: <strong>{data.daily_risk_pct.toFixed(2)}%</strong>
+                </p>
+              )}
+            </div>
+          )}
+          <p className="risk-limit-explanation">
+            Has alcanzado el límite diario de riesgo (3% del equity). No se pueden generar nuevas señales hasta el siguiente día.
+            Este límite está diseñado para proteger tu capital y prevenir sobreoperación.
+          </p>
+          <p className="risk-limit-note">
+            <em>El límite se reinicia cada 24 horas. Revisa tus posiciones abiertas y considera cerrar algunas antes de mañana.</em>
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle trade limit preventive
+  if (data.status === 'trade_limit_preventive') {
+    return (
+      <>
+        <div className="recommendation-card trade-limit-blocked">
+          <div className="trade-limit-blocked-header">
+            <h2>⏸️ Límite Preventivo Alcanzado</h2>
+          </div>
+          <div className="trade-limit-blocked-content">
+            <p className="trade-limit-message">{data.reason || "Has alcanzado el límite preventivo de trades"}</p>
+            {data.trades_count !== undefined && (
+              <div className="trade-limit-details">
+                <p className="trade-limit-value">
+                  Trades realizados en 24h: <strong>{data.trades_count}</strong>
+                </p>
+                {data.max_trades_24h !== undefined && (
+                  <p className="trade-limit-max">
+                    Límite máximo: <strong>{data.max_trades_24h}</strong> trades
+                  </p>
+                )}
+                {data.trades_remaining !== undefined && (
+                  <p className="trade-limit-remaining">
+                    Trades restantes: <strong>{data.trades_remaining}</strong>
+                  </p>
+                )}
+              </div>
+            )}
+            <p className="trade-limit-explanation">
+              Has realizado 7 trades en las últimas 24 horas. Para proteger tu capital y prevenir sobreoperación,
+              debes esperar 12 horas antes de continuar. El límite preventivo está diseñado para evitar fatiga de decisión
+              y decisiones emocionales.
+            </p>
+            <p className="trade-limit-note">
+              <em>Usa este tiempo para revisar tus trades, leer material educativo y descansar.</em>
+            </p>
+          </div>
+        </div>
+        {data.contextual_articles && data.contextual_articles.length > 0 && (
+          <ContextualArticles articles={data.contextual_articles} userId={DEFAULT_USER_ID} />
+        )}
+      </>
+    )
+  }
+
+  // Display trades remaining indicator if available
+  const tradeActivity = data.trade_activity
+  const tradesRemaining = tradeActivity?.trades_remaining
+  const tradesCount = tradeActivity?.trades_count
+  const maxTrades24h = tradeActivity?.max_trades_24h
+  const committedRiskPct = tradeActivity?.committed_risk_pct
+  const dailyRiskLimitPct = tradeActivity?.daily_risk_limit_pct
+  const dailyRiskWarningPct = tradeActivity?.daily_risk_warning_pct
+
   const signalClass = `signal-${data.signal.toLowerCase()}`
 
   return (
@@ -173,6 +291,27 @@ function RecommendationCard() {
         <h2>Recomendación de Hoy</h2>
         <span className={`signal-badge ${signalClass}`}>{data.signal}</span>
       </div>
+      {/* Trades remaining and daily risk indicators */}
+      {(tradesRemaining !== undefined || committedRiskPct !== undefined) && (
+        <div className="trade-activity-indicators">
+          {tradesRemaining !== undefined && maxTrades24h !== undefined && (
+            <div className="trades-remaining-indicator" title={`Trades realizados en las últimas 24h: ${tradesCount || 0} de ${maxTrades24h}`}>
+              <span className="indicator-label">Trades restantes:</span>
+              <span className={`indicator-value ${tradesRemaining <= 1 ? 'warning' : ''}`}>
+                {tradesRemaining} / {maxTrades24h}
+              </span>
+            </div>
+          )}
+          {committedRiskPct !== undefined && dailyRiskLimitPct !== undefined && (
+            <div className="daily-risk-indicator" title={`Riesgo diario comprometido: ${committedRiskPct.toFixed(2)}% del equity`}>
+              <span className="indicator-label">Riesgo diario:</span>
+              <span className={`indicator-value ${committedRiskPct > (dailyRiskWarningPct || 2.0) ? 'warning' : ''} ${committedRiskPct > dailyRiskLimitPct ? 'danger' : ''}`}>
+                {committedRiskPct.toFixed(2)}% / {dailyRiskLimitPct}%
+              </span>
+            </div>
+          )}
+        </div>
+      )}
       <div className="recommendation-content">
         <div className="price-info">
           <span className="label">Precio Actual:</span>

@@ -124,80 +124,113 @@ def _check_tracking_error(
     record: dict[str, Any],
     *,
     max_annualized_tracking_error_pct: float = MAX_ANNUALIZED_TRACKING_ERROR_PCT,
+    max_rmse_pct: float = 0.05,  # 5% default
 ) -> tuple[bool, str | None]:
     """
     Check tracking error before promoting champion.
     
+    Checks both annualized tracking error and RMSE from tracking_error_stats.
+    
     Args:
         record: Champion promotion record
         max_annualized_tracking_error_pct: Maximum annualized tracking error threshold (default: 3%)
+        max_rmse_pct: Maximum RMSE as percentage of initial capital (default: 5%)
         
     Returns:
         Tuple of (is_valid, rejection_reason)
     """
-    # Extract tracking error summary from metrics or base_result
+    from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
+    
+    # Extract tracking error data from metrics or base_result
     metrics = record.get("metrics", {})
     base_result = record.get("base_result", {})
     
-    # Try to get tracking error summary from various locations
+    # Get initial capital for RMSE percentage calculation
+    initial_capital = base_result.get("initial_capital") or metrics.get("initial_capital") or 10000.0
+    
+    # Try to get tracking_error_stats (preferred) or tracking_error_summary
+    tracking_error_stats = (
+        base_result.get("tracking_error_stats") or
+        metrics.get("tracking_error_stats") or
+        record.get("tracking_error_stats")
+    )
+    
     tracking_error_summary = (
         metrics.get("tracking_error_summary") or 
         base_result.get("tracking_error_summary") or
         record.get("tracking_error_summary")
     )
     
-    if not tracking_error_summary or not isinstance(tracking_error_summary, dict):
+    # Use GuardrailChecker for consistent evaluation
+    guard_config = GuardrailConfig(
+        max_tracking_error_annualized_pct=max_annualized_tracking_error_pct / 100.0,  # Convert to decimal
+        max_tracking_error_rmse_pct=max_rmse_pct,
+    )
+    checker = GuardrailChecker(guard_config)
+    
+    # Check RMSE from tracking_error_stats (preferred method)
+    if tracking_error_stats and isinstance(tracking_error_stats, list) and len(tracking_error_stats) > 0:
+        rmse_result = checker.check_tracking_error_rmse(tracking_error_stats, initial_capital)
+        if not rmse_result.passed:
+            rejection_reason = (
+                f"Tracking error RMSE ({rmse_result.details.get('rmse_pct', 0) * 100:.2f}%) exceeds maximum threshold "
+                f"({max_rmse_pct * 100:.0f}%)"
+            )
+            logger.error(
+                "Champion promotion rejected due to excessive tracking error RMSE",
+                extra={
+                    "params_id": record.get("params_id"),
+                    "rmse_pct": rmse_result.details.get("rmse_pct", 0),
+                    "threshold_pct": max_rmse_pct,
+                },
+            )
+            return False, rejection_reason
+    
+    # Fallback: Check annualized tracking error from summary
+    if tracking_error_summary and isinstance(tracking_error_summary, dict):
+        annualized_tracking_error = tracking_error_summary.get("annualized_tracking_error")
+        if annualized_tracking_error is not None:
+            # Convert to percentage if needed
+            if annualized_tracking_error > 1.0:
+                # Likely absolute value, convert to percentage
+                if initial_capital > 0:
+                    annualized_tracking_error_pct = (annualized_tracking_error / initial_capital) * 100.0
+                else:
+                    annualized_tracking_error_pct = 0.0
+            else:
+                # Already a percentage
+                annualized_tracking_error_pct = annualized_tracking_error * 100.0
+            
+            # Check threshold
+            if annualized_tracking_error_pct > max_annualized_tracking_error_pct:
+                rejection_reason = (
+                    f"Annualized tracking error ({annualized_tracking_error_pct:.2f}%) exceeds maximum threshold "
+                    f"({max_annualized_tracking_error_pct}%)"
+                )
+                logger.error(
+                    "Champion promotion rejected due to excessive annualized tracking error",
+                    extra={
+                        "params_id": record.get("params_id"),
+                        "annualized_tracking_error_pct": annualized_tracking_error_pct,
+                        "threshold_pct": max_annualized_tracking_error_pct,
+                    },
+                )
+                return False, rejection_reason
+    
+    # If no tracking error data available, log warning but allow promotion
+    if not tracking_error_stats and not tracking_error_summary:
         logger.warning(
-            "No tracking error summary found in campaign record, skipping tracking error check",
+            "No tracking error data found in campaign record, skipping tracking error check",
             extra={"params_id": record.get("params_id")},
         )
-        # If tracking error data is missing, allow promotion but log warning
         return True, None
-    
-    # Extract annualized tracking error (convert from absolute to percentage if needed)
-    annualized_tracking_error = tracking_error_summary.get("annualized_tracking_error")
-    if annualized_tracking_error is None:
-        logger.warning(
-            "Annualized tracking error not found in tracking error summary",
-            extra={"params_id": record.get("params_id")},
-        )
-        return True, None
-    
-    # Convert to percentage if needed (assuming tracking error is in absolute terms)
-    # If it's already a percentage, use as is. Otherwise, estimate percentage.
-    # We'll check if it's a large number (likely absolute) or small (likely percentage)
-    if annualized_tracking_error > 1.0:
-        # Likely absolute value, need to convert to percentage relative to initial capital
-        initial_capital = base_result.get("initial_capital") or metrics.get("initial_capital") or 10000.0
-        if initial_capital > 0:
-            annualized_tracking_error_pct = (annualized_tracking_error / initial_capital) * 100.0
-        else:
-            annualized_tracking_error_pct = 0.0
-    else:
-        # Already a percentage
-        annualized_tracking_error_pct = annualized_tracking_error * 100.0
-    
-    # Check threshold (3% default)
-    if annualized_tracking_error_pct > max_annualized_tracking_error_pct:
-        rejection_reason = (
-            f"Annualized tracking error ({annualized_tracking_error_pct:.2f}%) exceeds maximum threshold "
-            f"({max_annualized_tracking_error_pct}%)"
-        )
-        logger.error(
-            "Champion promotion rejected due to excessive tracking error",
-            extra={
-                "params_id": record.get("params_id"),
-                "annualized_tracking_error_pct": annualized_tracking_error_pct,
-                "threshold_pct": max_annualized_tracking_error_pct,
-            },
-        )
-        return False, rejection_reason
     
     logger.info(
         "Tracking error check passed",
         extra={
             "params_id": record.get("params_id"),
-            "annualized_tracking_error_pct": annualized_tracking_error_pct,
+            "has_tracking_error_stats": bool(tracking_error_stats),
+            "has_tracking_error_summary": bool(tracking_error_summary),
         },
     )
     return True, None

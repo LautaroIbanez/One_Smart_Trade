@@ -35,6 +35,7 @@ class GuardrailConfig:
     min_months: int = 24
     min_calmar_ci_low: float = 1.0  # Minimum Calmar CI lower bound
     max_tracking_error_annualized_pct: float = 0.05  # 5% of capital
+    max_tracking_error_rmse_pct: float = 0.05  # 5% RMSE as percentage of initial capital
 
 
 @dataclass
@@ -169,6 +170,47 @@ class GuardrailChecker:
             )
         return GuardrailResult(passed=True)
 
+    def check_tracking_error_rmse(
+        self,
+        tracking_error_stats: list[dict[str, Any]],
+        initial_capital: float,
+    ) -> GuardrailResult:
+        """
+        Check if RMSE from tracking_error_stats exceeds configured threshold.
+        
+        Args:
+            tracking_error_stats: List of tracking error stats dictionaries from engine
+            initial_capital: Initial capital for percentage calculation
+            
+        Returns:
+            GuardrailResult
+        """
+        if not tracking_error_stats or initial_capital <= 0:
+            return GuardrailResult(passed=True)  # Skip if no data
+        
+        # Get the latest tracking error stats (most recent calculation)
+        latest_stats = tracking_error_stats[-1] if tracking_error_stats else {}
+        rmse = latest_stats.get("rmse", 0.0)
+        
+        if rmse <= 0:
+            return GuardrailResult(passed=True)  # Skip if RMSE not available
+        
+        # Calculate RMSE as percentage of initial capital
+        rmse_pct = (rmse / initial_capital) if initial_capital > 0 else 0.0
+        
+        if rmse_pct > self.config.max_tracking_error_rmse_pct:
+            return GuardrailResult(
+                passed=False,
+                reason=CampaignRejectedReason.TRACKING_ERROR_TOO_HIGH,
+                details={
+                    "rmse": rmse,
+                    "rmse_pct": rmse_pct,
+                    "initial_capital": initial_capital,
+                    "max_allowed_rmse_pct": self.config.max_tracking_error_rmse_pct,
+                },
+            )
+        return GuardrailResult(passed=True)
+
     def check_calmar_ci_stability(self, calmar_ci_low: float | None) -> GuardrailResult:
         """Check if Calmar confidence interval lower bound meets threshold."""
         if calmar_ci_low is None:
@@ -214,6 +256,8 @@ class GuardrailChecker:
         duration_days: int | None = None,
         calmar_ci_low: float | None = None,
         tracking_error_annualized_pct: float | None = None,
+        tracking_error_stats: list[dict[str, Any]] | None = None,
+        initial_capital: float | None = None,
     ) -> GuardrailResult:
         """
         Run all applicable guardrail checks.
@@ -259,6 +303,9 @@ class GuardrailChecker:
 
         if tracking_error_annualized_pct is not None:
             checks.append(self.check_tracking_error(tracking_error_annualized_pct))
+
+        if tracking_error_stats is not None and initial_capital is not None:
+            checks.append(self.check_tracking_error_rmse(tracking_error_stats, initial_capital))
 
         # Find first failure
         for check in checks:

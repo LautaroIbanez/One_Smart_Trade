@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -269,6 +270,90 @@ class ExposureLedgerService:
             "current_beta_adjusted_notional": current_summary.beta_adjusted_notional,
             "projected_beta_adjusted_notional": projected_beta_adjusted,
         }
+
+    def pending_risk(
+        self,
+        user_id: str | UUID,
+        user_equity: float,
+        *,
+        now: datetime | None = None,
+    ) -> float:
+        """
+        Calculate total committed risk in the last 24 hours.
+        
+        This includes risk from:
+        - Closed trades executed today
+        - Open positions opened today
+        
+        Args:
+            user_id: User ID
+            user_equity: User's current equity
+            now: Current timestamp (default: datetime.utcnow())
+            
+        Returns:
+            Total committed risk amount (in base currency, e.g., USD)
+        """
+        from datetime import timedelta
+        if now is None:
+            from datetime import datetime
+            now = datetime.utcnow()
+        
+        last_24h = now - timedelta(hours=24)
+        
+        db = self.session or SessionLocal()
+        try:
+            user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+            
+            # Get all recommendations (closed or open) created/closed in last 24h
+            from app.db.models import RecommendationORM
+            stmt = (
+                select(RecommendationORM)
+                .where(
+                    (
+                        (RecommendationORM.status == "closed")
+                        & (RecommendationORM.closed_at.isnot(None))
+                        & (RecommendationORM.closed_at >= last_24h)
+                    )
+                    | (
+                        (RecommendationORM.status == "open")
+                        & (RecommendationORM.created_at >= last_24h)
+                    )
+                )
+            )
+            
+            recommendations = list(db.execute(stmt).scalars().all())
+            
+            total_risk = 0.0
+            for rec in recommendations:
+                risk_metrics = rec.risk_metrics or {}
+                
+                # Try to get actual risk amount
+                if "suggested_sizing" in risk_metrics:
+                    sizing = risk_metrics["suggested_sizing"]
+                    if "risk_amount" in sizing:
+                        total_risk += sizing["risk_amount"]
+                        continue
+                    elif "risk_pct" in sizing:
+                        risk_pct = sizing["risk_pct"]
+                        # Estimate equity at time of trade (use current equity as approximation)
+                        total_risk += user_equity * (risk_pct / 100.0)
+                        continue
+                
+                # Fallback: use risk_pct from risk_metrics
+                if "risk_pct" in risk_metrics:
+                    risk_pct = risk_metrics["risk_pct"]
+                    total_risk += user_equity * (risk_pct / 100.0)
+                else:
+                    # Default: estimate 1% risk per trade
+                    total_risk += user_equity * 0.01
+            
+            return total_risk
+        except Exception as e:
+            logger.error(f"Error calculating pending risk: {e}", exc_info=True)
+            return 0.0
+        finally:
+            if not self.session:
+                db.close()
 
     def calculate_beta(
         self,

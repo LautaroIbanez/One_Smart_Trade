@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -12,6 +12,8 @@ interface ContextualArticle {
   slug: string
   summary: string
   category: string
+  micro_habits?: string[]
+  is_critical?: boolean
 }
 
 interface ContextualArticleProps {
@@ -23,6 +25,7 @@ interface ContextualArticleProps {
 export function ContextualArticle({ article, userId, onDismiss }: ContextualArticleProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [isReading, setIsReading] = useState(false)
+  const queryClient = useQueryClient()
 
   const { data: articleData, isLoading } = useQuery({
     queryKey: ['knowledge-article', article.slug],
@@ -66,6 +69,18 @@ export function ContextualArticle({ article, userId, onDismiss }: ContextualArti
     }
   }
 
+  const completeMutation = useMutation({
+    mutationFn: async () => {
+      await api.post(`/api/v1/knowledge/articles/${article.slug}/complete`, null, {
+        params: { user_id: userId },
+      })
+    },
+    onSuccess: () => {
+      // Optionally refresh article data or show success message
+      queryClient.invalidateQueries({ queryKey: ['knowledge-article', article.slug] })
+    },
+  })
+
   const getCategoryLabel = (category: string) => {
     const labels: Record<string, string> = {
       emotional_management: 'Gestión Emocional',
@@ -86,8 +101,21 @@ export function ContextualArticle({ article, userId, onDismiss }: ContextualArti
           </button>
         )}
       </div>
-      <h3 className="article-title">{article.title}</h3>
+      <h3 className="article-title">
+        {article.title}
+        {article.is_critical && <span className="article-critical-badge">⚠️ Crítico</span>}
+      </h3>
       <p className="article-summary">{article.summary}</p>
+      {article.micro_habits && article.micro_habits.length > 0 && (
+        <div className="article-micro-habits">
+          <h4 className="micro-habits-title">Micro-hábitos recomendados:</h4>
+          <ul className="micro-habits-list">
+            {article.micro_habits.map((habit, index) => (
+              <li key={index}>{habit}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="article-actions">
         <button className="btn-read" onClick={handleRead}>
           {isExpanded ? 'Ocultar artículo' : 'Leer artículo'}
@@ -97,6 +125,13 @@ export function ContextualArticle({ article, userId, onDismiss }: ContextualArti
             📄 Descargar PDF
           </button>
         )}
+        <button
+          className="btn-complete"
+          onClick={() => completeMutation.mutate()}
+          disabled={completeMutation.isPending}
+        >
+          {completeMutation.isPending ? 'Marcando...' : '✓ Marcar como completado'}
+        </button>
       </div>
       {isExpanded && (
         <div className="article-content">

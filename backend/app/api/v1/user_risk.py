@@ -99,17 +99,39 @@ async def get_user_risk_state_endpoint(
                     "message": f"Apalancamiento elevado: {state.effective_leverage:.2f}× (Umbral: {settings.LEVERAGE_HARD_STOP_THRESHOLD}×)",
                 })
             
-            # Get contextual educational articles
+            # Get contextual educational articles with specific context
             contextual_articles = []
             trigger_type = None
+            context_data = {}
+            
             if is_on_cooldown:
                 trigger_type = "cooldown"
+                context_data = {
+                    "losing_streak": state.current_losing_streak,
+                    "trades_24h": state.trades_last_24h,
+                    "drawdown_pct": state.current_drawdown_pct,
+                }
             elif state.effective_leverage > settings.LEVERAGE_WARNING_THRESHOLD:
                 trigger_type = "leverage"
+                context_data = {
+                    "leverage": state.effective_leverage,
+                    "threshold": settings.LEVERAGE_WARNING_THRESHOLD,
+                }
+            elif state.current_drawdown_pct >= 10.0:
+                trigger_type = "drawdown"
+                context_data = {
+                    "drawdown_pct": state.current_drawdown_pct,
+                }
             
             if trigger_type:
                 try:
-                    articles = get_contextual_articles(db, user_id, trigger_type=trigger_type, limit=3)
+                    articles = get_contextual_articles(
+                        db, 
+                        user_id, 
+                        trigger_type=trigger_type, 
+                        limit=3,
+                        context_data=context_data,
+                    )
                     contextual_articles = [
                         {
                             "id": a.id,
@@ -117,6 +139,8 @@ async def get_user_risk_state_endpoint(
                             "slug": a.slug,
                             "summary": a.summary,
                             "category": a.category,
+                            "micro_habits": a.micro_habits,
+                            "is_critical": a.is_critical,
                         }
                         for a in articles
                     ]

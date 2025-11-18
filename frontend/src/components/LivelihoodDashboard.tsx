@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { submitLivelihoodFeedback, useLivelihoodFromRun } from '../api/hooks'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { submitLivelihoodFeedback, useLivelihoodFromRun, useLatestRunId } from '../api/hooks'
 import './LivelihoodDashboard.css'
 
 type Scenario = {
@@ -11,8 +12,10 @@ type Scenario = {
   sustainable_capital: number
 }
 
-export default function LivelihoodDashboard({ runId, enabled = true }: { runId?: string; enabled?: boolean }) {
-  if (!enabled) return null
+export default function LivelihoodDashboard() {
+  const { data: runIdData } = useLatestRunId()
+  const runId = runIdData?.run_id || undefined
+  
   const [expenses, setExpenses] = useState<number>(() => {
     const stored = localStorage.getItem('expensesTargetUSD')
     return stored ? Number(stored) : 1200
@@ -65,8 +68,10 @@ export default function LivelihoodDashboard({ runId, enabled = true }: { runId?:
         </div>
       </header>
 
-      {isLoading ? (
-        <div className="ld-loading">Calculando escenarios...</div>
+      {isLoading || !runId ? (
+        <div className="ld-loading">
+          {!runId ? 'Buscando última campaña completada...' : 'Calculando escenarios...'}
+        </div>
       ) : (
         <>
           <div className="ld-widgets">
@@ -113,8 +118,103 @@ export default function LivelihoodDashboard({ runId, enabled = true }: { runId?:
             </tbody>
           </table>
 
+          {/* Income Curves: Theoretical vs Viable */}
+          {data?.income_curves && Object.keys(data.income_curves).length > 0 && (
+            <div className="ld-income-curves">
+              <h3>Curvas de Ingresos: Teórico vs Viable</h3>
+              <div className="ld-curves-grid">
+                {Object.entries(data.income_curves).map(([capital, curves]: [string, any]) => (
+                  <div key={capital} className="ld-curve-card">
+                    <h4>Capital: ${Number(capital).toLocaleString()}</h4>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <AreaChart data={(() => {
+                        const theoretical = curves.theoretical || []
+                        const viable = curves.viable || []
+                        const maxLen = Math.max(theoretical.length, viable.length)
+                        const data: any[] = []
+                        for (let i = 0; i < maxLen; i++) {
+                          const t = theoretical[i]
+                          const v = viable[i]
+                          if (t || v) {
+                            data.push({
+                              timestamp: t?.timestamp || v?.timestamp || '',
+                              theoretical: t?.income || 0,
+                              viable: v?.income || 0,
+                            })
+                          }
+                        }
+                        return data
+                      })()}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="timestamp" tickFormatter={(val) => new Date(val).toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })} />
+                        <YAxis label={{ value: 'Ingreso (USD)', angle: -90, position: 'insideLeft' }} />
+                        <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} labelFormatter={(val) => new Date(val).toLocaleDateString('es-ES')} />
+                        <Legend />
+                        <Area type="monotone" dataKey="theoretical" stroke="#8884d8" fill="#8884d8" fillOpacity={0.3} name="Teórico" />
+                        <Area type="monotone" dataKey="viable" stroke="#82ca9d" fill="#82ca9d" fillOpacity={0.3} name="Viable" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Periodic Metrics */}
+          {data?.periodic_metrics && (
+            <div className="ld-periodic-metrics">
+              <h3>Métricas Periódicas</h3>
+              <div className="ld-metrics-grid">
+                {(['monthly', 'quarterly'] as const).map((horizon) => {
+                  const metrics = data.periodic_metrics?.[horizon]
+                  if (!metrics) return null
+                  const stats = metrics.stats || {}
+                  return (
+                    <div key={horizon} className="ld-metrics-card">
+                      <h4>{horizon === 'monthly' ? 'Mensual' : 'Trimestral'}</h4>
+                      <div className="ld-metrics-stats">
+                        <div className="metric-row">
+                          <span className="metric-label">Media:</span>
+                          <span className="metric-value">{(stats.mean * 100).toFixed(2)}%</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Std Dev:</span>
+                          <span className="metric-value">{(stats.std * 100).toFixed(2)}%</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">p25 / p75:</span>
+                          <span className="metric-value">{(stats.p25 * 100).toFixed(2)}% / {(stats.p75 * 100).toFixed(2)}%</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Skew:</span>
+                          <span className="metric-value">{stats.skew?.toFixed(2) || 'N/A'}</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Kurtosis:</span>
+                          <span className="metric-value">{stats.kurtosis?.toFixed(2) || 'N/A'}</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Mes Negativo %:</span>
+                          <span className="metric-value">{(stats.negative_pct * 100).toFixed(1)}%</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Max Loss Streak:</span>
+                          <span className="metric-value">{metrics.max_loss_streak || 0}</span>
+                        </div>
+                        <div className="metric-row">
+                          <span className="metric-label">Max Loss Duration:</span>
+                          <span className="metric-value">{metrics.max_loss_duration || 0} {horizon === 'monthly' ? 'meses' : 'trimestres'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <p className="ld-note">
-            Teórico vs Viable: los escenarios reflejan sizing prudente y drawdown controlado al calcular la distribución de ingresos; para un desglose de curvas teóricas y viables, consulta el panel de performance.
+            Teórico vs Viable: las curvas muestran la diferencia entre ingresos teóricos (sin fricciones) y viables (con costos de ejecución, slippage y comisiones). Los escenarios reflejan sizing prudente y drawdown controlado.
           </p>
           <div className="ld-feedback">
             <div className="ld-feedback-title">Feedback beta</div>

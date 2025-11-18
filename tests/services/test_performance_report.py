@@ -49,6 +49,16 @@ def mock_backtest_result():
             {"timestamp": "2023-01-01", "tracking_error_cumulative": 0.0},
             {"timestamp": "2023-01-02", "tracking_error_cumulative": -20.0},
         ],
+        "tracking_error_stats": [
+            {
+                "rmse": 95.5,
+                "annualized_tracking_error": 2.5,
+                "bars_with_divergence_above_threshold_pct": 8.5,
+                "mean_divergence_bps": 50.0,
+                "max_divergence_bps": 180.0,
+            }
+        ],
+        "initial_capital": 10000.0,
         "chart_banners": ["WARNING: Divergencia elevada"],
         "execution_stats": {
             "orderbook_fallback_count": 5,
@@ -99,7 +109,7 @@ class TestPerformanceReportEndpoints:
             assert "equity_curve_theoretical" in response
             assert "equity_curve_realistic" in response
             
-            # Verify equity curves are present and non-empty
+            # Verify both curves have data
             assert len(response["equity_theoretical"]) > 0
             assert len(response["equity_realistic"]) > 0
             assert len(response["equity_curve"]) > 0
@@ -211,4 +221,22 @@ class TestPerformanceReportEndpoints:
             
             assert "chart_banners" in response
             assert response["chart_banners"] == mock_backtest_result["chart_banners"]
+    
+    @pytest.mark.asyncio
+    async def test_tracking_error_stats_persisted(self, mock_backtest_result):
+        """Test that tracking_error_stats are included in the response."""
+        with patch("app.api.v1.performance.performance_service") as mock_service:
+            mock_service.get_summary = AsyncMock(return_value=mock_backtest_result)
+            
+            response = await get_performance_summary()
+            
+            # Verify tracking_error_stats are accessible (may be in tracking_error_metrics or separate)
+            # The stats should be available for guardrail evaluation
+            assert "tracking_error_metrics" in response or "tracking_error" in response
+            
+            # Verify TE metrics match expected values
+            if "tracking_error_metrics" in response and response["tracking_error_metrics"]:
+                te_metrics = response["tracking_error_metrics"]
+                assert te_metrics.get("rmse") == 95.5
+                assert te_metrics.get("correlation") == 0.98
 

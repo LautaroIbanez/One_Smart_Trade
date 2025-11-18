@@ -12,8 +12,21 @@ export const useTodayRecommendation = () => {
   return useQuery({
     queryKey: ['recommendation', 'today'],
     queryFn: async () => {
-      const { data } = await api.get('/api/v1/recommendation/today')
-      return data
+      try {
+        const { data } = await api.get('/api/v1/recommendation/today')
+        return data
+      } catch (error: any) {
+        // Handle HTTP 400 with capital_missing or daily_risk_limit_exceeded status
+        if (error?.response?.status === 400 && error?.response?.data?.detail) {
+          const detail = error.response.data.detail
+          // If detail is an object with status capital_missing or daily_risk_limit_exceeded, return it as data
+          if (typeof detail === 'object' && (detail.status === 'capital_missing' || detail.status === 'daily_risk_limit_exceeded')) {
+            return detail
+          }
+        }
+        // Re-throw other errors
+        throw error
+      }
     },
     staleTime: 60_000,
   })
@@ -140,6 +153,17 @@ export const useLivelihoodFromSeries = (
   })
 }
 
+export const useLatestRunId = () => {
+  return useQuery({
+    queryKey: ['analytics', 'livelihood', 'latest-run-id'],
+    queryFn: async () => {
+      const { data } = await analyticsApi.get('/api/v1/analytics/livelihood/latest-run-id')
+      return data as { run_id: string | null; source: string | null }
+    },
+    staleTime: 300_000, // 5 minutes
+  })
+}
+
 export const useLivelihoodFromRun = (
   runId: string | undefined,
   expensesTarget: number = 0,
@@ -154,7 +178,7 @@ export const useLivelihoodFromRun = (
       const { data } = await analyticsApi.get(`/api/v1/analytics/livelihood/${runId}`, {
         params: { expenses_target: expensesTarget, trials, horizon_months: horizonMonths, ruin_threshold: ruinThreshold },
       })
-      return data as { survival: any; scenarios: any[] }
+      return data as { survival: any; scenarios: any[]; periodic_metrics?: any; income_curves?: any }
     },
     enabled: typeof runId === 'string' && runId.length > 0,
     staleTime: 60_000,

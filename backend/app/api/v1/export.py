@@ -165,7 +165,7 @@ def _recommendation_to_dict(rec: RecommendationORM, cumulative_equity: float = 1
         "tracking_error_pct": tracking_error["tracking_error_pct"],
         "tracking_error_bps": tracking_error["tracking_error_bps"],
         "equity_realistic": round(equity_realistic, 6),
-        "fill_quality": json.dumps(execution_metrics["fill_quality"]) if execution_metrics["fill_quality"] else None,
+        "fill_quality": execution_metrics["fill_quality"],
         "orderbook_fallback_count": execution_metrics["orderbook_fallback_count"],
         # Snapshot hashes
         "snapshot_hash": snapshot_hash,
@@ -186,9 +186,9 @@ def _export_to_csv(recommendations: list[RecommendationORM]) -> bytes:
     df = pd.DataFrame(data)
 
     # Flatten nested JSON columns
-    for col in ["indicators", "risk_metrics", "factors", "signal_breakdown"]:
+    for col in ["indicators", "risk_metrics", "factors", "signal_breakdown", "fill_quality"]:
         if col in df.columns:
-            df[col] = df[col].apply(lambda x: str(x) if x else "")
+            df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else (str(x) if x else ""))
 
     buffer = io.BytesIO()
     df.to_csv(buffer, index=False, encoding="utf-8")
@@ -207,9 +207,9 @@ def _export_to_parquet(recommendations: list[RecommendationORM]) -> bytes:
     df = pd.DataFrame(data)
 
     # Convert nested dicts to JSON strings for parquet
-    for col in ["indicators", "risk_metrics", "factors", "signal_breakdown"]:
+    for col in ["indicators", "risk_metrics", "factors", "signal_breakdown", "fill_quality"]:
         if col in df.columns:
-            df[col] = df[col].apply(lambda x: str(x) if x else "")
+            df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else (str(x) if x else ""))
 
     buffer = io.BytesIO()
     df.to_parquet(buffer, index=False, engine="pyarrow", compression="snappy")

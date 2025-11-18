@@ -18,8 +18,10 @@ from app.db.models import (
     CooldownEventORM,
     DataRunORM,
     KnowledgeArticleORM,
+    KnowledgeEngagementORM,
     LeverageAlertORM,
     RecommendationORM,
+    RiskAuditORM,
     RunLogORM,
     StrategyChampionORM,
     UserReadingORM,
@@ -936,17 +938,27 @@ def get_contextual_articles(
     db: Session,
     user_id: str | UUID,
     *,
-    trigger_type: str | None = None,  # cooldown|leverage|drawdown|overtrading
+    trigger_type: str | None = None,  # cooldown|leverage|drawdown|overtrading|winning_streak
     category: str | None = None,
     limit: int = 5,
+    context_data: dict | None = None,  # Additional context (losing_streak, trades_24h, leverage, etc.)
 ) -> list[KnowledgeArticleORM]:
     """
     Get contextual articles based on trigger conditions and user reading history.
     
     Priority:
-    1. Articles that match trigger conditions and haven't been read recently
-    2. Articles in relevant category
-    3. Unread articles
+    1. Articles that match trigger conditions and specific context (e.g., losing_streak >= 3)
+    2. Articles that match trigger conditions but haven't been read recently
+    3. Articles in relevant category
+    4. Unread articles
+    
+    Args:
+        db: Database session
+        user_id: User UUID
+        trigger_type: Type of trigger (cooldown|leverage|drawdown|overtrading|winning_streak)
+        category: Category filter
+        limit: Maximum number of articles to return
+        context_data: Additional context for matching trigger conditions (e.g., {"losing_streak": 3, "trades_24h": 6})
     """
     from uuid import UUID
     user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
@@ -956,7 +968,11 @@ def get_contextual_articles(
     if category:
         stmt = stmt.where(KnowledgeArticleORM.category == category)
     
-    # Filter by trigger conditions if provided
+    # Get user's reading history
+    user_readings_stmt = select(UserReadingORM).where(UserReadingORM.user_id == user_uuid)
+    user_readings = {r.article_id: r for r in db.execute(user_readings_stmt).scalars().all()}
+    
+    # Get all articles that match trigger type
     if trigger_type:
         stmt = stmt.where(
             KnowledgeArticleORM.trigger_conditions.isnot(None)
@@ -964,24 +980,83 @@ def get_contextual_articles(
             KnowledgeArticleORM.trigger_conditions.contains({"trigger": trigger_type})
         )
     
-    # Get user's reading history
-    user_readings_stmt = select(UserReadingORM).where(UserReadingORM.user_id == user_uuid)
-    user_readings = {r.article_id: r for r in db.execute(user_readings_stmt).scalars().all()}
-    
     # Order by priority (highest first), then by created_at (newest first)
     stmt = stmt.order_by(desc(KnowledgeArticleORM.priority), desc(KnowledgeArticleORM.created_at))
     all_articles = list(db.execute(stmt).scalars().all())
     
-    # Prioritize unread or recently read articles
+    # Match articles with specific context conditions
     prioritized = []
+    context_data = context_data or {}
+    
     for article in all_articles:
+        if not article.trigger_conditions:
+            # No trigger conditions, lower priority
+            reading = user_readings.get(article.id)
+            priority_score = 50 if not reading else 10
+            prioritized.append((article, priority_score))
+            continue
+        
+        trigger_cond = article.trigger_conditions
+        match_score = 0
+        
+        # Check if trigger type matches
+        if trigger_cond.get("trigger") == trigger_type:
+            match_score += 100
+            
+            # Check specific conditions
+            if trigger_type == "cooldown" and "losing_streak" in trigger_cond:
+                required_streak = trigger_cond.get("losing_streak", 0)
+                actual_streak = context_data.get("losing_streak", 0)
+                if actual_streak >= required_streak:
+                    match_score += 200  # Perfect match
+                else:
+                    match_score += 50  # Partial match
+            
+            elif trigger_type == "overtrading" and "trades_24h" in trigger_cond:
+                required_trades = trigger_cond.get("trades_24h", 0)
+                actual_trades = context_data.get("trades_24h", 0)
+                if actual_trades >= required_trades:
+                    match_score += 200
+                else:
+                    match_score += 50
+            
+            elif trigger_type == "leverage" and "threshold" in trigger_cond:
+                required_threshold = trigger_cond.get("threshold", 0)
+                actual_leverage = context_data.get("leverage", 0)
+                if actual_leverage >= required_threshold:
+                    match_score += 200
+                else:
+                    match_score += 50
+            
+            elif trigger_type == "drawdown" and "threshold" in trigger_cond:
+                required_threshold = trigger_cond.get("threshold", 0)
+                actual_drawdown = context_data.get("drawdown_pct", 0)
+                if actual_drawdown >= required_threshold:
+                    match_score += 200
+                else:
+                    match_score += 50
+            
+            elif trigger_type == "winning_streak" and "streak_count" in trigger_cond:
+                required_streak = trigger_cond.get("streak_count", 0)
+                actual_streak = context_data.get("winning_streak", 0)
+                if actual_streak >= required_streak:
+                    match_score += 200
+                else:
+                    match_score += 50
+        
+        # Adjust by reading history
         reading = user_readings.get(article.id)
         if not reading:
-            # Never read - highest priority
-            prioritized.append((article, 1000))
-        else:
-            # Read before - lower priority, but still include if it's relevant
-            prioritized.append((article, 100 - article.priority))
+            # Never read - bonus
+            match_score += 100
+        elif reading.completed:
+            # Already completed - lower priority
+            match_score -= 50
+        
+        # Add article priority
+        match_score += article.priority
+        
+        prioritized.append((article, match_score))
     
     # Sort by priority score
     prioritized.sort(key=lambda x: x[1], reverse=True)
@@ -994,6 +1069,83 @@ def get_article_by_slug(db: Session, slug: str) -> KnowledgeArticleORM | None:
     """Get article by slug."""
     stmt = select(KnowledgeArticleORM).where(KnowledgeArticleORM.slug == slug).where(KnowledgeArticleORM.is_active == True)
     return db.execute(stmt).scalars().first()
+
+
+# Risk Audit CRUD functions
+
+def create_knowledge_engagement(
+    db: Session,
+    user_id: str | UUID,
+    article_id: int,
+    engagement_type: str,
+    *,
+    metadata: dict | None = None,
+) -> KnowledgeEngagementORM:
+    """
+    Create a knowledge engagement record (download, view, share, complete).
+    
+    Args:
+        db: Database session
+        user_id: User UUID
+        article_id: Article ID
+        engagement_type: Type of engagement (download|view|share|complete)
+        metadata: Optional additional context data
+        
+    Returns:
+        Created KnowledgeEngagementORM instance
+    """
+    from uuid import UUID
+    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    
+    engagement = KnowledgeEngagementORM(
+        user_id=user_uuid,
+        article_id=article_id,
+        engagement_type=engagement_type,
+        metadata=metadata or {},
+    )
+    db.add(engagement)
+    db.commit()
+    db.refresh(engagement)
+    return engagement
+
+
+def create_risk_audit(
+    db: Session,
+    user_id: str | UUID,
+    audit_type: str,
+    reason: str,
+    *,
+    recommendation_id: int | None = None,
+    context_data: dict | None = None,
+) -> RiskAuditORM:
+    """
+    Create a risk audit record for blocked operations.
+    
+    Args:
+        db: Database session
+        user_id: User UUID
+        audit_type: Type of audit event (capital_missing|overexposed|leverage_hard_stop|cooldown|risk_limit_violation)
+        reason: Human-readable reason for the block
+        recommendation_id: Optional recommendation ID if related to a specific recommendation
+        context_data: Optional additional context data (equity, leverage, etc.)
+        
+    Returns:
+        Created RiskAuditORM instance
+    """
+    from uuid import UUID
+    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    
+    audit = RiskAuditORM(
+        user_id=user_uuid,
+        audit_type=audit_type,
+        reason=reason,
+        recommendation_id=recommendation_id,
+        context_data=context_data or {},
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(audit)
+    return audit
 
 
 def get_articles_by_category(

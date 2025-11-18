@@ -420,3 +420,12 @@ class TransparencyService:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
+    def run_checks(self) -> TransparencySemaphore:
+        """
+        Run all transparency checks and return semaphore status.
+        
+        This method is designed to be called by scheduled jobs and returns
+        a semaphore that can be used for alerting.
+        """
+        return self.get_semaphore()
+

@@ -122,6 +122,40 @@ async def job_ingest_all() -> None:
         record_ingestion("multiple", duration, False, str(type(exc).__name__))
 
 
+@scheduler.scheduled_job("cron", hour="*", minute=0, id="transparency_checks")
+async def job_transparency_checks() -> None:
+    """Scheduled job to run transparency checks hourly."""
+    from app.core.logging import logger
+    
+    try:
+        transparency_service = TransparencyService()
+        semaphore = transparency_service.run_checks()
+        
+        # Log semaphore status
+        logger.info(
+            "Transparency checks completed",
+            extra={
+                "overall_status": semaphore.overall_status.value,
+                "hash_verification": semaphore.hash_verification.value,
+                "tracking_error_status": semaphore.tracking_error_status.value,
+                "drawdown_divergence_status": semaphore.drawdown_divergence_status.value,
+                "last_verification": semaphore.last_verification,
+            },
+        )
+        
+        # Alert if status is FAIL
+        if semaphore.overall_status.value == "fail":
+            logger.warning(
+                "Transparency checks failed",
+                extra={
+                    "details": semaphore.details,
+                    "overall_status": semaphore.overall_status.value,
+                },
+            )
+    except Exception as exc:
+        logger.error(f"Error running transparency checks: {exc}", exc_info=True)
+
+
 @scheduler.scheduled_job("cron", hour=12, minute=0, id="generate_signal")
 async def job_generate_signal() -> None:
     """Scheduled job to generate daily trading signal."""
@@ -328,48 +362,53 @@ async def job_verify_transparency() -> None:
     
     try:
         service = TransparencyService()
-        semaphore = service.get_semaphore()
+        status = service.run_checks()
         
         # Log semaphore status
         logger.info(
             "Transparency verification completed",
             extra={
-                "overall_status": semaphore.overall_status.value,
-                "hash_status": semaphore.hash_verification.value,
-                "dataset_status": semaphore.dataset_verification.value,
-                "params_status": semaphore.params_verification.value,
-                "tracking_error_status": semaphore.tracking_error_status.value,
-                "drawdown_status": semaphore.drawdown_divergence_status.value,
+                "overall_status": status.overall_status.value,
+                "hash_status": status.hash_verification.value,
+                "dataset_status": status.dataset_verification.value,
+                "params_status": status.params_verification.value,
+                "tracking_error_status": status.tracking_error_status.value,
+                "drawdown_status": status.drawdown_divergence_status.value,
+                "audit_status": status.audit_status.value,
             }
         )
         
         # Send alerts if status is not PASS
-        if semaphore.overall_status.value != "pass":
+        if status.overall_status.value != "pass":
             alerts = []
-            if semaphore.hash_verification.value != "pass":
-                alerts.append(f"Hash verification: {semaphore.hash_verification.value}")
-            if semaphore.dataset_verification.value != "pass":
-                alerts.append(f"Dataset verification: {semaphore.dataset_verification.value}")
-            if semaphore.params_verification.value != "pass":
-                alerts.append(f"Params verification: {semaphore.params_verification.value}")
-            if semaphore.tracking_error_status.value != "pass":
-                alerts.append(f"Tracking error: {semaphore.tracking_error_status.value}")
-            if semaphore.drawdown_divergence_status.value != "pass":
-                alerts.append(f"Drawdown divergence: {semaphore.drawdown_divergence_status.value}")
+            if status.hash_verification.value != "pass":
+                alerts.append(f"Hash verification: {status.hash_verification.value}")
+            if status.dataset_verification.value != "pass":
+                alerts.append(f"Dataset verification: {status.dataset_verification.value}")
+            if status.params_verification.value != "pass":
+                alerts.append(f"Params verification: {status.params_verification.value}")
+            if status.tracking_error_status.value != "pass":
+                alerts.append(f"Tracking error: {status.tracking_error_status.value}")
+            if status.drawdown_divergence_status.value != "pass":
+                alerts.append(f"Drawdown divergence: {status.drawdown_divergence_status.value}")
+            if status.audit_status.value != "pass":
+                alerts.append(f"Audit status: {status.audit_status.value}")
             
             message = f"Transparency verification failed: {', '.join(alerts)}"
-            logger.warning(message, extra={"semaphore": semaphore.overall_status.value})
+            logger.warning(message, extra={"semaphore": status.overall_status.value})
             
             # Send webhook if configured
             webhook_url = os.getenv("ALERT_WEBHOOK_URL")
             if webhook_url:
                 import httpx
                 try:
+                    from dataclasses import asdict
                     httpx.post(
                         webhook_url,
                         json={
                             "text": f"Transparency Alert: {message}",
-                            "status": semaphore.overall_status.value,
+                            "status": status.overall_status.value,
+                            "details": asdict(status),
                         },
                         timeout=10.0
                     )

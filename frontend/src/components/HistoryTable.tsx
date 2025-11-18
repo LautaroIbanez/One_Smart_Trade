@@ -56,9 +56,35 @@ function HistoryTable() {
     setCursor(data.next_cursor)
   }
 
-  const handleDownload = () => {
-    if (!data?.download_url) return
-    window.open(`${API_BASE_URL}${data.download_url}`, '_blank', 'noopener')
+  const handleDownload = async () => {
+    try {
+      const downloadParams = { ...filters, cursor, format: 'csv' }
+      const params = new URLSearchParams()
+      Object.entries(downloadParams).forEach(([key, value]) => {
+        if (value !== null && value !== undefined && value !== '') {
+          params.append(key, String(value))
+        }
+      })
+      const url = `${API_BASE_URL}/api/v1/recommendation/history?${params.toString()}`
+      const response = await fetch(url)
+      if (!response.ok) throw new Error('Download failed')
+      const blob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      const contentDisposition = response.headers.get('Content-Disposition')
+      const filename = contentDisposition
+        ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+        : `recommendation_history_${new Date().toISOString().split('T')[0]}.csv`
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(downloadUrl)
+    } catch (error) {
+      console.error('Error downloading CSV:', error)
+      alert('Error al descargar el archivo CSV')
+    }
   }
 
   const handleReset = () => {
@@ -230,10 +256,19 @@ function HistoryTable() {
                       </div>
                     </td>
                     <td>
-                      <div className={`tracking-chip ${item.divergence_flag ? 'danger' : 'ok'}`}>
-                        {item.tracking_error_pct !== null && item.tracking_error_pct !== undefined
-                          ? `${item.tracking_error_pct.toFixed(2)}%`
-                          : '—'}
+                      <div className="tracking-error-cell">
+                        {item.tracking_error_pct !== null && item.tracking_error_pct !== undefined ? (
+                          <>
+                            <div className={`tracking-chip ${item.divergence_flag ? 'danger' : item.tracking_error_pct > 2.0 ? 'warning' : 'ok'}`}>
+                              {item.tracking_error_pct.toFixed(2)}%
+                            </div>
+                            {item.tracking_error_bps !== null && item.tracking_error_bps !== undefined && (
+                              <span className="tracking-bps">{item.tracking_error_bps.toFixed(0)} bps</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
                       </div>
                     </td>
                     <td>{renderStatusChip(item)}</td>
@@ -296,22 +331,32 @@ const SparklineCard = ({ signal, data }: SparklineProps) => {
       </div>
     )
   }
+  
+  // Calculate divergence for display
+  const latest = data[data.length - 1]
+  const divergence = latest ? ((latest.realistic - latest.theoretical) / latest.theoretical) * 100 : 0
+  const divergenceClass = Math.abs(divergence) > 5 ? 'danger' : Math.abs(divergence) > 2 ? 'warning' : 'ok'
 
   return (
     <div className="sparkline-card">
-      <h4>{signal}</h4>
+      <div className="sparkline-header">
+        <h4>{signal}</h4>
+        <span className={`divergence-badge ${divergenceClass}`}>
+          {divergence > 0 ? '+' : ''}{divergence.toFixed(2)}%
+        </span>
+      </div>
       <ResponsiveContainer width="100%" height={80}>
         <LineChart data={data}>
           <Tooltip
             contentStyle={{ background: 'rgba(15,23,42,0.9)', border: 'none', borderRadius: '0.5rem', color: '#fff' }}
             formatter={(value: number, name: string) => {
               const label = name === 'theoretical' ? 'Teórico' : 'Realista'
-              return [`${value.toFixed(2)}`, label]
+              return [`${value.toFixed(4)}`, label]
             }}
             labelFormatter={(label) => new Date(label).toLocaleDateString('es-ES')}
           />
-          <Line type="monotone" dataKey="theoretical" stroke="#38bdf8" strokeWidth={2} dot={false} />
-          <Line type="monotone" dataKey="realistic" stroke="#f97316" strokeWidth={2} dot={false} />
+          <Line type="monotone" dataKey="theoretical" stroke="#38bdf8" strokeWidth={2} dot={false} name="theoretical" />
+          <Line type="monotone" dataKey="realistic" stroke="#f97316" strokeWidth={2} dot={false} name="realistic" />
         </LineChart>
       </ResponsiveContainer>
     </div>

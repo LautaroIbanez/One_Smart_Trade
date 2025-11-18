@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.database import SessionLocal
 from app.core.logging import logger
+from app.core.exceptions import RiskValidationError
 from app.db.models import RecommendationORM
 from app.models.recommendation import (
     RecommendationResponse,
@@ -38,6 +39,18 @@ async def get_today_recommendation(user_id: Optional[str] = None):
         data = await recommendation_service.get_today_recommendation(user_id=user_id)
         if not data:
             raise HTTPException(status_code=404, detail="No recommendation available for today")
+        # Handle capital_missing status - return it as part of response for UI handling
+        if data.get("status") == "capital_missing":
+            # Return a response that includes the capital_missing status
+            # The frontend will handle displaying the banner/disabled button
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "capital_missing",
+                    "reason": data.get("reason", "Capital validation required"),
+                    "requires_capital_input": data.get("requires_capital_input", True),
+                },
+            )
         if data.get("status") == "invalid":
             raise HTTPException(status_code=422, detail=data.get("reason", "Invalid recommendation"))
         return RecommendationResponse(
@@ -67,6 +80,28 @@ async def get_today_recommendation(user_id: Optional[str] = None):
         )
     except HTTPException:
         raise
+    except RiskValidationError as e:
+        # Convert RiskValidationError to proper API response
+        # Determine status based on audit_type
+        if e.audit_type == "daily_risk_limit_exceeded":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "daily_risk_limit_exceeded",
+                    "reason": e.reason,
+                    "context_data": e.context_data,
+                },
+            )
+        else:
+            # Default to capital_missing for other risk validation errors
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "capital_missing",
+                    "reason": e.reason,
+                    "requires_capital_input": True,
+                },
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -123,11 +123,7 @@ function Dashboard() {
           <RealVsTheoretical />
           <SignalCompliance />
           <MonthlyPerformance />
-          <LivelihoodDashboard enabled={(() => {
-            const envFlag = (import.meta as any).env?.VITE_LIVELIHOOD_BETA === 'true'
-            const lsFlag = localStorage.getItem('enableLivelihoodBeta') === 'true'
-            return envFlag || lsFlag
-          })()} />
+          <LivelihoodDashboard />
           <ObservabilityDashboard isPrivate={false} />
           <TransparencyDashboard />
         </main>

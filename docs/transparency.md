@@ -89,10 +89,16 @@ Cuando exportas recomendaciones, puedes verificar la integridad del archivo:
 
 ```python
 import hashlib
+import requests
+
+# Descargar export con headers
+response = requests.get(
+    "http://localhost:8000/api/v1/export?format=csv&limit=100",
+    headers={"X-User-Id": "user123"}
+)
 
 # Leer el archivo exportado
-with open("recommendations_export.csv", "rb") as f:
-    content = f.read()
+content = response.content
 
 # Calcular MD5
 md5_hash = hashlib.md5(content).hexdigest()
@@ -101,16 +107,36 @@ md5_hash = hashlib.md5(content).hexdigest()
 sha256_hash = hashlib.sha256(content).hexdigest()
 
 # Comparar con headers HTTP recibidos
-# Headers disponibles: Content-MD5, X-Export-File-Hash
+assert md5_hash == response.headers.get("Content-MD5"), "MD5 mismatch!"
+assert sha256_hash == response.headers.get("X-Export-File-Hash"), "SHA-256 mismatch!"
+
+# Obtener audit ID para verificación posterior
+audit_id = response.headers.get("X-Export-Audit-Id")
+print(f"Export audit ID: {audit_id}")
+
+# Verificar que el export incluye métricas de ejecución
+has_execution_metrics = int(response.headers.get("X-Export-Has-Execution-Metrics", 0))
+has_tracking_error = int(response.headers.get("X-Export-Has-Tracking-Error", 0))
+print(f"Records with execution metrics: {has_execution_metrics}")
+print(f"Records with tracking error: {has_tracking_error}")
 ```
 
 O desde la línea de comandos:
 
 ```bash
-# MD5
-md5sum recommendations_export.csv
+# Descargar export
+curl -H "X-User-Id: user123" \
+  "http://localhost:8000/api/v1/export?format=csv&limit=100" \
+  -o recommendations_export.csv \
+  -D headers.txt
 
-# SHA-256
+# Verificar hashes desde headers
+grep "Content-MD5" headers.txt
+grep "X-Export-File-Hash" headers.txt
+grep "X-Export-Audit-Id" headers.txt
+
+# Calcular hashes del archivo
+md5sum recommendations_export.csv
 sha256sum recommendations_export.csv
 ```
 
@@ -617,12 +643,102 @@ El dashboard de observabilidad permite monitoreo continuo:
 
 ---
 
+## Dashboard de Transparencia
+
+### Acceso
+
+El dashboard de transparencia está disponible en:
+- **Frontend**: Componente `TransparencyDashboard` en la página principal
+- **API**: `GET /api/v1/transparency/dashboard`
+- **Semáforo rápido**: `GET /api/v1/transparency/semaphore`
+
+### Interpretación del Semáforo
+
+El semáforo muestra el estado general de las verificaciones de transparencia:
+
+- **🟢 PASS**: Todas las verificaciones pasan correctamente
+  - Hashes coinciden con los almacenados
+  - Tracking error dentro de umbrales aceptables (< 5% anualizado)
+  - Divergencia de drawdown < 10%
+  - Auditorías activas
+
+- **🟡 WARN**: Advertencias detectadas
+  - Hashes han cambiado (código, dataset o parámetros actualizados)
+  - Tracking error moderado (5-10% anualizado)
+  - Divergencia de drawdown 10-20%
+  - Correlación entre curvas < 90%
+
+- **🔴 FAIL**: Verificaciones críticas fallan
+  - Tracking error alto (> 10% anualizado)
+  - Divergencia de drawdown > 20%
+  - Correlación entre curvas < 85%
+  - Sin datos de auditoría
+
+### Verificación Manual de Hashes
+
+Para verificar hashes manualmente:
+
+```bash
+# Obtener estado del semáforo
+curl http://localhost:8000/api/v1/transparency/semaphore | jq
+
+# Verificar hashes específicos
+curl http://localhost:8000/api/v1/transparency/hashes/verify | jq
+
+# Ver tracking error rolling
+curl http://localhost:8000/api/v1/transparency/tracking-error/rolling?period_days=30 | jq
+
+# Ver divergencia de drawdown
+curl http://localhost:8000/api/v1/transparency/drawdown/divergence | jq
+
+# Ver estado de auditorías
+curl http://localhost:8000/api/v1/transparency/audit/status | jq
+```
+
+### Verificación Automática
+
+El sistema ejecuta verificaciones automáticas cada hora mediante el job `job_verify_transparency`. 
+
+Si el estado no es PASS, se:
+1. Registra una advertencia en los logs
+2. Envía una alerta al webhook configurado en `ALERT_WEBHOOK_URL` (si está configurado)
+
+Para configurar alertas por webhook:
+
+```bash
+export ALERT_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+```
+
+El payload del webhook incluye:
+```json
+{
+  "text": "Transparency Alert: ...",
+  "status": "warn|fail",
+  "details": {
+    "overall_status": "warn",
+    "hash_verification": "warn",
+    "tracking_error_status": "pass",
+    ...
+  }
+}
+```
+
+### Historial de Verificaciones
+
+El historial de verificaciones se puede consultar en:
+- Logs del sistema (búsqueda por "Transparency verification completed")
+- Dashboard de transparencia (muestra última verificación)
+- Endpoint de auditoría (`/api/v1/transparency/audit/status`)
+
+---
+
 ## Referencias
 
 - [Ejecución y Tracking Error](./execution.md)
 - [Arquitectura de Robustez](./architecture/robustness.md)
 - [Gestión de Riesgo](./risk-management.md)
 - [API de Export](./api.md#export)
+- [Backtest Report](./backtest-report.md)
 
 
 

@@ -15,6 +15,7 @@ import yaml
 from app.analytics.trade_efficiency import TradeEfficiencyAnalyzer, TradeEfficiencyEvaluation
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.exceptions import RiskValidationError
 from sqlalchemy import and_, case, desc, func, or_, select
 from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
 from app.backtesting.risk_sizing import RiskSizer
@@ -37,6 +38,7 @@ from app.services.strategy_service import StrategyService
 from app.services.user_portfolio_service import UserPortfolioService
 from app.services.user_risk_profile_service import UserRiskProfileService, UserRiskContext
 from app.services.exposure_ledger_service import ExposureLedgerService
+from app.services.trade_activity_ledger import TradeActivityLedger
 from app.signals.loggers import SignalLogRecord, log_signal_event
 from app.confidence.service import ConfidenceService
 from app.observability.risk_metrics import (
@@ -70,6 +72,7 @@ class RecommendationService:
         self.user_portfolio_service = UserPortfolioService(session=session)
         self.user_risk_profile_service = UserRiskProfileService(session=session)
         self.exposure_ledger_service = ExposureLedgerService(session=session)
+        self.trade_activity_ledger = TradeActivityLedger(session=session)
         self.tracking_error_threshold_pct = self._load_tracking_error_threshold()
         # Risk manager will be initialized per-user with real equity
         self._default_risk_manager = UnifiedRiskManager(
@@ -294,16 +297,27 @@ class RecommendationService:
                             "limit_multiplier": sizing_result.get("limit_multiplier"),
                             "beta_value": sizing_result.get("beta_value"),
                         }
+                elif sizing_result.get("status") == "daily_risk_limit_exceeded":
+                    result["sizing_status"] = sizing_result["status"]
+                    result["sizing_message"] = sizing_result.get("message")
+                    result["suggested_sizing"] = sizing_result
+                    result["recommended_position_size"] = None
+                    result["risk_pct"] = None
+                    result["capital_assumed"] = None
+                    result["recommended_risk_fraction"] = None
                 else:
                     # Valid sizing result
-                result["suggested_sizing"] = sizing_result
-                result["recommended_position_size"] = sizing_result.get("units", 0.0)
-                result["risk_pct"] = sizing_result.get("risk_pct", 0.0)
-                result["capital_assumed"] = sizing_result.get("capital_used", 0.0)
-                result["recommended_risk_fraction"] = sizing_result.get("risk_pct", 0.5) / 100.0
+                    result["suggested_sizing"] = sizing_result
+                    result["recommended_position_size"] = sizing_result.get("units", 0.0)
+                    result["risk_pct"] = sizing_result.get("risk_pct", 0.0)
+                    result["capital_assumed"] = sizing_result.get("capital_used", 0.0)
+                    result["recommended_risk_fraction"] = sizing_result.get("risk_pct", 0.5) / 100.0
                     result["exposure_multiplier"] = sizing_result.get("exposure_multiplier")
                     result["risk_of_ruin"] = sizing_result.get("risk_of_ruin")
                     result["limits_check"] = sizing_result.get("limits_check", {})
+                    # Add warnings if any
+                    if sizing_result.get("warnings"):
+                        result["warnings"] = sizing_result.get("warnings")
             else:
                 # No sizing available (missing entry/stop)
                 result["suggested_sizing"] = None
@@ -313,6 +327,25 @@ class RecommendationService:
                 result["recommended_risk_fraction"] = None
         else:
             result["recommended_risk_fraction"] = None
+        
+        # Add trade activity information (trades remaining, daily risk)
+        if hasattr(self, "_current_activity_summary") and self._current_activity_summary:
+            result["trade_activity"] = {
+                "trades_count": self._current_activity_summary.trades_count,
+                "trades_remaining": self._current_activity_summary.trades_remaining,
+                "max_trades_24h": self._current_activity_summary.max_trades_24h,
+                "committed_risk_pct": self._current_activity_summary.committed_risk_pct,
+                "daily_risk_limit_pct": self._current_activity_summary.daily_risk_limit_pct,
+                "daily_risk_warning_pct": self._current_activity_summary.daily_risk_warning_pct,
+            }
+        if hasattr(self, "_current_committed_risk_pct"):
+            result["daily_risk_pct"] = self._current_committed_risk_pct
+        
+        # Clean up temporary attributes
+        if hasattr(self, "_current_activity_summary"):
+            delattr(self, "_current_activity_summary")
+        if hasattr(self, "_current_committed_risk_pct"):
+            delattr(self, "_current_committed_risk_pct")
         
         # Add disclaimer
         result.setdefault("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk. Position sizing requires your portfolio data or explicit capital input via /api/v1/risk/sizing.")
@@ -380,6 +413,94 @@ class RecommendationService:
             dd_limit=50.0,
             min_risk_pct=0.2,
         )
+        
+        # Validate daily risk limit (3% maximum, 2% hard warning)
+        if sizing_result and sizing_result.get("risk_amount"):
+            proposed_risk = sizing_result.get("risk_amount", 0.0)
+            total_committed_risk = self.exposure_ledger_service.pending_risk(
+                user_id=user_id,
+                user_equity=ctx.equity,
+            )
+            total_risk_with_proposed = total_committed_risk + proposed_risk
+            total_risk_pct = (total_risk_with_proposed / ctx.equity * 100.0) if ctx.equity > 0 else 0.0
+            
+            daily_risk_limit_pct = 3.0  # 3% daily limit
+            daily_risk_warning_pct = 2.0  # 2% hard warning threshold
+            
+            # Check if exceeds daily limit
+            if total_risk_pct > daily_risk_limit_pct:
+                user_id_str = str(user_id or "default")
+                USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="daily_risk_limit_exceeded").inc()
+                
+                # Log audit trail
+                db = self.session or SessionLocal()
+                try:
+                    from app.db.crud import create_risk_audit
+                    create_risk_audit(
+                        db=db,
+                        user_id=user_id,
+                        audit_type="daily_risk_limit_exceeded",
+                        reason=f"Superarías el {daily_risk_limit_pct}% de riesgo diario. Riesgo actual: {total_committed_risk/ctx.equity*100.0:.2f}%, propuesto: {proposed_risk/ctx.equity*100.0:.2f}%, total: {total_risk_pct:.2f}%",
+                        context_data={
+                            "committed_risk": total_committed_risk,
+                            "proposed_risk": proposed_risk,
+                            "total_risk": total_risk_with_proposed,
+                            "total_risk_pct": total_risk_pct,
+                            "daily_limit_pct": daily_risk_limit_pct,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+                finally:
+                    if not self.session:
+                        db.close()
+                
+                # Send internal alert
+                try:
+                    from app.services.risk_block_alert_service import risk_block_alert_service
+                    await risk_block_alert_service.send_daily_risk_limit_alert(
+                        user_id=user_id,
+                        daily_risk_pct=total_risk_pct,
+                        daily_limit_pct=daily_risk_limit_pct,
+                        context_data={
+                            "equity": ctx.equity,
+                            "trades_count": activity_summary.trades_count if activity_summary else None,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send daily risk limit alert: {e}", exc_info=True)
+                
+                return {
+                    "status": "daily_risk_limit_exceeded",
+                    "message": f"Superarías el {daily_risk_limit_pct}% de riesgo diario. Riesgo actual: {total_committed_risk/ctx.equity*100.0:.2f}%, propuesto: {proposed_risk/ctx.equity*100.0:.2f}%, total: {total_risk_pct:.2f}%",
+                    "committed_risk": total_committed_risk,
+                    "proposed_risk": proposed_risk,
+                    "total_risk": total_risk_with_proposed,
+                    "total_risk_pct": total_risk_pct,
+                    "daily_limit_pct": daily_risk_limit_pct,
+                    "daily_risk_pct": total_risk_pct,
+                }
+            
+            # Check if exceeds warning threshold (2%)
+            warnings = []
+            if total_risk_pct > daily_risk_warning_pct:
+                warnings.append({
+                    "type": "daily_risk_warning",
+                    "severity": "warning",
+                    "message": f"Estás sobre el {daily_risk_warning_pct}% de riesgo diario (hard warning). Riesgo actual: {total_committed_risk/ctx.equity*100.0:.2f}%, propuesto: {proposed_risk/ctx.equity*100.0:.2f}%, total: {total_risk_pct:.2f}%",
+                    "total_risk_pct": total_risk_pct,
+                    "warning_threshold_pct": daily_risk_warning_pct,
+                })
+                
+                # Update Prometheus metrics
+                from app.observability.risk_metrics import USER_DAILY_RISK_PCT, USER_DAILY_RISK_WARNING
+                user_id_str = str(user_id or "default")
+                USER_DAILY_RISK_PCT.labels(user_id=user_id_str).set(total_risk_pct)
+                USER_DAILY_RISK_WARNING.labels(user_id=user_id_str).set(1.0)  # Warning active
+            
+            # Store warnings in sizing result
+            if warnings:
+                sizing_result["warnings"] = warnings
         
         # Simulate ruin risk with user's actual trading metrics
         from app.core.config import settings
@@ -763,9 +884,248 @@ class RecommendationService:
         """Generate a new recommendation using curated datasets."""
         from app.quant.narrative import build_narrative
 
+        # CRITICAL: Validate capital FIRST, before ANY other operations (including champion context)
+        # This prevents generating recommendations without verified capital and ensures generate_signal() never runs without equity
+        ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
+        if not ctx.has_data or ctx.equity is None or ctx.equity <= 0:
+            # Log audit trail for capital validation failure
+            db = self.session or SessionLocal()
+            context_data = {
+                "has_data": ctx.has_data,
+                "equity": ctx.equity if ctx.equity is not None else None,
+            }
+            try:
+                from app.db.crud import create_risk_audit
+                create_risk_audit(
+                    db=db,
+                    user_id=settings.DEFAULT_USER_ID,
+                    audit_type="capital_missing",
+                    reason="Debes conectar tu cuenta o ingresar capital para recibir señales. Usa /api/v1/risk/sizing con tu capital disponible.",
+                    context_data=context_data,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+            finally:
+                if not self.session:
+                    db.close()
+            
+            # Send internal alert
+            try:
+                from app.services.risk_block_alert_service import risk_block_alert_service
+                await risk_block_alert_service.send_capital_block_alert(
+                    user_id=settings.DEFAULT_USER_ID,
+                    context_data=context_data,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send capital block alert: {e}", exc_info=True)
+            
+            logger.warning(
+                f"Recommendation generation blocked: user {settings.DEFAULT_USER_ID} has no validated capital",
+                extra={"has_data": ctx.has_data, "equity": ctx.equity},
+            )
+            
+            # Raise exception to prevent any further execution (including generate_signal)
+            raise RiskValidationError(
+                reason="Debes conectar tu cuenta o ingresar capital para recibir señales. Usa /api/v1/risk/sizing con tu capital disponible.",
+                audit_type="capital_missing",
+                context_data=context_data,
+            )
+
+        # Now safe to proceed with champion context and other operations
         champion = self._ensure_champion_context(run_alerts=True)
         if champion is None:
             return {"status": "error", "reason": "no_champion_configuration"}
+
+        # PREVENTIVE VALIDATIONS: Check trade limits and daily risk BEFORE generating signal
+        
+        # 1. Check preventive trade limit (block at limit - 1)
+        can_trade, trade_limit_reason = self.trade_activity_ledger.can_trade(
+            user_id=settings.DEFAULT_USER_ID,
+            user_equity=ctx.equity,
+            max_trades_24h=settings.COOLDOWN_MAX_TRADES_24H,
+        )
+        if not can_trade:
+            # Get activity summary for detailed info
+            activity_summary = self.trade_activity_ledger.get_activity_summary(
+                user_id=settings.DEFAULT_USER_ID,
+                user_equity=ctx.equity,
+                max_trades_24h=settings.COOLDOWN_MAX_TRADES_24H,
+            )
+            
+            # Log audit trail
+            db = self.session or SessionLocal()
+            try:
+                from app.db.crud import create_risk_audit
+                create_risk_audit(
+                    db=db,
+                    user_id=settings.DEFAULT_USER_ID,
+                    audit_type="trade_limit_preventive",
+                    reason=trade_limit_reason or "Límite preventivo de trades alcanzado",
+                    context_data={
+                        "trades_count": activity_summary.trades_count,
+                        "trades_remaining": activity_summary.trades_remaining,
+                        "max_trades_24h": activity_summary.max_trades_24h,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+            finally:
+                if not self.session:
+                    db.close()
+            
+            logger.warning(
+                f"Preventive trade limit reached: user {settings.DEFAULT_USER_ID} has {activity_summary.trades_count} trades in last 24h",
+                extra={
+                    "trades_count": activity_summary.trades_count,
+                    "trades_remaining": activity_summary.trades_remaining,
+                },
+            )
+            # Get contextual articles for overtrading
+            db = self.session or SessionLocal()
+            contextual_articles = []
+            try:
+                from app.db.crud import get_contextual_articles
+                context_data = {
+                    "trades_24h": activity_summary.trades_count,
+                }
+                articles = get_contextual_articles(
+                    db,
+                    settings.DEFAULT_USER_ID,
+                    trigger_type="overtrading",
+                    limit=3,
+                    context_data=context_data,
+                )
+                contextual_articles = [
+                    {
+                        "id": a.id,
+                        "title": a.title,
+                        "slug": a.slug,
+                        "summary": a.summary,
+                        "category": a.category,
+                        "micro_habits": a.micro_habits,
+                        "is_critical": a.is_critical,
+                    }
+                    for a in articles
+                ]
+            except Exception as e:
+                logger.warning(f"Failed to fetch contextual articles: {e}", exc_info=True)
+            finally:
+                if not self.session:
+                    db.close()
+            
+            # Send internal alert
+            try:
+                from app.services.risk_block_alert_service import risk_block_alert_service
+                await risk_block_alert_service.send_trade_limit_preventive_alert(
+                    user_id=settings.DEFAULT_USER_ID,
+                    trades_count=activity_summary.trades_count,
+                    max_trades_24h=activity_summary.max_trades_24h,
+                    context_data={
+                        "equity": ctx.equity,
+                        "daily_risk_pct": activity_summary.committed_risk_pct,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send trade limit preventive alert: {e}", exc_info=True)
+            
+            return {
+                "status": "trade_limit_preventive",
+                "reason": trade_limit_reason,
+                "trades_count": activity_summary.trades_count,
+                "trades_remaining": activity_summary.trades_remaining,
+                "max_trades_24h": activity_summary.max_trades_24h,
+                "contextual_articles": contextual_articles,
+            }
+        
+        # 2. Get activity summary for risk calculation and response
+        activity_summary = self.trade_activity_ledger.get_activity_summary(
+            user_id=settings.DEFAULT_USER_ID,
+            user_equity=ctx.equity,
+            max_trades_24h=settings.COOLDOWN_MAX_TRADES_24H,
+        )
+        
+        # 3. Check daily risk limit BEFORE generating signal
+        # We need to estimate the proposed risk conservatively before generating the full signal
+        # This prevents generating signals that would exceed daily risk limits
+        committed_risk = self.exposure_ledger_service.pending_risk(
+            user_id=settings.DEFAULT_USER_ID,
+            user_equity=ctx.equity,
+        )
+        committed_risk_pct = (committed_risk / ctx.equity * 100.0) if ctx.equity > 0 else 0.0
+        
+        # Estimate proposed risk conservatively (assume 1% risk per trade as conservative estimate)
+        # This will be validated more precisely after signal generation and sizing calculation
+        conservative_proposed_risk_pct = 1.0  # Conservative 1% estimate
+        total_risk_pct_conservative = committed_risk_pct + conservative_proposed_risk_pct
+        
+        daily_risk_limit_pct = 3.0  # 3% daily limit
+        daily_risk_warning_pct = 2.0  # 2% warning threshold
+        
+        # Block if conservative estimate would exceed limit
+        if total_risk_pct_conservative > daily_risk_limit_pct:
+            # Log audit trail
+            db = self.session or SessionLocal()
+            try:
+                from app.db.crud import create_risk_audit
+                create_risk_audit(
+                    db=db,
+                    user_id=settings.DEFAULT_USER_ID,
+                    audit_type="daily_risk_limit_exceeded",
+                    reason=f"Riesgo diario ya comprometido ({committed_risk_pct:.2f}%) superaría el límite del {daily_risk_limit_pct}% con un trade adicional.",
+                    context_data={
+                        "committed_risk": committed_risk,
+                        "committed_risk_pct": committed_risk_pct,
+                        "conservative_proposed_risk_pct": conservative_proposed_risk_pct,
+                        "total_risk_pct_conservative": total_risk_pct_conservative,
+                        "daily_limit_pct": daily_risk_limit_pct,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+            finally:
+                if not self.session:
+                    db.close()
+            
+            # Update Prometheus metrics
+            user_id_str = str(settings.DEFAULT_USER_ID)
+            USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="daily_risk_limit_exceeded").inc()
+            
+            # Send internal alert
+            try:
+                from app.services.risk_block_alert_service import risk_block_alert_service
+                await risk_block_alert_service.send_daily_risk_limit_alert(
+                    user_id=settings.DEFAULT_USER_ID,
+                    daily_risk_pct=committed_risk_pct,
+                    daily_limit_pct=daily_risk_limit_pct,
+                    context_data={
+                        "equity": ctx.equity,
+                        "trades_count": activity_summary.trades_count,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send daily risk limit alert: {e}", exc_info=True)
+            
+            logger.warning(
+                f"Daily risk limit would be exceeded: user {settings.DEFAULT_USER_ID} has {committed_risk_pct:.2f}% committed risk",
+                extra={
+                    "committed_risk_pct": committed_risk_pct,
+                    "daily_limit_pct": daily_risk_limit_pct,
+                },
+            )
+            
+            raise RiskValidationError(
+                reason=f"Superarías el {daily_risk_limit_pct}% de riesgo diario. Riesgo actual comprometido: {committed_risk_pct:.2f}%.",
+                audit_type="daily_risk_limit_exceeded",
+                context_data={
+                    "committed_risk": committed_risk,
+                    "committed_risk_pct": committed_risk_pct,
+                    "daily_limit_pct": daily_risk_limit_pct,
+                },
+            )
+        
+        # Store activity summary for later use (will be added to response)
+        self._current_activity_summary = activity_summary
+        self._current_committed_risk_pct = committed_risk_pct
 
         # Check auto-shutdown before generating recommendation
         if self.shutdown_manager:
@@ -791,10 +1151,8 @@ class RecommendationService:
                     },
                 )
         
-        # Validate user risk context before generating recommendation
-        ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
-        
         # Check if user is overexposed (should block new signals)
+        # Note: ctx is already available from capital validation above
         if ctx.has_data and ctx.is_overexposed:
             logger.warning(
                 f"User {settings.DEFAULT_USER_ID} is overexposed (leverage: {ctx.effective_leverage:.2f}x, "
@@ -829,11 +1187,22 @@ class RecommendationService:
                                 "remaining_seconds": cooldown_remaining,
                             },
                         )
-                    # Get contextual educational articles for cooldown
+                    # Get contextual educational articles for cooldown with specific context
                     from app.db.crud import get_contextual_articles
                     contextual_articles = []
                     try:
-                        articles = get_contextual_articles(db, settings.DEFAULT_USER_ID, trigger_type="cooldown", limit=3)
+                        context_data = {
+                            "losing_streak": user_state.current_losing_streak,
+                            "trades_24h": user_state.trades_last_24h,
+                            "drawdown_pct": user_state.current_drawdown_pct,
+                        }
+                        articles = get_contextual_articles(
+                            db, 
+                            settings.DEFAULT_USER_ID, 
+                            trigger_type="cooldown", 
+                            limit=3,
+                            context_data=context_data,
+                        )
                         contextual_articles = [
                             {
                                 "id": a.id,
@@ -841,6 +1210,8 @@ class RecommendationService:
                                 "slug": a.slug,
                                 "summary": a.summary,
                                 "category": a.category,
+                                "micro_habits": a.micro_habits,
+                                "is_critical": a.is_critical,
                             }
                             for a in articles
                         ]
@@ -866,11 +1237,21 @@ class RecommendationService:
                             "since": user_state.leverage_hard_stop_since.isoformat() if user_state.leverage_hard_stop_since else None,
                         },
                     )
-                    # Get contextual educational articles for leverage
+                    # Get contextual educational articles for leverage with specific context
                     from app.db.crud import get_contextual_articles
                     contextual_articles = []
                     try:
-                        articles = get_contextual_articles(db, settings.DEFAULT_USER_ID, trigger_type="leverage", limit=3)
+                        context_data = {
+                            "leverage": user_state.effective_leverage,
+                            "threshold": settings.LEVERAGE_HARD_STOP_THRESHOLD,
+                        }
+                        articles = get_contextual_articles(
+                            db, 
+                            settings.DEFAULT_USER_ID, 
+                            trigger_type="leverage", 
+                            limit=3,
+                            context_data=context_data,
+                        )
                         contextual_articles = [
                             {
                                 "id": a.id,
@@ -878,6 +1259,8 @@ class RecommendationService:
                                 "slug": a.slug,
                                 "summary": a.summary,
                                 "category": a.category,
+                                "micro_habits": a.micro_habits,
+                                "is_critical": a.is_critical,
                             }
                             for a in articles
                         ]
@@ -935,6 +1318,125 @@ class RecommendationService:
             signal["spot_source"] = "1h"
             self._apply_confidence_calibration(signal)
             self._finalize_confidence_fields(signal, signal.get("calibration_metadata"))
+            
+            # 4. Validate daily risk limit with precise estimate AFTER signal generation
+            # Calculate preliminary sizing to estimate proposed risk accurately
+            entry = signal.get("entry_range", {}).get("optimal", signal.get("current_price", 0))
+            stop = signal.get("stop_loss_take_profit", {}).get("stop_loss", 0)
+            
+            if entry > 0 and stop > 0:
+                # Calculate preliminary sizing to estimate risk
+                from app.backtesting.unified_risk_manager import UnifiedRiskManager
+                risk_manager = UnifiedRiskManager()
+                
+                # Use conservative base risk for preliminary estimate
+                preliminary_sizing = risk_manager.size_trade(
+                    entry=entry,
+                    stop=stop,
+                    user_equity=ctx.equity,
+                    user_drawdown=ctx.drawdown_pct,
+                    base_risk_pct=ctx.base_risk_pct * 100.0,
+                    dd_limit=50.0,
+                    min_risk_pct=0.2,
+                )
+                
+                if preliminary_sizing and preliminary_sizing.get("risk_amount"):
+                    proposed_risk = preliminary_sizing.get("risk_amount", 0.0)
+                    total_risk_with_proposed = committed_risk + proposed_risk
+                    total_risk_pct = (total_risk_with_proposed / ctx.equity * 100.0) if ctx.equity > 0 else 0.0
+                    
+                    # Block if exceeds 3% limit
+                    if total_risk_pct > daily_risk_limit_pct:
+                        # Log audit trail
+                        db = self.session or SessionLocal()
+                        try:
+                            from app.db.crud import create_risk_audit
+                            create_risk_audit(
+                                db=db,
+                                user_id=settings.DEFAULT_USER_ID,
+                                audit_type="daily_risk_limit_exceeded",
+                                reason=f"Superarías el {daily_risk_limit_pct}% de riesgo diario. Riesgo actual: {committed_risk_pct:.2f}%, propuesto: {proposed_risk/ctx.equity*100.0:.2f}%, total: {total_risk_pct:.2f}%",
+                                context_data={
+                                    "committed_risk": committed_risk,
+                                    "proposed_risk": proposed_risk,
+                                    "total_risk": total_risk_with_proposed,
+                                    "total_risk_pct": total_risk_pct,
+                                    "daily_limit_pct": daily_risk_limit_pct,
+                                },
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+                        finally:
+                            if not self.session:
+                                db.close()
+                        
+                        # Update Prometheus metrics
+                        from app.observability.risk_metrics import USER_DAILY_RISK_BLOCKS_TOTAL
+                        user_id_str = str(settings.DEFAULT_USER_ID)
+                        USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="daily_risk_limit_exceeded").inc()
+                        USER_DAILY_RISK_BLOCKS_TOTAL.labels(user_id=user_id_str).inc()  # Track blocks for alerting
+                        
+                        # Send internal alert
+                        try:
+                            from app.services.risk_block_alert_service import risk_block_alert_service
+                            await risk_block_alert_service.send_daily_risk_limit_alert(
+                                user_id=settings.DEFAULT_USER_ID,
+                                daily_risk_pct=total_risk_pct,
+                                daily_limit_pct=daily_risk_limit_pct,
+                                context_data={
+                                    "equity": ctx.equity,
+                                    "trades_count": activity_summary.trades_count,
+                                },
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to send daily risk limit alert: {e}", exc_info=True)
+                        
+                        logger.warning(
+                            f"Daily risk limit exceeded after signal generation: user {settings.DEFAULT_USER_ID}",
+                            extra={
+                                "committed_risk_pct": committed_risk_pct,
+                                "proposed_risk_pct": proposed_risk/ctx.equity*100.0,
+                                "total_risk_pct": total_risk_pct,
+                                "daily_limit_pct": daily_risk_limit_pct,
+                            },
+                        )
+                        
+                        raise RiskValidationError(
+                            reason=f"Superarías el {daily_risk_limit_pct}% de riesgo diario. Riesgo actual: {committed_risk_pct:.2f}%, propuesto: {proposed_risk/ctx.equity*100.0:.2f}%, total: {total_risk_pct:.2f}%",
+                            audit_type="daily_risk_limit_exceeded",
+                            context_data={
+                                "committed_risk": committed_risk,
+                                "proposed_risk": proposed_risk,
+                                "total_risk": total_risk_with_proposed,
+                                "total_risk_pct": total_risk_pct,
+                                "daily_limit_pct": daily_risk_limit_pct,
+                            },
+                        )
+                    
+                    # Warn if exceeds 2% threshold
+                    if total_risk_pct > daily_risk_warning_pct:
+                        # Update Prometheus metrics for warning
+                        from app.observability.risk_metrics import (
+                            USER_DAILY_RISK_PCT,
+                            USER_DAILY_RISK_WARNING,
+                            USER_DAILY_RISK_WARNINGS_TOTAL,
+                        )
+                        user_id_str = str(settings.DEFAULT_USER_ID)
+                        USER_DAILY_RISK_PCT.labels(user_id=user_id_str).set(total_risk_pct)
+                        USER_DAILY_RISK_WARNING.labels(user_id=user_id_str).set(1.0)  # Warning active
+                        USER_DAILY_RISK_WARNINGS_TOTAL.labels(user_id=user_id_str).inc()  # Increment counter for repeated warnings
+                        
+                        logger.warning(
+                            f"Daily risk warning threshold exceeded: user {settings.DEFAULT_USER_ID} at {total_risk_pct:.2f}%",
+                            extra={
+                                "committed_risk_pct": committed_risk_pct,
+                                "proposed_risk_pct": proposed_risk/ctx.equity*100.0,
+                                "total_risk_pct": total_risk_pct,
+                                "warning_threshold_pct": daily_risk_warning_pct,
+                            },
+                        )
+        except RiskValidationError:
+            raise
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
             return {"status": "invalid", "reason": str(exc)}
@@ -1059,6 +1561,40 @@ class RecommendationService:
                 db.close()
 
         # Generate on-demand if not present
+        # CRITICAL: Validate capital BEFORE generating signal
+        ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
+        if not ctx.has_data or ctx.equity is None or ctx.equity <= 0:
+            # Log audit trail for capital validation failure
+            db = self.session or SessionLocal()
+            context_data = {
+                "has_data": ctx.has_data,
+                "equity": ctx.equity if ctx.equity is not None else None,
+            }
+            try:
+                from app.db.crud import create_risk_audit
+                create_risk_audit(
+                    db=db,
+                    user_id=settings.DEFAULT_USER_ID,
+                    audit_type="capital_missing",
+                    reason="Debes conectar tu cuenta o ingresar capital para recibir señales. Usa /api/v1/risk/sizing con tu capital disponible.",
+                    context_data=context_data,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create risk audit record: {e}", exc_info=True)
+            finally:
+                if not self.session:
+                    db.close()
+            
+            logger.warning(
+                f"Recommendation generation blocked: user {settings.DEFAULT_USER_ID} has no validated capital",
+                extra={"has_data": ctx.has_data, "equity": ctx.equity},
+            )
+            return {
+                "status": "capital_missing",
+                "reason": "Debes conectar tu cuenta o ingresar capital para recibir señales. Usa /api/v1/risk/sizing con tu capital disponible.",
+                "requires_capital_input": True,
+            }
+        
         logger.info("Generating recommendation on-demand")
         dc = DataCuration()
         try:
@@ -1224,32 +1760,46 @@ class RecommendationService:
             writer.writerow(
                 [
                     "timestamp",
+                    "date",
                     "signal",
                     "status",
                     "execution_status",
+                    "exit_reason",
                     "entry_price",
                     "exit_price",
                     "return_pct",
+                    "theoretical_return_pct",
+                    "realistic_return_pct",
                     "tracking_error_pct",
                     "tracking_error_bps",
+                    "divergence_flag",
                     "code_commit",
                     "dataset_version",
+                    "params_digest",
+                    "snapshot_url",
                 ]
             )
             for item in items:
                 writer.writerow(
                     [
                         item.get("timestamp"),
+                        item.get("date"),
                         item.get("signal"),
                         item.get("status"),
                         item.get("execution_status"),
+                        item.get("exit_reason"),
                         item.get("entry_price"),
                         item.get("exit_price"),
                         item.get("return_pct"),
+                        item.get("theoretical_return_pct"),
+                        item.get("realistic_return_pct"),
                         item.get("tracking_error_pct"),
                         item.get("tracking_error_bps"),
+                        item.get("divergence_flag", False),
                         item.get("code_commit"),
                         item.get("dataset_version"),
+                        item.get("params_digest"),
+                        item.get("snapshot_url"),
                     ]
                 )
             buffer.seek(0)

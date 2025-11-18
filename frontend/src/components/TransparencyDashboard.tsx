@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { API_BASE_URL } from '../api/hooks'
 import './TransparencyDashboard.css'
 
@@ -273,12 +274,32 @@ export function TransparencyDashboard() {
                   </div>
                   <div className="metric">
                     <label>Annualized TE</label>
-                    <span>{te.annualized_tracking_error.toFixed(2)}%</span>
+                    <span className={te.annualized_tracking_error > 5 ? 'warning' : te.annualized_tracking_error > 10 ? 'danger' : 'ok'}>
+                      {te.annualized_tracking_error.toFixed(2)}%
+                    </span>
                   </div>
                 </div>
               </div>
             )
           })}
+        </div>
+        {/* Tracking Error Comparison Chart */}
+        <div className="tracking-error-chart">
+          <h4>Comparación de Tracking Error por Período</h4>
+          <ResponsiveContainer width="100%" height={300}>
+            <AreaChart data={[
+              { period: '7d', value: tracking_error_rolling['7d']?.annualized_tracking_error || 0 },
+              { period: '30d', value: tracking_error_rolling['30d']?.annualized_tracking_error || 0 },
+              { period: '90d', value: tracking_error_rolling['90d']?.annualized_tracking_error || 0 },
+            ]}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="period" />
+              <YAxis label={{ value: 'Tracking Error (%)', angle: -90, position: 'insideLeft' }} />
+              <Tooltip formatter={(value: number) => `${value.toFixed(2)}%`} />
+              <Legend />
+              <Area type="monotone" dataKey="value" stroke="#8884d8" fill="#8884d8" fillOpacity={0.6} name="Annualized TE" />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </div>
 

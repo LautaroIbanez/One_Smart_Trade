@@ -31,6 +31,14 @@ class FundingRate:
 
 @dataclass(frozen=True, slots=True)
 class OpenInterest:
+    symbol: str
+    venue: str
+    open_interest: float
+    notional: float | None
+    timestamp: datetime
+    extras: Mapping[str, float] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class LiquidationEvent:
     symbol: str
@@ -72,12 +80,6 @@ class OrderBookDepth:
     @property
     def ask_depth(self) -> float:
         return float(sum(level.quantity for level in self.asks)) if self.asks else 0.0
-    symbol: str
-    venue: str
-    open_interest: float
-    notional: float | None
-    timestamp: datetime
-    extras: Mapping[str, float] = field(default_factory=dict)
 
 
 class ExchangeDataSource(Protocol):

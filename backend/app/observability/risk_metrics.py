@@ -160,5 +160,32 @@ USER_EXPOSURE_LIMIT_ALERT = Gauge(
     ["user_id"],
 )
 
+# Daily risk metrics
+USER_DAILY_RISK_PCT = Gauge(
+    "user_risk_daily_pct",
+    "Daily committed risk as percentage of equity",
+    ["user_id"],
+)
+
+USER_DAILY_RISK_WARNING = Gauge(
+    "user_risk_daily_warning",
+    "Hard warning flag when daily risk exceeds 2% (1 = warning active, 0 = no warning)",
+    ["user_id"],
+)
+
+# Counter for repeated daily risk warnings (for alerting on patterns)
+USER_DAILY_RISK_WARNINGS_TOTAL = Counter(
+    "user_risk_daily_warnings_total",
+    "Total number of times daily risk warning threshold (2%) was exceeded",
+    ["user_id"],
+)
+
+# Counter for daily risk limit blocks
+USER_DAILY_RISK_BLOCKS_TOTAL = Counter(
+    "user_risk_daily_blocks_total",
+    "Total number of times daily risk limit (3%) was exceeded and blocked",
+    ["user_id"],
+)
+
 
 

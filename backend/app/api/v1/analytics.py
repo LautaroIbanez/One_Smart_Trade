@@ -19,6 +19,41 @@ from app.core.config import settings
 router = APIRouter()
 
 
+@router.get("/livelihood/latest-run-id")
+async def get_latest_run_id() -> dict[str, Any]:
+    """Get the latest run_id from completed campaigns (from PerformancePeriodicORM or StrategyChampionORM)."""
+    with SessionLocal() as db:
+        from app.db.models import StrategyChampionORM
+        from sqlalchemy import desc
+        
+        # Try to get run_id from latest champion
+        champion = db.execute(
+            select(StrategyChampionORM)
+            .where(StrategyChampionORM.is_active == True)
+            .order_by(desc(StrategyChampionORM.promoted_at))
+            .limit(1)
+        ).scalars().first()
+        
+        if champion and champion.metrics:
+            # Try to extract run_id from champion metrics
+            run_id = champion.metrics.get("run_id") or champion.metrics.get("params_id")
+            if run_id:
+                return {"run_id": str(run_id), "source": "champion"}
+        
+        # Fallback: get latest run_id from PerformancePeriodicORM
+        latest_periodic = db.execute(
+            select(PerformancePeriodicORM.run_id)
+            .distinct()
+            .order_by(desc(PerformancePeriodicORM.created_at))
+            .limit(1)
+        ).scalars().first()
+        
+        if latest_periodic:
+            return {"run_id": str(latest_periodic), "source": "periodic_metrics"}
+        
+        return {"run_id": None, "source": None}
+
+
 class LivelihoodRequest(BaseModel):
     monthly_returns: conlist(float, min_items=3) = Field(..., description="Monthly return series as decimals, e.g., 0.02 for +2%")
     expenses_target: float = Field(0.0, ge=0.0, description="Target monthly expenses in USD")
@@ -30,6 +65,8 @@ class LivelihoodRequest(BaseModel):
 class LivelihoodResponse(BaseModel):
     survival: dict[str, float]
     scenarios: list[dict[str, Any]]
+    periodic_metrics: dict[str, Any] | None = None
+    income_curves: dict[str, Any] | None = None
 
 class FeedbackRequest(BaseModel):
     user_id: str | None = None
@@ -61,16 +98,119 @@ async def compute_livelihood_from_run(
     ruin_threshold: float = Query(0.7, gt=0.0, lt=1.0),
 ) -> LivelihoodResponse:
     """Compute survival and scenarios using stored monthly performance for a given run_id."""
+    from app.analytics.periodic_metrics import PeriodicMetricsBuilder
+    from app.backtesting.persistence import BacktestResultRepository
+    from app.core.logging import logger
+    
     with SessionLocal() as db:
         returns = _load_monthly_returns(db, run_id)
         if returns.empty:
             raise HTTPException(status_code=404, detail=f"No monthly returns found for run_id={run_id}")
+    
+    # Calculate survival and scenarios
     sim = SurvivalSimulator(trials=trials, horizon_months=horizon_months, ruin_threshold=ruin_threshold)
     survival = sim.monte_carlo(returns)
     scenarios = LivelihoodReport().build(returns, expenses_target=expenses_target)
+    
+    # Build periodic metrics and income curves
+    periodic_metrics_data = None
+    income_curves_data = None
+    
+    try:
+        # Try to load equity curves from backtest result
+        repo = BacktestResultRepository()
+        backtest_result = repo.load(run_id)
+        
+        if backtest_result and backtest_result.equity_curve_theoretical and backtest_result.equity_curve_realistic:
+            # Build equity curves as pandas Series
+            theoretical_equity = pd.Series(
+                [p["equity"] for p in backtest_result.equity_curve_theoretical],
+                index=pd.to_datetime([p["timestamp"] for p in backtest_result.equity_curve_theoretical])
+            )
+            realistic_equity = pd.Series(
+                [p["equity"] for p in backtest_result.equity_curve_realistic],
+                index=pd.to_datetime([p["timestamp"] for p in backtest_result.equity_curve_realistic])
+            )
+            
+            # Build periodic metrics from equity curves
+            builder = PeriodicMetricsBuilder()
+            periodic_metrics = builder.build(theoretical_equity)
+            
+            # Extract max_loss_streak and max_loss_duration from monthly metrics
+            monthly_metrics = next((m for m in periodic_metrics if m.horizon == "monthly"), None)
+            quarterly_metrics = next((m for m in periodic_metrics if m.horizon == "quarterly"), None)
+            
+            periodic_metrics_data = {
+                "monthly": {
+                    "stats": monthly_metrics.stats if monthly_metrics else {},
+                    "max_loss_streak": monthly_metrics.stats.get("max_loss_streak", 0) if monthly_metrics else 0,
+                    "max_loss_duration": monthly_metrics.stats.get("max_loss_duration", 0) if monthly_metrics else 0,
+                },
+                "quarterly": {
+                    "stats": quarterly_metrics.stats if quarterly_metrics else {},
+                    "max_loss_streak": quarterly_metrics.stats.get("max_loss_streak", 0) if quarterly_metrics else 0,
+                    "max_loss_duration": quarterly_metrics.stats.get("max_loss_duration", 0) if quarterly_metrics else 0,
+                },
+            }
+            
+            # Build income curves (theoretical vs viable) for each capital scenario
+            income_curves_data = {}
+            for capital in (1_000, 4_000, 10_000, 50_000):
+                # Calculate theoretical income (from theoretical equity)
+                theoretical_returns = theoretical_equity.pct_change().dropna()
+                theoretical_monthly = (1 + theoretical_returns).resample("M").prod() - 1
+                theoretical_income = theoretical_monthly * capital
+                
+                # Calculate viable income (from realistic equity)
+                realistic_returns = realistic_equity.pct_change().dropna()
+                realistic_monthly = (1 + realistic_returns).resample("M").prod() - 1
+                viable_income = realistic_monthly * capital
+                
+                # Align indices
+                common_index = theoretical_income.index.intersection(viable_income.index)
+                theoretical_income_aligned = theoretical_income.reindex(common_index).fillna(0)
+                viable_income_aligned = viable_income.reindex(common_index).fillna(0)
+                
+                income_curves_data[str(capital)] = {
+                    "theoretical": [
+                        {"timestamp": ts.isoformat(), "income": float(val)}
+                        for ts, val in zip(common_index, theoretical_income_aligned.values)
+                    ],
+                    "viable": [
+                        {"timestamp": ts.isoformat(), "income": float(val)}
+                        for ts, val in zip(common_index, viable_income_aligned.values)
+                    ],
+                }
+        else:
+            # Fallback: build periodic metrics from monthly returns only
+            # Create a synthetic equity curve from returns
+            equity_curve = (1 + returns).cumprod() * 10000  # Start with 10k
+            builder = PeriodicMetricsBuilder()
+            periodic_metrics = builder.build(equity_curve)
+            
+            monthly_metrics = next((m for m in periodic_metrics if m.horizon == "monthly"), None)
+            quarterly_metrics = next((m for m in periodic_metrics if m.horizon == "quarterly"), None)
+            
+            periodic_metrics_data = {
+                "monthly": {
+                    "stats": monthly_metrics.stats if monthly_metrics else {},
+                    "max_loss_streak": monthly_metrics.stats.get("max_loss_streak", 0) if monthly_metrics else 0,
+                    "max_loss_duration": monthly_metrics.stats.get("max_loss_duration", 0) if monthly_metrics else 0,
+                },
+                "quarterly": {
+                    "stats": quarterly_metrics.stats if quarterly_metrics else {},
+                    "max_loss_streak": quarterly_metrics.stats.get("max_loss_streak", 0) if quarterly_metrics else 0,
+                    "max_loss_duration": quarterly_metrics.stats.get("max_loss_duration", 0) if quarterly_metrics else 0,
+                },
+            }
+    except Exception as e:
+        logger.warning(f"Failed to build periodic metrics or income curves: {e}", exc_info=True)
+    
     return LivelihoodResponse(
         survival=survival,
         scenarios=[s.__dict__ for s in scenarios],
+        periodic_metrics=periodic_metrics_data,
+        income_curves=income_curves_data,
     )
 
 

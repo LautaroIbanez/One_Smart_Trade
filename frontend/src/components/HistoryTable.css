@@ -145,9 +145,25 @@
   color: #22c55e;
 }
 
+.tracking-chip.warning {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
+
 .tracking-chip.danger {
   background: rgba(239, 68, 68, 0.18);
   color: #ef4444;
+}
+
+.tracking-error-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tracking-bps {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 .status-chip {
@@ -224,8 +240,37 @@
   background: var(--bg-tertiary);
 }
 
+.sparkline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
 .sparkline-card h4 {
-  margin: 0 0 0.5rem;
+  margin: 0;
+}
+
+.divergence-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+.divergence-badge.ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.divergence-badge.warning {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
+
+.divergence-badge.danger {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
 }
 
 .loading,

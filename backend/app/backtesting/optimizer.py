@@ -205,6 +205,10 @@ class CampaignOptimizer:
                 if "confidence_intervals" in metrics and "calmar" in metrics.get("confidence_intervals", {}):
                     calmar_ci_low = metrics["confidence_intervals"]["calmar"].get("p5")
                 
+                # Get tracking error stats for RMSE check
+                tracking_error_stats = backtest_result.get("tracking_error_stats", [])
+                initial_capital = backtest_result.get("initial_capital", 10000.0)
+                
                 guardrail_result = self.guardrail_checker.check_all(
                     max_drawdown_pct=metrics.get("max_drawdown"),
                     risk_of_ruin=metrics.get("risk_of_ruin"),
@@ -218,6 +222,23 @@ class CampaignOptimizer:
                         extra={"params_id": params_id, "reason": guardrail_result.reason, "details": guardrail_result.details},
                     )
                     continue
+                
+                # Check tracking error RMSE guardrail if tracking_error_stats available
+                if tracking_error_stats and initial_capital > 0:
+                    rmse_result = self.guardrail_checker.check_tracking_error_rmse(
+                        tracking_error_stats=tracking_error_stats,
+                        initial_capital=initial_capital,
+                    )
+                    if not rmse_result.passed:
+                        logger.info(
+                            "Candidate rejected by tracking error RMSE guardrail",
+                            extra={
+                                "params_id": params_id,
+                                "reason": rmse_result.reason,
+                                "details": rmse_result.details,
+                            },
+                        )
+                        continue
 
             score = self.objective.score(metrics)
             objective_value = metrics.get(self.objective.config.target_metric, 0.0)
