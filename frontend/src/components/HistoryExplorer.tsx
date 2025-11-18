@@ -42,9 +42,9 @@ function HistoryExplorer({
     ...initialFilters,
   })
 
-  const { data, isLoading, error } = useRecommendationHistory(1000)
+  const { data, isLoading, error } = useRecommendationHistory({ limit: 1000 })
 
-  const recommendations = data?.recommendations || []
+  const recommendations = data?.items || []
 
   const filteredRecommendations = useMemo(() => {
     return recommendations.filter((rec: any) => {

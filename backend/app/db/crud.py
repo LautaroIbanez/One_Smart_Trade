@@ -50,6 +50,7 @@ def _normalise_date_from_market_timestamp(market_timestamp: str | None, fallback
 def _apply_payload_to_recommendation(rec: RecommendationORM, data: dict[str, Any]) -> None:
     """Apply payload data to recommendation ORM object."""
     rec.confidence = data["confidence"]
+    rec.confidence_calibrated = data.get("confidence_calibrated", rec.confidence_calibrated)
     rec.current_price = data["current_price"]
     rec.market_timestamp = data.get("market_timestamp", rec.market_timestamp)
     rec.spot_source = data.get("spot_source", rec.spot_source)
@@ -83,6 +84,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
     open_rec = get_open_recommendation(db)
     if open_rec and open_rec.closed_at is None:
         open_rec.confidence = data["confidence"]
+        open_rec.confidence_calibrated = data.get("confidence_calibrated", open_rec.confidence_calibrated)
         open_rec.current_price = data["current_price"]
         open_rec.market_timestamp = data.get("market_timestamp", open_rec.market_timestamp)
         open_rec.spot_source = data.get("spot_source", open_rec.spot_source)
@@ -149,6 +151,7 @@ def create_recommendation(db: Session, payload: dict) -> RecommendationORM:
         "stop_loss_pct": data["stop_loss_take_profit"]["stop_loss_pct"],
         "take_profit_pct": data["stop_loss_take_profit"]["take_profit_pct"],
         "confidence": data["confidence"],
+        "confidence_calibrated": data.get("confidence_calibrated"),
         "current_price": data["current_price"],
         "market_timestamp": market_timestamp,
         "spot_source": data.get("spot_source", "1d"),

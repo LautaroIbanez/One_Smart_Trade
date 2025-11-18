@@ -14,10 +14,15 @@ import pandas as pd
 from app.backtesting.execution_simulator import ExecutionSimulator
 from app.backtesting.order_types import BaseOrder, LimitOrder, MarketOrder, OrderSide, StopOrder
 from app.backtesting.position import Position, PositionSide
+from app.backtesting.tracking_error import TrackingErrorCalculator, calculate_tracking_error
 from app.backtesting.unified_risk_manager import UnifiedRiskManager
 from app.core.logging import logger
 from app.data.orderbook import OrderBookRepository
 from app.data.storage import get_curated_path, read_parquet
+from app.observability.execution_metrics import (
+    check_orderbook_fallback_alerts,
+    update_execution_metrics,
+)
 
 
 class BacktestTemporalError(Exception):
@@ -177,6 +182,7 @@ class BacktestState:
     returns_daily: list[float]
     returns_weekly: list[float]
     returns_monthly: list[float]
+    tracking_error_stats: list[dict[str, Any]] = field(default_factory=list)  # Track periodic tracking error metrics
     last_bar_date: pd.Timestamp | None = None
     last_daily_ts: pd.Timestamp | None = None
     last_weekly_ts: pd.Timestamp | None = None
@@ -717,6 +723,7 @@ class BacktestEngine:
             returns_daily=[],
             returns_weekly=[],
             returns_monthly=[],
+            tracking_error_stats=[],
         )
 
         # Initialize risk manager if not provided
@@ -1147,6 +1154,26 @@ class BacktestEngine:
             # Update equity curves
             state.update_equity(state.equity_theoretical, state.equity_realistic, bar_date)
 
+            # Calculate tracking error after updating equity curves
+            if len(state.equity_curve) >= 2:
+                # Get bars_per_year based on timeframe for annualization
+                bars_per_year_map = {
+                    "15m": 365 * 24 * 4,  # 4 bars per hour
+                    "30m": 365 * 24 * 2,  # 2 bars per hour
+                    "1h": 365 * 24,  # 24 bars per day
+                    "4h": 365 * 6,  # 6 bars per day
+                    "1d": 365,  # Daily
+                    "1w": 52,  # Weekly
+                }
+                bars_per_year = bars_per_year_map.get(request.timeframe, 252)  # Default to 252 for daily
+
+                tracking_stats = TrackingErrorCalculator.from_curves(
+                    theoretical=state.equity_curve["equity_theoretical"],
+                    realistic=state.equity_curve["equity_realistic"],
+                    bars_per_year=bars_per_year,
+                )
+                state.tracking_error_stats.append(tracking_stats.to_dict())
+
             # Calculate periodic returns based on actual dates
             # Daily returns
             if state.last_daily_ts is None or (bar_date - state.last_daily_ts).days >= 1:
@@ -1210,18 +1237,109 @@ class BacktestEngine:
         trades = [t.to_dict() for t in state.closed_trades]
         final_capital = state.equity_realistic
         
-        # Convert equity curve DataFrame to dict for serialization
-        equity_curve_dict = state.equity_curve.to_dict(orient="records")
+        equity_curve_df = state.equity_curve.copy()
+        equity_curve_dict: list[dict[str, Any]] = []
+        equity_curve_theoretical_records: list[dict[str, Any]] = []
+        equity_curve_realistic_records: list[dict[str, Any]] = []
+        tracking_error_metrics: dict[str, Any] | None = None
+        tracking_error_series_records: list[dict[str, Any]] = []
+        tracking_error_cumulative_records: list[dict[str, Any]] = []
+        timestamps_list: list[pd.Timestamp] = []
+        
+        if not equity_curve_df.empty:
+            equity_curve_df["timestamp"] = pd.to_datetime(equity_curve_df["timestamp"])
+            timestamps_list = [pd.Timestamp(ts).tz_localize(None) for ts in equity_curve_df["timestamp"].tolist()]
+            
+            for idx, row in enumerate(equity_curve_df.itertuples(index=False)):
+                ts = timestamps_list[idx]
+                iso_ts = ts.isoformat()
+                theoretical_val = float(getattr(row, "equity_theoretical"))
+                realistic_val = float(getattr(row, "equity_realistic"))
+                divergence_pct_val = float(getattr(row, "equity_divergence_pct"))
+                
+                equity_curve_dict.append(
+                    {
+                        "timestamp": iso_ts,
+                        "equity_theoretical": theoretical_val,
+                        "equity_realistic": realistic_val,
+                        "equity_divergence_pct": divergence_pct_val,
+                    }
+                )
+                equity_curve_theoretical_records.append({"timestamp": iso_ts, "equity": theoretical_val})
+                equity_curve_realistic_records.append({"timestamp": iso_ts, "equity": realistic_val})
         
         # Calculate summary metrics from equity curve
-        if not state.equity_curve.empty:
-            max_divergence_pct = float(state.equity_curve["equity_divergence_pct"].max())
-            min_divergence_pct = float(state.equity_curve["equity_divergence_pct"].min())
-            avg_divergence_pct = float(state.equity_curve["equity_divergence_pct"].mean())
+        if not equity_curve_df.empty:
+            max_divergence_pct = float(equity_curve_df["equity_divergence_pct"].max())
+            min_divergence_pct = float(equity_curve_df["equity_divergence_pct"].min())
+            avg_divergence_pct = float(equity_curve_df["equity_divergence_pct"].mean())
         else:
             max_divergence_pct = 0.0
             min_divergence_pct = 0.0
             avg_divergence_pct = 0.0
+
+        # Calculate final tracking error metrics for entire period
+        tracking_error = None
+        if len(equity_curve_df) >= 2:
+            bars_per_year_map = {
+                "15m": 365 * 24 * 4,
+                "30m": 365 * 24 * 2,
+                "1h": 365 * 24,
+                "4h": 365 * 6,
+                "1d": 365,
+                "1w": 52,
+            }
+            bars_per_year = bars_per_year_map.get(request.timeframe, 252)
+            tracking_error_calculator = TrackingErrorCalculator.from_curves(
+                theoretical=equity_curve_df["equity_theoretical"],
+                realistic=equity_curve_df["equity_realistic"],
+                bars_per_year=bars_per_year,
+            )
+            tracking_error = tracking_error_calculator.to_dict()
+            
+            # Detailed tracking error diagnostics and series for visualization
+            tracking_error_payload = calculate_tracking_error(
+                equity_curve_df["equity_theoretical"],
+                equity_curve_df["equity_realistic"],
+            )
+            tracking_error_series = tracking_error_payload.pop("tracking_error", [])
+            tracking_error_metrics = tracking_error_payload
+            
+            if tracking_error_series:
+                cumulative_values = np.cumsum(tracking_error_series).tolist()
+                for ts, value, cumulative in zip(timestamps_list, tracking_error_series, cumulative_values):
+                    iso_ts = ts.isoformat()
+                    tracking_error_series_records.append(
+                        {"timestamp": iso_ts, "tracking_error": float(value)}
+                    )
+                    tracking_error_cumulative_records.append(
+                        {"timestamp": iso_ts, "tracking_error_cumulative": float(cumulative)}
+                    )
+        
+        # Update Prometheus metrics and check alerts for orderbook fallbacks
+        orderbook_fallback_count = self.execution_simulator.orderbook_fallback_count
+        orderbook_alerts: list[dict[str, Any]] = []
+        if orderbook_fallback_count > 0:
+            # Update metrics for each warning reason
+            for warning in self.execution_simulator.orderbook_warnings:
+                update_execution_metrics(
+                    symbol=instrument,
+                    order_type="all",
+                    orderbook_fallback_count=1,
+                    orderbook_fallback_reason=warning.reason,
+                )
+            
+            # Check for alerts
+            orderbook_alerts = check_orderbook_fallback_alerts(
+                symbol=instrument,
+                fallback_count=orderbook_fallback_count,
+                total_bars=total_bars,
+                context="backtest",
+            )
+            
+            # Log alerts if any
+            for alert in orderbook_alerts:
+                logger.warning(alert["message"], extra=alert)
 
         return {
             "start_date": start_ts.isoformat(),
@@ -1230,6 +1348,8 @@ class BacktestEngine:
             "final_capital": final_capital,
             "trades": trades,
             "equity_curve": equity_curve_dict,  # DataFrame as list of dicts
+            "equity_curve_theoretical": equity_curve_theoretical_records,
+            "equity_curve_realistic": equity_curve_realistic_records,
             "equity_theoretical": state.equity_curve["equity_theoretical"].tolist() if not state.equity_curve.empty else [],  # Legacy compatibility
             "equity_realistic": state.equity_curve["equity_realistic"].tolist() if not state.equity_curve.empty else [],  # Legacy compatibility
             "equity_divergence_metrics": {
@@ -1266,6 +1386,10 @@ class BacktestEngine:
                     for pf in state.partial_fills
                 ],
                 "rejected_order_details": state.rejected_orders,
+                "orderbook_fallback_count": orderbook_fallback_count,
+                "orderbook_fallback_pct": (orderbook_fallback_count / total_bars * 100.0) if total_bars > 0 else 0.0,
+                "orderbook_warnings": [w.to_dict() for w in self.execution_simulator.orderbook_warnings],
+                "orderbook_alerts": orderbook_alerts,
             },
             "metadata": {
                 "instrument": instrument,
@@ -1274,4 +1398,9 @@ class BacktestEngine:
                 "slippage_model": request.slippage_model,
                 "use_orderbook": request.use_orderbook,
             },
+            "tracking_error": tracking_error,
+            "tracking_error_metrics": tracking_error_metrics,
+            "tracking_error_stats": state.tracking_error_stats,
+            "tracking_error_series": tracking_error_series_records,
+            "tracking_error_cumulative": tracking_error_cumulative_records,
         }

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     # Risk alerts
     RISK_RUIN_ALERT_THRESHOLD: float = 0.05
+    RISK_OF_RUIN_MAX: float = 0.05  # Maximum acceptable risk of ruin (5%)
     PRODUCTION_DD_ALERT_BUFFER: float = 0.9
 
     # Data paths
@@ -52,6 +53,11 @@ class Settings(BaseSettings):
     LEVERAGE_WARNING_THRESHOLD: float = 2.0
     LEVERAGE_HARD_STOP_THRESHOLD: float = 3.0
     LEVERAGE_HARD_STOP_PERSISTENCE_MINUTES: int = 60  # Must persist for 60 minutes to trigger hard stop
+    
+    # Exposure limits
+    EXPOSURE_LIMIT_MULTIPLIER: float = 2.0  # Maximum beta-adjusted exposure multiplier (2.0 = 2x equity)
+    EXPOSURE_ALERT_THRESHOLD_PCT: float = 0.8  # Alert when exposure exceeds 80% of limit
+    EXPOSURE_ALERT_PERSISTENCE_MINUTES: int = 15  # Alert must persist for 15 minutes
 
     # Livelihood defaults
     DEFAULT_EXPENSES_TARGET_USD: float = 1200.0

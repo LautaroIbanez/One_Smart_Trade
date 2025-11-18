@@ -28,6 +28,9 @@ class PositionConfig:
     fixed_take_profit: float | None = None  # Fixed take profit price (if set, overrides reward_per_unit)
     trailing_stop: bool = False  # Enable trailing stop
     trailing_stop_distance: float | None = None  # Distance for trailing stop
+    trailing_sl: float | None = None  # Explicit trailing stop distance override
+    breakeven_trigger: float | None = None  # Move SL to breakeven after this favorable move
+    partial_take_profits: list[dict[str, float]] | None = None  # Optional partial TP definitions
 
 
 @dataclass
@@ -48,6 +51,34 @@ class PositionState:
     opened_at: pd.Timestamp | None = None
     last_update: pd.Timestamp | None = None
     fills: list[dict[str, Any]] = field(default_factory=list)  # Fill history
+    trailing_sl: float | None = None
+    breakeven_trigger: float | None = None
+    breakeven_active: bool = False
+    partial_take_profits: list[dict[str, Any]] = field(default_factory=list)
+    mae: float = 0.0
+    mfe: float = 0.0
+
+
+@dataclass
+class PartialTakeProfitLevel:
+    """Definition and execution state of a partial take profit level."""
+
+    price: float
+    qty_pct: float | None = None
+    qty: float | None = None
+    triggered: bool = False
+    triggered_at: pd.Timestamp | None = None
+    reference_size: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "price": self.price,
+            "qty_pct": self.qty_pct,
+            "qty": self.qty,
+            "triggered": self.triggered,
+            "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
+            "reference_size": self.reference_size,
+        }
 
 
 class Position:
@@ -94,7 +125,18 @@ class Position:
         self.reward_per_unit: float | None = self.config.reward_per_unit
         self.fills: list[dict[str, Any]] = []
         self.last_update: pd.Timestamp | None = None
-        
+        self.trailing_sl_distance: float | None = self.config.trailing_sl or self.config.trailing_stop_distance
+        self.trailing_sl: float | None = None
+        self.breakeven_trigger: float | None = self.config.breakeven_trigger
+        self.breakeven_active = False
+        self.partial_take_profits: list[PartialTakeProfitLevel] = []
+        self.partial_execution_log: list[dict[str, Any]] = []
+        self.max_favorable_price: float = 0.0
+        self.max_adverse_price: float = 0.0
+        self.mae: float = 0.0
+        self.mfe: float = 0.0
+        self.initial_size: float = 0.0
+
         # Apply initial fill if provided
         if initial_fill_price is not None and initial_qty is not None:
             self.apply_fill(initial_fill_price, initial_qty)
@@ -128,7 +170,8 @@ class Position:
             return
         
         fill_timestamp = fill_timestamp or pd.Timestamp.utcnow()
-        
+        is_new_position = self.size == 0
+
         # Calculate new average entry (size-weighted)
         if self.size > 0:
             # Existing position: weighted average
@@ -141,7 +184,14 @@ class Position:
         
         # Update position size
         self.size += qty
-        
+        self.initial_size += qty
+
+        if is_new_position:
+            self.max_favorable_price = self.avg_entry
+            self.max_adverse_price = self.avg_entry
+            self.mae = 0.0
+            self.mfe = 0.0
+
         # Record fill
         fill_record = {
             "timestamp": fill_timestamp.isoformat(),
@@ -154,13 +204,13 @@ class Position:
         self.last_update = fill_timestamp
         
         # Recalculate SL/TP levels
-        self._recalculate_levels()
+        self._recalculate_levels(rebuild_partials=True)
         
         # Update current price if not set
         if self.current_price == 0.0:
             self.current_price = fill_price
 
-    def _recalculate_levels(self) -> None:
+    def _recalculate_levels(self, *, rebuild_partials: bool = False) -> None:
         """Recalculate stop loss and take profit levels based on current average entry."""
         if self.avg_entry == 0.0:
             return
@@ -188,7 +238,38 @@ class Position:
         else:
             self.take_profit = None
 
-    def update_price(self, current_price: float) -> None:
+        if rebuild_partials:
+            self._build_partial_take_profit_levels()
+
+    def _build_partial_take_profit_levels(self) -> None:
+        """Build partial take profit state from configuration."""
+        self.partial_take_profits = []
+        for level in self.config.partial_take_profits or []:
+            price = level.get("price")
+            if price is None:
+                offset = level.get("offset")
+                rr_multiple = level.get("rr_multiple")
+                if rr_multiple is not None and self.reward_per_unit is not None:
+                    offset = self.reward_per_unit * rr_multiple
+                if offset is not None:
+                    if self.side == PositionSide.LONG:
+                        price = self.avg_entry + offset
+                    else:
+                        price = self.avg_entry - offset
+            if price is None:
+                continue
+            self.partial_take_profits.append(
+                PartialTakeProfitLevel(
+                    price=float(price),
+                    qty_pct=level.get("qty_pct"),
+                    qty=level.get("qty"),
+                    reference_size=self.size if self.size > 0 else None,
+                )
+            )
+
+    def update_price(
+        self, current_price: float, *, timestamp: pd.Timestamp | None = None
+    ) -> list[dict[str, Any]]:
         """
         Update current market price and calculate unrealized P&L.
         
@@ -196,12 +277,13 @@ class Position:
             current_price: Current market price
         """
         self.current_price = current_price
-        self.last_update = pd.Timestamp.utcnow()
+        timestamp = timestamp or pd.Timestamp.utcnow()
+        self.last_update = timestamp
         
         if self.size == 0 or self.avg_entry == 0.0:
             self.unrealized_pnl = 0.0
             self.unrealized_pnl_pct = 0.0
-            return
+            return []
         
         # Calculate unrealized P&L
         price_diff = current_price - self.avg_entry
@@ -216,6 +298,100 @@ class Position:
             self.unrealized_pnl_pct = (self.unrealized_pnl / (self.avg_entry * self.size)) * 100.0
         else:
             self.unrealized_pnl_pct = 0.0
+
+        self._update_extrema(current_price)
+        breakeven_triggered = self._maybe_move_to_breakeven(current_price)
+        self._update_trailing_stop(current_price, skip_this_bar=breakeven_triggered)
+        partial_events = self._process_partial_take_profits(current_price, timestamp)
+
+        return partial_events
+
+    def _update_extrema(self, current_price: float) -> None:
+        """Update MAE/MFE tracking based on the latest price."""
+        if self.max_favorable_price == 0.0:
+            self.max_favorable_price = self.avg_entry
+            self.max_adverse_price = self.avg_entry
+
+        if self.side == PositionSide.LONG:
+            self.max_favorable_price = max(self.max_favorable_price, current_price)
+            self.max_adverse_price = min(self.max_adverse_price, current_price)
+            self.mfe = max(self.mfe, self.max_favorable_price - self.avg_entry)
+            self.mae = max(self.mae, self.avg_entry - self.max_adverse_price)
+        else:
+            self.max_favorable_price = min(self.max_favorable_price, current_price)
+            self.max_adverse_price = max(self.max_adverse_price, current_price)
+            self.mfe = max(self.mfe, self.avg_entry - self.max_favorable_price)
+            self.mae = max(self.mae, self.max_adverse_price - self.avg_entry)
+
+    def _maybe_move_to_breakeven(self, current_price: float) -> bool:
+        """Move stop loss to breakeven once the trigger distance is reached."""
+        if self.breakeven_active or self.breakeven_trigger is None:
+            return False
+        move_distance = current_price - self.avg_entry if self.side == PositionSide.LONG else self.avg_entry - current_price
+        if move_distance >= self.breakeven_trigger:
+            self.stop_loss = self.avg_entry
+            self.breakeven_active = True
+            return True
+
+        return False
+
+    def _update_trailing_stop(self, current_price: float, *, skip_this_bar: bool = False) -> None:
+        """Update trailing stop level based on MFE and configured distance."""
+        if not self.config.trailing_stop or self.trailing_sl_distance is None:
+            return
+        if skip_this_bar:
+            return
+        if self.breakeven_trigger is not None and not self.breakeven_active:
+            return
+
+        if self.side == PositionSide.LONG:
+            candidate = self.max_favorable_price - self.trailing_sl_distance
+            if candidate > (self.stop_loss or float("-inf")):
+                self.stop_loss = candidate
+                self.trailing_sl = candidate
+        else:
+            candidate = self.max_favorable_price + self.trailing_sl_distance
+            if self.stop_loss is None or candidate < self.stop_loss:
+                self.stop_loss = candidate
+                self.trailing_sl = candidate
+
+    def _process_partial_take_profits(
+        self, current_price: float, timestamp: pd.Timestamp
+    ) -> list[dict[str, Any]]:
+        """Trigger partial take profits when price reaches configured levels."""
+        events: list[dict[str, Any]] = []
+        for level in self.partial_take_profits:
+            if level.triggered:
+                continue
+            should_trigger = False
+            if self.side == PositionSide.LONG and current_price >= level.price:
+                should_trigger = True
+            elif self.side == PositionSide.SHORT and current_price <= level.price:
+                should_trigger = True
+
+            if not should_trigger:
+                continue
+
+            qty = level.qty or 0.0
+            qty_base = level.reference_size or self.size
+            if qty == 0.0 and level.qty_pct is not None:
+                qty = max(qty_base * level.qty_pct, 0.0)
+            qty = min(qty, self.size)
+
+            if qty <= 0:
+                level.triggered = True
+                level.triggered_at = timestamp
+                continue
+
+            close_result = self.apply_partial_close(level.price, qty, close_timestamp=timestamp)
+            close_result["partial_take_profit"] = True
+            close_result["target_price"] = level.price
+            self.partial_execution_log.append(close_result)
+            events.append(close_result)
+            level.triggered = True
+            level.triggered_at = timestamp
+
+        return events
 
     def update_levels_from_config(self, config: PositionConfig) -> None:
         """
@@ -239,7 +415,10 @@ class Position:
             self.reward_per_unit = self.risk_per_unit * config.risk_reward_ratio
         
         # Recalculate levels
-        self._recalculate_levels()
+        self.trailing_sl_distance = config.trailing_sl or config.trailing_stop_distance
+        self.breakeven_trigger = config.breakeven_trigger
+
+        self._recalculate_levels(rebuild_partials=True)
 
     def check_exit_conditions(self) -> dict[str, Any]:
         """
@@ -343,6 +522,10 @@ class Position:
             self.avg_entry = 0.0
             self.stop_loss = None
             self.take_profit = None
+            self.partial_take_profits = []
+            self.initial_size = 0.0
+            self.breakeven_active = False
+            self.trailing_sl = None
         
         # Note: SL/TP levels remain based on original avg_entry for remaining position
         # If you want to recalculate for remaining position, call _recalculate_levels()
@@ -375,6 +558,12 @@ class Position:
             "opened_at": self.opened_at.isoformat() if self.opened_at else None,
             "last_update": self.last_update.isoformat() if self.last_update else None,
             "num_fills": len(self.fills),
+            "trailing_sl": self.trailing_sl,
+            "breakeven_trigger": self.breakeven_trigger,
+            "breakeven_active": self.breakeven_active,
+            "partial_take_profits": [level.to_dict() for level in self.partial_take_profits],
+            "mae": self.mae,
+            "mfe": self.mfe,
         }
 
     def get_state(self) -> PositionState:
@@ -394,7 +583,20 @@ class Position:
             opened_at=self.opened_at,
             last_update=self.last_update,
             fills=self.fills.copy(),
+            trailing_sl=self.trailing_sl,
+            breakeven_trigger=self.breakeven_trigger,
+            breakeven_active=self.breakeven_active,
+            partial_take_profits=[level.to_dict() for level in self.partial_take_profits],
+            mae=self.mae,
+            mfe=self.mfe,
         )
+
+    def get_trade_analytics(self) -> dict[str, float]:
+        """Return MAE/MFE metrics for downstream analytics."""
+        base = abs(self.avg_entry) if self.avg_entry else 0.0
+        mae_pct = (self.mae / base) * 100.0 if base else 0.0
+        mfe_pct = (self.mfe / base) * 100.0 if base else 0.0
+        return {"mae": self.mae, "mfe": self.mfe, "mae_pct": mae_pct, "mfe_pct": mfe_pct}
 
 
 class PositionManager:

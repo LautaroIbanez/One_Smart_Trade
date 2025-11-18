@@ -61,7 +61,25 @@ async def get_performance_summary():
             rolling_monthly=RollingMetrics(**rolling_monthly) if rolling_monthly else None,
             rolling_quarterly=RollingMetrics(**rolling_quarterly) if rolling_quarterly else None,
             risk_profile=risk_profile,
+            tracking_error_rmse=metrics_dict.get("tracking_error_rmse"),
+            tracking_error_max=metrics_dict.get("tracking_error_max"),
+            orderbook_fallback_events=metrics_dict.get("orderbook_fallback_events"),
         )
+        
+        # Extract tracking error data from backtest result
+        tracking_error = result.get("tracking_error")
+        execution_stats = result.get("execution_stats", {})
+        has_realistic_data = bool(result.get("equity_realistic") and len(result.get("equity_realistic", [])) > 0)
+        
+        tracking_error_rmse = None
+        tracking_error_max = None
+        if tracking_error and isinstance(tracking_error, dict):
+            tracking_error_rmse = tracking_error.get("rmse")
+            tracking_error_max_bps = tracking_error.get("max_divergence_bps")
+            if tracking_error_max_bps is not None:
+                tracking_error_max = tracking_error_max_bps
+        
+        orderbook_fallback_events = execution_stats.get("rejected_orders", 0)
 
         period_dict = result.get("period", {})
         period = PerformancePeriod(
@@ -99,13 +117,31 @@ async def get_performance_summary():
                 report_path=None,
             )
 
-        return PerformanceSummaryResponse(
+        response = PerformanceSummaryResponse(
             status="success",
             metrics=metrics,
             period=period,
             report_path=result.get("report_path"),
             message=None,
+            tracking_error_rmse=tracking_error_rmse,
+            tracking_error_max=tracking_error_max,
+            orderbook_fallback_events=orderbook_fallback_events,
+            has_realistic_data=has_realistic_data,
+            tracking_error_metrics=result.get("tracking_error_metrics"),
+            tracking_error_series=result.get("tracking_error_series"),
+            tracking_error_cumulative=result.get("tracking_error_cumulative"),
+            chart_banners=result.get("chart_banners"),
         )
+        
+        # Add equity data to response model (will be in response body but not in schema)
+        response_dict = response.model_dump()
+        response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
+        response_dict["equity_realistic"] = result.get("equity_realistic", [])
+        response_dict["equity_curve"] = result.get("equity_curve", [])
+        response_dict["equity_curve_theoretical"] = result.get("equity_curve_theoretical", [])
+        response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
+        
+        return response_dict
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -291,3 +291,4 @@ def test_returns_handles_zero_equity(engine):
         assert daily_return == -1.0  # -100% return
 
 
+

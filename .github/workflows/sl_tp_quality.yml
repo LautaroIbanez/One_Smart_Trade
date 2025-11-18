@@ -1,0 +1,41 @@
+name: SL/TP Quality Gates
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/app/risk/**'
+      - 'backend/tests/risk/test_sl_tp_quality.py'
+      - 'scripts/sl_tp/**'
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || pip install pytest pandas numpy scikit-learn
+      
+      - name: Run quality gate tests
+        working-directory: backend
+        run: |
+          pytest tests/risk/test_sl_tp_quality.py::test_ci_quality_gates -v || echo "Quality gates failed - review optimization results"
+      
+      - name: Run all SL/TP quality tests
+        working-directory: backend
+        run: |
+          pytest tests/risk/test_sl_tp_quality.py -v
+

@@ -404,6 +404,292 @@ plot_parameter_distributions(results_df, "breakout.lookback")
 
 ---
 
+## Validación Automática de Estabilidad
+
+### Objetivo
+
+Validar automáticamente que las estrategias candidatas a campeón mantengan estabilidad bajo variaciones de ±20% en hiperparámetros críticos, previniendo la promoción de estrategias sobreajustadas o frágiles.
+
+### Componentes
+
+#### Script de Análisis de Sensibilidad
+
+**`scripts/backtest/run_sensitivity.py`:**
+
+Ejecuta análisis de sensibilidad con variaciones ±20% de parámetros críticos:
+
+```bash
+python scripts/backtest/run_sensitivity.py \
+    --start-date 2023-01-01 \
+    --end-date 2024-01-01 \
+    --output-dir artifacts/sensitivity \
+    --campaign-id my_campaign_001
+```
+
+**Funcionalidad:**
+- Genera variaciones ±20% para parámetros críticos:
+  - `breakout.lookback`
+  - `volatility.low_threshold`, `volatility.high_threshold`
+  - `aggregate.vector_bias.momentum_bias_weight`
+  - `aggregate.vector_bias.breakout_slope_weight`
+  - `aggregate.buy_threshold`, `aggregate.sell_threshold`
+  - Y otros parámetros críticos definidos en `get_critical_params()`
+- Ejecuta backtests para cada combinación de parámetros
+- Persiste resultados en `artifacts/sensitivity/{campaign_id}.parquet`
+
+**Generación de Variaciones:**
+
+```python
+def generate_20pct_variations(base_params, critical_params):
+    """Generate ±20% variations: [0.8x, 0.9x, 1.0x, 1.1x, 1.2x]"""
+    variations = [
+        base_value * 0.8,   # -20%
+        base_value * 0.9,   # -10%
+        base_value,         # base
+        base_value * 1.1,   # +10%
+        base_value * 1.2,   # +20%
+    ]
+```
+
+#### SensitivityGuard
+
+**`backend/app/backtesting/sensitivity_guard.py`:**
+
+Evalúa estabilidad de resultados de sensibilidad:
+
+```python
+from app.backtesting.sensitivity_guard import SensitivityGuard
+
+guard = SensitivityGuard(
+    max_degradation_pct=20.0,      # Máxima degradación permitida en Calmar/Sharpe
+    max_dd_increase_pct=25.0,      # Máximo aumento permitido en Max DD
+    min_sharpe_threshold=1.0,      # Sharpe mínimo requerido
+    anova_alpha=0.05,              # Nivel de significancia para ANOVA
+    min_valid_runs=10,             # Mínimo de runs válidos requeridos
+)
+
+report = guard.evaluate(results_df, campaign_id="campaign_001")
+```
+
+**Criterios de Estabilidad:**
+
+1. **Degradación de Métricas:**
+   - Calmar no debe degradarse > 20% en ninguna variación
+   - Sharpe no debe degradarse > 20% en ninguna variación
+   - Max DD no debe aumentar > 25% en ninguna variación
+
+2. **Umbral Mínimo:**
+   - Todas las variaciones deben mantener Sharpe ≥ 1.0
+
+3. **Análisis ANOVA:**
+   - Si ANOVA indica sensibilidad excesiva (p < 0.05), la estrategia se marca como inestable
+   - Detecta si cambios en parámetros causan variaciones significativas en métricas
+
+4. **Varianza:**
+   - Calcula desviación estándar de Calmar, Sharpe, Max DD
+   - Alta varianza indica inestabilidad
+
+**Estados de Estabilidad:**
+
+- `STABLE`: Todas las métricas dentro de umbrales
+- `UNSTABLE`: Al menos un criterio violado
+- `INSUFFICIENT_DATA`: Datos insuficientes para evaluación
+
+#### Integración en Pipeline de Campeones
+
+**`backend/app/backtesting/champion.py`:**
+
+El guard se integra automáticamente en `persist_campaign_record()`:
+
+```python
+def persist_campaign_record(
+    record: dict[str, Any],
+    *,
+    enable_sensitivity_guard: bool = True,
+    sensitivity_results_path: Path | str | None = None,
+    guard_config: dict[str, Any] | None = None,
+) -> None:
+    """Persist champion promotion with automatic sensitivity validation."""
+    
+    if enable_sensitivity_guard:
+        is_stable, rejection_reason = _check_sensitivity_stability(
+            record,
+            sensitivity_results_path=sensitivity_results_path,
+            guard_config=guard_config,
+        )
+        
+        if not is_stable:
+            logger.error("Champion promotion aborted due to sensitivity instability")
+            return  # Abort promotion
+```
+
+**Flujo de Validación:**
+
+1. Antes de promover un campeón, busca resultados de sensibilidad:
+   - `artifacts/sensitivity/{params_id}.parquet`
+   - `backend/artifacts/sensitivity/{params_id}.parquet`
+   - `data/sensitivity/{params_id}.parquet`
+
+2. Si encuentra resultados, ejecuta `SensitivityGuard.evaluate()`
+
+3. Si el reporte indica `UNSTABLE`, aborta la promoción y registra razones
+
+4. Si el reporte indica `STABLE`, procede con la promoción
+
+5. Si no encuentra resultados, emite warning pero permite promoción (modo leniente)
+
+### Pipeline Recomendado
+
+**Antes de Promover un Campeón:**
+
+```python
+# 1. Ejecutar análisis de sensibilidad
+from scripts.backtest.run_sensitivity import main as run_sensitivity
+
+run_sensitivity([
+    "--start-date", "2023-01-01",
+    "--end-date", "2024-01-01",
+    "--campaign-id", candidate.params_id,
+])
+
+# 2. El pipeline automáticamente valida antes de promover
+from app.backtesting.champion import persist_campaign_record
+
+persist_campaign_record(
+    record={
+        "params_id": candidate.params_id,
+        "status": "improved",
+        # ... otros campos
+    },
+    enable_sensitivity_guard=True,
+    sensitivity_results_path=f"artifacts/sensitivity/{candidate.params_id}.parquet",
+)
+```
+
+### Configuración
+
+**Umbrales por Defecto:**
+
+```python
+SensitivityGuard(
+    max_degradation_pct=20.0,      # 20% degradación máxima
+    max_dd_increase_pct=25.0,      # 25% aumento máximo en DD
+    min_sharpe_threshold=1.0,      # Sharpe mínimo
+    anova_alpha=0.05,              # 5% significancia
+    min_valid_runs=10,             # Mínimo 10 runs válidos
+)
+```
+
+**Parámetros Críticos a Validar:**
+
+Definidos en `scripts/backtest/run_sensitivity.py`:
+
+```python
+def get_critical_params() -> list[str]:
+    return [
+        "breakout.lookback",
+        "volatility.low_threshold",
+        "volatility.high_threshold",
+        "aggregate.vector_bias.momentum_bias_weight",
+        "aggregate.vector_bias.breakout_slope_weight",
+        "aggregate.buy_threshold",
+        "aggregate.sell_threshold",
+        "aggregate.vector_bias.momentum_alignment",
+        "aggregate.multi_timeframe.ema21_slope_weight",
+        "aggregate.multi_timeframe.intraday_momentum_weight",
+    ]
+```
+
+### Ejemplo de Reporte
+
+**Reporte de Estabilidad:**
+
+```python
+StabilityReport(
+    status=StabilityStatus.STABLE,
+    campaign_id="campaign_001",
+    base_calmar=2.15,
+    base_sharpe=1.52,
+    base_max_dd=9.8,
+    max_calmar_degradation_pct=12.3,    # Dentro de umbral
+    max_sharpe_degradation_pct=15.7,    # Dentro de umbral
+    max_dd_increase_pct=18.2,           # Dentro de umbral
+    calmar_std=0.23,
+    sharpe_std=0.18,
+    max_dd_std=1.45,
+    anova_p_value=0.12,                 # No significativo
+    anova_significant=False,
+    rejection_reasons=[],               # Sin razones de rechazo
+)
+```
+
+**Reporte de Inestabilidad:**
+
+```python
+StabilityReport(
+    status=StabilityStatus.UNSTABLE,
+    campaign_id="campaign_002",
+    base_calmar=2.50,
+    max_calmar_degradation_pct=32.5,    # Excede 20%
+    max_sharpe_degradation_pct=28.1,    # Excede 20%
+    anova_p_value=0.02,                 # Significativo
+    anova_significant=True,
+    rejection_reasons=[
+        "Calmar degradation exceeds threshold: 32.5% > 20%",
+        "Sharpe degradation exceeds threshold: 28.1% > 20%",
+        "ANOVA indicates excessive sensitivity (p=0.02 < 0.05)",
+    ],
+)
+```
+
+### Tests
+
+**`backend/tests/backtesting/test_sensitivity_guard.py`:**
+
+Tests cubren:
+- Resultados estables pasan validación
+- Resultados inestables fallan validación
+- Detección de Sharpe bajo
+- Manejo de datos insuficientes
+- Análisis ANOVA
+- Cálculo de degradación
+- Carga desde archivos
+
+**Ejecutar Tests:**
+
+```bash
+cd backend
+poetry run pytest tests/backtesting/test_sensitivity_guard.py -v
+```
+
+### Workflow CI/CD (Opcional)
+
+**`.github/workflows/sensitivity.yml`:**
+
+```yaml
+name: Sensitivity Analysis
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM
+
+jobs:
+  sensitivity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run sensitivity analysis
+        run: |
+          cd backend
+          poetry run python ../scripts/backtest/run_sensitivity.py \
+            --start-date 2023-01-01 \
+            --end-date 2024-01-01 \
+            --output-dir artifacts/sensitivity
+```
+
+---
+
 ## Monitoreo Continuo de Performance
 
 ### Objetivo

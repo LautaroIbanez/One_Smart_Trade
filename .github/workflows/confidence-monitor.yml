@@ -1,0 +1,33 @@
+name: confidence-monitor
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.CONFIDENCE_MONITOR_DATABASE_URL }}
+      SLACK_ALERT_WEBHOOK: ${{ secrets.SLACK_ALERT_WEBHOOK }}
+      PROM_PUSHGATEWAY: ${{ secrets.PROM_PUSHGATEWAY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          cd backend && poetry install --no-interaction
+
+      - name: Run calibration monitor
+        run: |
+          cd backend
+          poetry run python ../scripts/confidence/monitor.py --lookback-days 28 --min-rows 200 --max-brier 0.08 --max-ece 0.05
+

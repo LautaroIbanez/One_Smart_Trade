@@ -48,6 +48,9 @@ class PerformanceMetrics(BaseModel):
     rolling_monthly: Optional[RollingMetrics] = Field(None, description="Rolling monthly metrics")
     rolling_quarterly: Optional[RollingMetrics] = Field(None, description="Rolling quarterly metrics")
     risk_profile: Optional[RiskProfile] = Field(None, description="Monte Carlo risk metrics")
+    tracking_error_rmse: Optional[float] = Field(None, description="Tracking error RMSE (Root Mean Squared Error)")
+    tracking_error_max: Optional[float] = Field(None, description="Maximum tracking error (basis points)")
+    orderbook_fallback_events: Optional[int] = Field(None, description="Number of orderbook fallback events")
 
 
 class PerformancePeriod(BaseModel):
@@ -65,6 +68,14 @@ class PerformanceSummaryResponse(BaseModel):
     period: Optional[PerformancePeriod] = Field(None, description="Backtest period")
     report_path: Optional[str] = Field(None, description="Path to generated report")
     message: Optional[str] = Field(None, description="Error message if status is error")
+    tracking_error_rmse: Optional[float] = Field(None, description="Tracking error RMSE")
+    tracking_error_max: Optional[float] = Field(None, description="Maximum tracking error (bps)")
+    orderbook_fallback_events: Optional[int] = Field(None, description="Number of orderbook fallback events")
+    has_realistic_data: bool = Field(default=False, description="Whether backtest includes realistic execution data")
+    tracking_error_metrics: Optional[dict] = Field(None, description="Detailed tracking error diagnostics")
+    tracking_error_series: Optional[list[dict]] = Field(None, description="Tracking error time series")
+    tracking_error_cumulative: Optional[list[dict]] = Field(None, description="Cumulative tracking error series")
+    chart_banners: Optional[list[str]] = Field(None, description="Warnings shown on performance charts")
     disclaimer: str = Field(
         default="This is not financial advice. Backtesting results do not guarantee future performance. Trading cryptocurrencies involves significant risk.",
         description="Legal disclaimer",

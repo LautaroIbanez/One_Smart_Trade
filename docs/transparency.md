@@ -114,6 +114,77 @@ md5sum recommendations_export.csv
 sha256sum recommendations_export.csv
 ```
 
+### Métricas de Ejecución en Exports
+
+Los exports ahora incluyen métricas de ejecución para cada recomendación:
+
+- **`tracking_error_pct`**: Porcentaje de tracking error (diferencia entre precio de salida real y objetivo)
+- **`tracking_error_bps`**: Tracking error en basis points
+- **`equity_realistic`**: Equity acumulado considerando ejecución realista
+- **`fill_quality`**: JSON con métricas de calidad de ejecución (fill_rate, partial_fills, rejected_orders)
+- **`orderbook_fallback_count`**: Número de veces que se usó fallback del orderbook
+- **`snapshot_hash`**: Hash SHA-256 del snapshot JSON para verificación de integridad
+- **`snapshot_has_worm`**: Indica si el snapshot está almacenado en WORM storage
+
+### Auditoría de Exports
+
+Cada export genera un registro de auditoría que incluye:
+
+- **`exported_by`**: Usuario que realizó el export (header `X-User-Id` o "anonymous")
+- **`filters`**: Filtros aplicados en el export
+- **`file_hash`**: Hash SHA-256 del archivo exportado
+- **`export_params`**: Metadata incluyendo commit_hash, dataset_hash, params_hash
+
+#### Obtener Manifiesto de Exports
+
+Para obtener un manifiesto completo de todos los exports:
+
+```bash
+# Obtener manifiesto de los últimos 100 exports
+curl http://localhost:8000/api/v1/export/manifest?limit=100 | jq
+
+# Obtener manifiesto de un export específico
+curl http://localhost:8000/api/v1/export/manifest?export_id=123 | jq
+```
+
+El manifiesto incluye:
+- **`manifest_version`**: Versión del formato del manifiesto
+- **`generated_at`**: Timestamp de generación
+- **`manifest_hash`**: Hash SHA-256 del manifiesto completo para verificación
+- **`exports`**: Lista de exports con toda su metadata y hashes de verificación
+
+#### Verificar Integridad desde el Manifiesto
+
+```python
+import hashlib
+import json
+import requests
+
+# Obtener manifiesto
+response = requests.get("http://localhost:8000/api/v1/export/manifest?export_id=123")
+manifest = response.json()
+
+# Verificar hash del manifiesto
+manifest_str = json.dumps(manifest, sort_keys=True, default=str)
+# Remover el campo manifest_hash antes de calcular
+manifest_without_hash = {k: v for k, v in manifest.items() if k != "manifest_hash"}
+manifest_str = json.dumps(manifest_without_hash, sort_keys=True, default=str)
+calculated_hash = hashlib.sha256(manifest_str.encode()).hexdigest()
+
+assert calculated_hash == manifest["manifest_hash"], "Manifest integrity check failed!"
+
+# Verificar hash de un archivo exportado específico
+export_record = manifest["exports"][0]
+file_hash_from_manifest = export_record["file_hash_sha256"]
+
+# Calcular hash del archivo descargado
+with open("downloaded_export.csv", "rb") as f:
+    file_content = f.read()
+file_hash_calculated = hashlib.sha256(file_content).hexdigest()
+
+assert file_hash_calculated == file_hash_from_manifest, "File integrity check failed!"
+```
+
 ---
 
 ## Interpretación del Tracking Error
@@ -552,6 +623,7 @@ El dashboard de observabilidad permite monitoreo continuo:
 - [Arquitectura de Robustez](./architecture/robustness.md)
 - [Gestión de Riesgo](./risk-management.md)
 - [API de Export](./api.md#export)
+
 
 
 

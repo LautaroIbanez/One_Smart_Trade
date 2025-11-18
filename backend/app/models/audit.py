@@ -34,6 +34,8 @@ class ExportAuditResponse(BaseModel):
     file_hash: str
     file_size_bytes: int
     export_params: dict[str, Any]
+    exported_by: str = Field(default="anonymous", description="User ID or identifier who performed the export")
+
 
 
 

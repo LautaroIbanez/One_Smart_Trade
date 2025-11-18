@@ -1,4 +1,5 @@
 """Risk management endpoints."""
+from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -9,6 +10,7 @@ from app.backtesting.risk_sizing import (
     RiskSizer,
 )
 from app.backtesting.volatility_targeting import CombinedSizer, KellySizer, VolatilityTargeting
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -394,10 +396,10 @@ async def get_sizing(
         use_drawdown_adjustment=current_drawdown_pct > 0,
         current_drawdown_pct=current_drawdown_pct,
         regime_probabilities=None,
-        use_kelly=use_kelly,
-        win_rate=win_rate,
-        payoff_ratio=payoff_ratio,
-        kelly_cap=kelly_cap,
+        use_kelly=False,
+        win_rate=None,
+        payoff_ratio=None,
+        kelly_cap=0.5,
     )
     
     return await calculate_sizing(request)
@@ -500,4 +502,92 @@ async def get_sizing_from_recommendation(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating position size from recommendation: {str(e)}")
+
+
+@router.get("/report/{user_id}")
+async def get_user_risk_report(
+    user_id: str,
+    include_history: bool = Query(True, description="Include rejection history"),
+) -> dict[str, Any]:
+    """
+    Get comprehensive risk report for a user.
+    
+    Returns:
+        Risk report with equity, drawdown, risk of ruin, exposure metrics, and rejection statistics
+    """
+    from app.services.risk_reporting_service import RiskReportingService
+    
+    try:
+        service = RiskReportingService()
+        report = service.generate_user_risk_report(user_id, include_history=include_history)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating risk report: {str(e)}")
+
+
+@router.get("/report/{user_id}/file")
+async def get_user_risk_report_file(user_id: str) -> dict[str, Any]:
+    """
+    Get path to saved risk report file for a user.
+    
+    Returns:
+        Dict with filepath and report data
+    """
+    from pathlib import Path
+    from app.services.risk_reporting_service import RiskReportingService
+    
+    try:
+        service = RiskReportingService()
+        filepath = service.reports_dir / f"user_{user_id}_risk.json"
+        
+        if not filepath.exists():
+            # Generate report if doesn't exist
+            report = service.generate_user_risk_report(user_id)
+            filepath = service.save_user_risk_report(user_id, report)
+        
+        import json
+        with open(filepath, "r") as f:
+            report = json.load(f)
+        
+        return {
+            "filepath": str(filepath),
+            "report": report,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading risk report file: {str(e)}")
+
+
+@router.get("/exposure-alert/{user_id}")
+async def check_exposure_alert(
+    user_id: str,
+    alert_threshold_pct: float = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Alert threshold as percentage of limit (default: from settings)",
+    ),
+    persistence_minutes: int = Query(
+        None,
+        ge=1,
+        description="Minutes exposure must exceed threshold to trigger alert (default: from settings)",
+    ),
+) -> dict[str, Any]:
+    """
+    Check if user exposure exceeds alert threshold.
+    
+    Returns:
+        Dict with alert status and exposure details
+    """
+    from app.services.exposure_alert_service import ExposureAlertService
+    
+    try:
+        service = ExposureAlertService()
+        result = service.check_exposure_alerts(
+            user_id,
+            alert_threshold_pct=alert_threshold_pct or settings.EXPOSURE_ALERT_THRESHOLD_PCT,
+            persistence_minutes=persistence_minutes or settings.EXPOSURE_ALERT_PERSISTENCE_MINUTES,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking exposure alert: {str(e)}")
 

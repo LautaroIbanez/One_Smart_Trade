@@ -4,16 +4,77 @@
   border-radius: 1rem;
   padding: 2rem;
   margin-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.history-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.history-header h2 {
+  font-size: 1.6rem;
+  margin: 0;
+}
+
+.history-header p {
+  margin: 0.25rem 0 0;
+  color: var(--text-secondary);
+}
+
+.history-header-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.ghost-button {
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ghost-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.history-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.history-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.history-filters input,
+.history-filters select {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.5rem;
 }
 
 .table-wrapper {
   overflow-x: auto;
-}
-
-.history-table-container h2 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin-bottom: 1.5rem;
 }
 
 .history-table {
@@ -30,17 +91,141 @@
   padding: 0.75rem;
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
 }
 
 .history-table td {
   padding: 0.75rem;
   border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
 }
 
 .history-table tbody tr:hover {
   background-color: var(--bg-tertiary);
+}
+
+.cell-date {
+  display: flex;
+  flex-direction: column;
+}
+
+.cell-time {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.price-stack,
+.return-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.return-stack .positive {
+  color: var(--accent-success);
+}
+
+.return-stack .negative {
+  color: var(--accent-danger);
+}
+
+.tracking-chip {
+  display: inline-flex;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  align-items: center;
+  justify-content: center;
+}
+
+.tracking-chip.ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.tracking-chip.danger {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+
+.status-chip {
+  display: inline-flex;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-chip.status-open {
+  background: rgba(14, 165, 233, 0.2);
+  color: #0ea5e9;
+}
+
+.status-chip.status-closed,
+.status-chip.status-tp,
+.status-chip.status-sl {
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5f5;
+}
+
+.link-button {
+  color: var(--accent-info);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.history-footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.pagination-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.pagination-controls button {
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  padding: 0.4rem 0.8rem;
+  border-radius: 0.4rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pagination-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sparklines-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.sparkline-card {
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-tertiary);
+}
+
+.sparkline-card h4 {
+  margin: 0 0 0.5rem;
 }
 
 .loading,
@@ -73,4 +258,3 @@
   background-color: var(--accent-danger);
   color: white;
 }
-

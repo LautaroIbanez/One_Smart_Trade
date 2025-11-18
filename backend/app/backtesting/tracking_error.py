@@ -199,4 +199,120 @@ def calculate_period_tracking_error(
     return period_metrics
 
 
+@dataclass
+class PeriodTrackingError:
+    """Tracking error metrics for a specific period."""
+
+    rmse: float  # Root Mean Squared Error
+    annualized_tracking_error: float  # Annualized tracking error
+    bars_with_divergence_above_threshold_pct: float  # % of bars with divergence > X bps
+    mean_divergence_bps: float  # Mean divergence in basis points
+    max_divergence_bps: float  # Max divergence in basis points
+
+    def to_dict(self) -> dict[str, float]:
+        """Convert to dictionary for serialization."""
+        return {
+            "rmse": round(self.rmse, 4),
+            "annualized_tracking_error": round(self.annualized_tracking_error, 4),
+            "bars_with_divergence_above_threshold_pct": round(self.bars_with_divergence_above_threshold_pct, 4),
+            "mean_divergence_bps": round(self.mean_divergence_bps, 4),
+            "max_divergence_bps": round(self.max_divergence_bps, 4),
+        }
+
+
+class TrackingErrorCalculator:
+    """Calculator for tracking error metrics between theoretical and realistic equity curves."""
+
+    @staticmethod
+    def from_curves(
+        theoretical: list[float] | np.ndarray | pd.DataFrame | pd.Series,
+        realistic: list[float] | np.ndarray | pd.DataFrame | pd.Series,
+        *,
+        divergence_threshold_bps: float = 10.0,  # Default: 10 bps threshold
+        bars_per_year: int = 252,  # For annualization (adjust based on timeframe)
+    ) -> PeriodTrackingError:
+        """
+        Calculate tracking error metrics from equity curves.
+
+        Args:
+            theoretical: Theoretical equity curve (without frictions)
+            realistic: Realistic equity curve (with frictions)
+            divergence_threshold_bps: Threshold in basis points for divergence (default: 10 bps)
+            bars_per_year: Number of bars per year for annualization (default: 252 for daily)
+
+        Returns:
+            PeriodTrackingError with metrics
+        """
+        # Convert inputs to numpy arrays
+        if isinstance(theoretical, pd.DataFrame):
+            # Assume DataFrame has equity_theoretical column
+            theoretical_arr = theoretical["equity_theoretical"].values if "equity_theoretical" in theoretical.columns else theoretical.iloc[:, 0].values
+        elif isinstance(theoretical, pd.Series):
+            theoretical_arr = theoretical.values
+        else:
+            theoretical_arr = np.array(theoretical)
+
+        if isinstance(realistic, pd.DataFrame):
+            # Assume DataFrame has equity_realistic column
+            realistic_arr = realistic["equity_realistic"].values if "equity_realistic" in realistic.columns else realistic.iloc[:, 0].values
+        elif isinstance(realistic, pd.Series):
+            realistic_arr = realistic.values
+        else:
+            realistic_arr = np.array(realistic)
+
+        # Ensure same length
+        min_len = min(len(theoretical_arr), len(realistic_arr))
+        if min_len < 2:
+            # Not enough data
+            return PeriodTrackingError(
+                rmse=0.0,
+                annualized_tracking_error=0.0,
+                bars_with_divergence_above_threshold_pct=0.0,
+                mean_divergence_bps=0.0,
+                max_divergence_bps=0.0,
+            )
+
+        theoretical_arr = theoretical_arr[:min_len]
+        realistic_arr = realistic_arr[:min_len]
+
+        # Calculate tracking error (realistic - theoretical) in absolute terms
+        tracking_error = realistic_arr - theoretical_arr
+
+        # Convert to basis points (relative to theoretical)
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            tracking_error_bps = np.where(
+                theoretical_arr > 0,
+                (tracking_error / theoretical_arr) * 10000.0,  # Convert to bps
+                0.0
+            )
+
+        # RMSE
+        rmse = float(np.sqrt(np.mean(tracking_error**2)))
+
+        # Annualized tracking error
+        if len(tracking_error) > 1 and np.std(tracking_error) > 0:
+            std_error = float(np.std(tracking_error))
+            annualized_std = std_error * np.sqrt(bars_per_year)
+            annualized_tracking_error = annualized_std
+        else:
+            annualized_tracking_error = 0.0
+
+        # % of bars with divergence > threshold (in bps)
+        abs_divergence_bps = np.abs(tracking_error_bps)
+        bars_above_threshold = np.sum(abs_divergence_bps > divergence_threshold_bps)
+        bars_with_divergence_above_threshold_pct = (bars_above_threshold / len(tracking_error_bps)) * 100.0
+
+        # Mean and max divergence in bps
+        mean_divergence_bps = float(np.mean(abs_divergence_bps))
+        max_divergence_bps = float(np.max(abs_divergence_bps))
+
+        return PeriodTrackingError(
+            rmse=rmse,
+            annualized_tracking_error=annualized_tracking_error,
+            bars_with_divergence_above_threshold_pct=float(bars_with_divergence_above_threshold_pct),
+            mean_divergence_bps=mean_divergence_bps,
+            max_divergence_bps=max_divergence_bps,
+        )
+
 

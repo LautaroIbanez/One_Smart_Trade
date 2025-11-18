@@ -10,6 +10,7 @@ from typing import Any
 
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.metrics import calculate_metrics
+from app.backtesting.tracking_error import TrackingErrorCalculator
 from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.data.storage import CURATED_ROOT
@@ -60,6 +61,30 @@ def _run_segment(
         raise RuntimeError(result.get("details", result["error"]))
     metrics = calculate_metrics(result)
 
+    # Calculate tracking error summary for base scenario
+    tracking_error_summary = None
+    equity_theoretical = result.get("equity_theoretical", [])
+    equity_realistic = result.get("equity_realistic", [])
+    if equity_theoretical and equity_realistic and len(equity_theoretical) > 1 and len(equity_realistic) > 1:
+        # Get timeframe from result metadata if available, default to daily (365 bars/year)
+        timeframe = result.get("metadata", {}).get("timeframe", "1d")
+        bars_per_year_map = {
+            "15m": 365 * 24 * 4,
+            "30m": 365 * 24 * 2,
+            "1h": 365 * 24,
+            "4h": 365 * 6,
+            "1d": 365,
+            "1w": 52,
+        }
+        bars_per_year = bars_per_year_map.get(timeframe, 365)
+        
+        tracking_error_calc = TrackingErrorCalculator.from_curves(
+            theoretical=equity_theoretical,
+            realistic=equity_realistic,
+            bars_per_year=bars_per_year,
+        )
+        tracking_error_summary = tracking_error_calc.to_dict()
+
     scenarios: dict[str, Any] = {}
     for label, factor in SENSITIVITY_FACTORS.items():
         if label == "base":
@@ -69,6 +94,7 @@ def _run_segment(
                 "metrics": metrics,
                 "final_capital": result["final_capital"],
                 "initial_capital": result["initial_capital"],
+                "tracking_error_summary": tracking_error_summary,
             }
             continue
 
@@ -80,12 +106,28 @@ def _run_segment(
         if "error" in scenario_result:
             raise RuntimeError(scenario_result.get("details", scenario_result["error"]))
         scenario_metrics = calculate_metrics(scenario_result)
+        
+        # Calculate tracking error for scenario
+        scenario_tracking_error_summary = None
+        scenario_equity_theoretical = scenario_result.get("equity_theoretical", [])
+        scenario_equity_realistic = scenario_result.get("equity_realistic", [])
+        if scenario_equity_theoretical and scenario_equity_realistic and len(scenario_equity_theoretical) > 1:
+            timeframe = scenario_result.get("metadata", {}).get("timeframe", "1d")
+            bars_per_year = bars_per_year_map.get(timeframe, 365)
+            scenario_tracking_error_calc = TrackingErrorCalculator.from_curves(
+                theoretical=scenario_equity_theoretical,
+                realistic=scenario_equity_realistic,
+                bars_per_year=bars_per_year,
+            )
+            scenario_tracking_error_summary = scenario_tracking_error_calc.to_dict()
+        
         scenarios[label] = {
             "commission": scenario_engine.commission,
             "slippage": scenario_engine.slippage,
             "metrics": scenario_metrics,
             "final_capital": scenario_result["final_capital"],
             "initial_capital": scenario_result["initial_capital"],
+            "tracking_error_summary": scenario_tracking_error_summary,
         }
 
     payload = {
@@ -104,6 +146,7 @@ def _run_segment(
             "metrics": metrics,
             "gap_events": result.get("gap_events", []),
             "integrity": _integrity_snapshot(result.get("trades", [])),
+            "tracking_error_summary": tracking_error_summary,
         },
         "cost_scenarios": scenarios,
     }

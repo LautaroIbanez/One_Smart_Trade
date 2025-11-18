@@ -194,9 +194,33 @@ function RecommendationCard() {
             <span className="value success">${data.stop_loss_take_profit.take_profit.toLocaleString()}</span>
           </div>
         </div>
-        <div className="confidence">
-          <span className="label">Confianza:</span>
-          <span className="value">{data.confidence.toFixed(1)}%</span>
+        <div className="confidence-group">
+          <div className="confidence raw">
+            <span className="label">Confianza Heurística:</span>
+            <span className="value">{(data.confidence_raw ?? data.confidence).toFixed(1)}%</span>
+            <small className="hint">Basada en la votación del ensemble antes de calibrar.</small>
+          </div>
+          <div
+            className="confidence calibrated"
+            title={
+              data.confidence_band
+                ? `Históricamente, señales similares acertaron entre ${data.confidence_band.lower.toFixed(
+                    1,
+                  )}% y ${data.confidence_band.upper.toFixed(1)}%.`
+                : 'Calibración estadística basada en resultados históricos.'
+            }
+          >
+            <span className="label">Confianza Calibrada:</span>
+            <span className="value">
+              {(data.confidence_calibrated ?? data.confidence_raw ?? data.confidence).toFixed(1)}%
+            </span>
+            {data.confidence_band && (
+              <small className="hint">
+                Históricamente: {data.confidence_band.lower.toFixed(1)}%–
+                {data.confidence_band.upper.toFixed(1)}%
+              </small>
+            )}
+          </div>
         </div>
         {data.recommended_risk_fraction !== undefined && (
           <RiskBadge riskFraction={data.recommended_risk_fraction} />

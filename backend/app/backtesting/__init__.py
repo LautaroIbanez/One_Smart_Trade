@@ -46,6 +46,7 @@ from .observability import CampaignMetrics, CampaignObservability
 from .advanced_metrics import MetricsReport, calmar_penalized
 from .ruin_simulation import RuinSimulationResult, monte_carlo_ruin
 from .visualization import plot_parameter_distributions, plot_response_surface, plot_tornado_chart
+from .trade_analytics import TradeAnalyticsRecord, TradeAnalyticsRepository
 
 __all__ = [
     "CalmarUnderDrawdown",
@@ -131,5 +132,7 @@ __all__ = [
     "calmar_penalized",
     "RuinSimulationResult",
     "monte_carlo_ruin",
+    "TradeAnalyticsRecord",
+    "TradeAnalyticsRepository",
 ]
 

@@ -1,0 +1,79 @@
+name: Sensitivity Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD)'
+        required: true
+        default: '2023-01-01'
+      end_date:
+        description: 'End date (YYYY-MM-DD)'
+        required: true
+        default: '2024-01-01'
+      campaign_id:
+        description: 'Campaign ID (optional)'
+        required: false
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM
+
+jobs:
+  sensitivity:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: latest
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+      
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v3
+        with:
+          path: backend/.venv
+          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          poetry install --no-interaction --no-root
+      
+      - name: Run sensitivity analysis
+        working-directory: backend
+        env:
+          START_DATE: ${{ github.event.inputs.start_date || '2023-01-01' }}
+          END_DATE: ${{ github.event.inputs.end_date || '2024-01-01' }}
+          CAMPAIGN_ID: ${{ github.event.inputs.campaign_id || '' }}
+        run: |
+          if [ -n "$CAMPAIGN_ID" ]; then
+            poetry run python ../scripts/backtest/run_sensitivity.py \
+              --start-date "$START_DATE" \
+              --end-date "$END_DATE" \
+              --campaign-id "$CAMPAIGN_ID" \
+              --output-dir artifacts/sensitivity
+          else
+            poetry run python ../scripts/backtest/run_sensitivity.py \
+              --start-date "$START_DATE" \
+              --end-date "$END_DATE" \
+              --output-dir artifacts/sensitivity
+          fi
+      
+      - name: Upload sensitivity results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: sensitivity-results
+          path: backend/artifacts/sensitivity/*.parquet
+          retention-days: 30
+

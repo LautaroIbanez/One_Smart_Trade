@@ -1,5 +1,5 @@
 """Risk management Prometheus metrics."""
-from prometheus_client import Gauge
+from prometheus_client import Gauge, Counter
 
 # Current drawdown metrics
 RISK_CURRENT_DRAWDOWN = Gauge(
@@ -133,6 +133,32 @@ def update_risk_metrics(
     }
     
     return alerts
+
+
+# User-level risk metrics
+USER_RISK_REJECTIONS_TOTAL = Counter(
+    "user_risk_rejections_total",
+    "Total number of risk-based rejections for user",
+    ["user_id", "rejection_type"],  # rejection_type: missing_equity, ruin_risk_too_high, risk_blocked, exposure_limit_exceeded
+)
+
+USER_RUIN_PROBABILITY = Gauge(
+    "user_ruin_probability",
+    "Current risk of ruin probability for user",
+    ["user_id"],
+)
+
+USER_EXPOSURE_RATIO = Gauge(
+    "user_exposure_ratio",
+    "Current exposure ratio (beta-adjusted notional / equity) for user",
+    ["user_id"],
+)
+
+USER_EXPOSURE_LIMIT_ALERT = Gauge(
+    "user_exposure_limit_alert",
+    "Alert flag when user exposure exceeds 80% of limit (1 = alert active, 0 = no alert)",
+    ["user_id"],
+)
 
 
 

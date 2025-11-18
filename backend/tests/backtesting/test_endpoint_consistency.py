@@ -3,7 +3,7 @@ import asyncio
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from app.backtesting.metrics import calculate_metrics
 from app.backtesting.report import write_report
@@ -52,8 +52,8 @@ def test_endpoint_report_consistency(monkeypatch):
         assert report_path.exists()
 
         # Service should use same calculation
-        with patch.object(service.engine, "run_backtest", return_value=mock_result), patch.object(
-            service, "_generate_charts", return_value={}
+        with patch.object(service.engine, "run_backtest", AsyncMock(return_value=mock_result)), patch.object(
+            service, "_generate_charts", return_value=({}, [])
         ):  # skip plotting in test
             summary_resp = asyncio.run(service.get_summary(use_cache=False))
             if summary_resp["status"] == "success":

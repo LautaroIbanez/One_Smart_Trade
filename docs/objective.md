@@ -191,3 +191,4 @@ Esto previene la publicación de resultados inválidos o incompletos.
 - [Architecture](./ARCHITECTURE.md): Arquitectura general del sistema
 
 
+

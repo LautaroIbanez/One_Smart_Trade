@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,13 @@ class BacktestRunResult:
     data_hash: str
     seed: int | None
     created_at: datetime
+    tracking_error: dict[str, Any] | None = None  # Final tracking error metrics
+    tracking_error_stats: list[dict[str, Any]] = field(default_factory=list)  # Periodic tracking error stats
+    equity_curve_theoretical: list[dict[str, Any]] = field(default_factory=list)
+    equity_curve_realistic: list[dict[str, Any]] = field(default_factory=list)
+    tracking_error_metrics: dict[str, Any] | None = None
+    tracking_error_series: list[dict[str, Any]] = field(default_factory=list)
+    tracking_error_cumulative: list[dict[str, Any]] = field(default_factory=list)
     checksum: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +56,13 @@ class BacktestRunResult:
             "data_hash": self.data_hash,
             "seed": self.seed,
             "created_at": self.created_at.isoformat(),
+            "tracking_error": self.tracking_error,
+            "tracking_error_stats": self.tracking_error_stats,
+            "tracking_error_metrics": self.tracking_error_metrics,
+            "tracking_error_series": self.tracking_error_series,
+            "tracking_error_cumulative": self.tracking_error_cumulative,
+            "equity_curve_theoretical": self.equity_curve_theoretical,
+            "equity_curve_realistic": self.equity_curve_realistic,
             "checksum": self.checksum,
         }
 
@@ -66,6 +80,13 @@ class BacktestRunResult:
                 "returns_per_period": self.returns_per_period,
                 "data_hash": self.data_hash,
                 "seed": self.seed,
+                "tracking_error": self.tracking_error,
+                "tracking_error_stats": self.tracking_error_stats,
+                "tracking_error_metrics": self.tracking_error_metrics,
+                "tracking_error_series": self.tracking_error_series,
+                "tracking_error_cumulative": self.tracking_error_cumulative,
+                "equity_curve_theoretical": self.equity_curve_theoretical,
+                "equity_curve_realistic": self.equity_curve_realistic,
             },
             sort_keys=True,
         )
@@ -138,11 +159,18 @@ class BacktestResultRepository:
                 "final_capital": result.final_capital,
                 "equity_theoretical": result.equity_theoretical,
                 "equity_realistic": result.equity_realistic,
+                "equity_curve_theoretical": result.equity_curve_theoretical,
+                "equity_curve_realistic": result.equity_curve_realistic,
                 "returns_per_period": result.returns_per_period,
                 "metadata": result.metadata,
                 "data_hash": result.data_hash,
                 "seed": result.seed,
                 "created_at": result.created_at.isoformat(),
+                "tracking_error": result.tracking_error,
+                "tracking_error_stats": result.tracking_error_stats,
+                "tracking_error_metrics": result.tracking_error_metrics,
+                "tracking_error_series": result.tracking_error_series,
+                "tracking_error_cumulative": result.tracking_error_cumulative,
                 "checksum": result.checksum,
             }
             with metadata_path.open("w", encoding="utf-8") as f:
@@ -210,6 +238,13 @@ class BacktestResultRepository:
                 data_hash=data["data_hash"],
                 seed=data.get("seed"),
                 created_at=datetime.fromisoformat(data["created_at"]),
+                tracking_error=data.get("tracking_error"),
+                tracking_error_stats=data.get("tracking_error_stats", []),
+                tracking_error_metrics=data.get("tracking_error_metrics"),
+                tracking_error_series=data.get("tracking_error_series", []),
+                tracking_error_cumulative=data.get("tracking_error_cumulative", []),
+                equity_curve_theoretical=data.get("equity_curve_theoretical", []),
+                equity_curve_realistic=data.get("equity_curve_realistic", []),
                 checksum=data.get("checksum", ""),
             )
 
@@ -273,11 +308,18 @@ def save_backtest_result(
         trades=backtest_result["trades"],
         equity_theoretical=backtest_result.get("equity_theoretical", backtest_result.get("equity_curve", [])),
         equity_realistic=backtest_result.get("equity_realistic", []),
+        equity_curve_theoretical=backtest_result.get("equity_curve_theoretical", []),
+        equity_curve_realistic=backtest_result.get("equity_curve_realistic", []),
         returns_per_period=backtest_result.get("returns_per_period", {}),
         metadata=backtest_result.get("metadata", {}),
         data_hash=backtest_result.get("data_hash", ""),
         seed=backtest_result.get("seed"),
         created_at=datetime.utcnow(),
+        tracking_error=backtest_result.get("tracking_error"),
+        tracking_error_stats=backtest_result.get("tracking_error_stats", []),
+        tracking_error_metrics=backtest_result.get("tracking_error_metrics"),
+        tracking_error_series=backtest_result.get("tracking_error_series", []),
+        tracking_error_cumulative=backtest_result.get("tracking_error_cumulative", []),
     )
 
     repo = BacktestResultRepository()

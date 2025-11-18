@@ -409,3 +409,4 @@ async def test_fees_proportional_to_filled_qty(engine):
         assert abs(trade["fees_entry"] - expected_fees) < 1.0  # Allow some tolerance
 
 
+

@@ -1,0 +1,28 @@
+# Ensemble configuration for no-trade rules and thresholds
+
+no_trade_rules:
+  # Minimum agreement threshold (0.0-1.0)
+  # If agreement < min_agreement, force HOLD
+  min_agreement: 0.67  # Require 2/3 strategies to agree (for 3 strategies)
+
+  # Maximum cross-correlation threshold (0.0-1.0)
+  # If correlation between any two strategies > max_cross_corr, force HOLD
+  max_cross_corr: 0.75
+
+  # Minimum expected risk-reward ratio
+  # If expected_rr < min_rr, force HOLD
+  min_rr: 1.2
+
+  # Rolling window for correlation calculation (days)
+  correlation_window_days: 30
+
+  # Rolling window for MAE/MFE calculation (days)
+  mae_mfe_window_days: 60
+
+  # Enable/disable no-trade rules
+  enabled: true
+
+  # Require unanimous agreement for BUY vs SELL conflict
+  # If true, force HOLD when there's both BUY and SELL signals
+  require_unanimous_on_conflict: true
+

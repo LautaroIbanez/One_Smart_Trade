@@ -202,6 +202,172 @@ Get backtesting performance summary.
 
 ---
 
+### GET `/api/v1/export`
+
+Export recommendations with filters and audit trail.
+
+**Query Parameters:**
+- `format` (optional): Export format - `csv` or `parquet` (default: `csv`)
+- `date_from` (optional): Start date in ISO format
+- `date_to` (optional): End date in ISO format
+- `signal` (optional): Filter by signal (`BUY`, `SELL`, `HOLD`)
+- `status` (optional): Filter by status (`open`, `closed`, `inactive`)
+- `exit_reason` (optional): Filter by exit reason
+- `min_confidence` (optional): Minimum confidence (0-100)
+- `limit` (optional): Maximum number of records (1-10000)
+
+**Headers:**
+- `X-User-Id` (optional): User ID for audit trail
+
+**Response Headers:**
+- `Content-Disposition`: Filename for download
+- `Content-MD5`: MD5 hash of the exported file
+- `X-Export-File-Hash`: SHA-256 hash of the exported file
+- `X-Export-Metadata`: JSON metadata (commit_hash, dataset_hash, params_hash)
+- `X-Export-Record-Count`: Number of records exported
+- `X-Export-Audit-Id`: ID of the audit record created
+- `X-Export-Has-Execution-Metrics`: Count of records with execution metrics
+- `X-Export-Has-Tracking-Error`: Count of records with tracking error
+
+**Response:** CSV or Parquet file
+
+**Exported Fields:**
+- Standard recommendation fields (id, date, signal, entry/exit prices, etc.)
+- **Execution metrics:**
+  - `tracking_error_pct`: Tracking error percentage
+  - `tracking_error_bps`: Tracking error in basis points
+  - `equity_realistic`: Cumulative equity with realistic execution
+  - `fill_quality`: JSON with fill quality metrics (fill_rate, partial_fills, rejected_orders)
+  - `orderbook_fallback_count`: Number of orderbook fallback events
+- **Snapshot integrity:**
+  - `snapshot_hash`: SHA-256 hash of snapshot JSON
+  - `snapshot_has_worm`: Whether snapshot is stored in WORM storage
+
+**Example:**
+```bash
+curl -H "X-User-Id: user123" \
+  "http://localhost:8000/api/v1/export?format=csv&date_from=2024-01-01&limit=100" \
+  -o recommendations.csv
+```
+
+---
+
+### GET `/api/v1/export/audit`
+
+Get export audit trail.
+
+**Query Parameters:**
+- `limit` (optional): Maximum number of audit records to return (1-1000, default: 100)
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "timestamp": "2024-01-15T12:00:00Z",
+    "filters": {"date_from": "2024-01-01", "limit": 100},
+    "format": "csv",
+    "record_count": 100,
+    "file_hash": "abc123...",
+    "file_size_bytes": 45678,
+    "export_params": {
+      "commit_hash": "def456...",
+      "dataset_hash": "ghi789...",
+      "params_hash": "jkl012...",
+      "exported_by": "user123"
+    },
+    "exported_by": "user123"
+  }
+]
+```
+
+---
+
+### GET `/api/v1/export/manifest`
+
+Get export manifest with all export records and verification hashes.
+
+**Query Parameters:**
+- `export_id` (optional): Specific export ID to include
+- `limit` (optional): Maximum number of exports to include (1-1000, default: 100)
+
+**Response:**
+```json
+{
+  "manifest_version": "1.0",
+  "generated_at": "2024-01-15T12:00:00Z",
+  "total_exports": 10,
+  "manifest_hash": "sha256:...",
+  "exports": [
+    {
+      "export_id": 1,
+      "timestamp": "2024-01-15T12:00:00Z",
+      "exported_by": "user123",
+      "format": "csv",
+      "record_count": 100,
+      "file_size_bytes": 45678,
+      "file_hash_sha256": "abc123...",
+      "filters": {"date_from": "2024-01-01"},
+      "export_params": {
+        "commit_hash": "def456...",
+        "dataset_hash": "ghi789...",
+        "params_hash": "jkl012..."
+      },
+      "verification": {
+        "hash_algorithm": "SHA-256",
+        "hash": "abc123...",
+        "can_verify": true
+      }
+    }
+  ]
+}
+```
+
+The `manifest_hash` can be used to verify the integrity of the manifest itself.
+
+---
+
+### GET `/api/v1/recommendation/{recommendation_id}/snapshot`
+
+Get immutable snapshot and verification hashes for a recommendation.
+
+**Response:**
+```json
+{
+  "recommendation_id": 123,
+  "date": "2024-01-15",
+  "timestamp": "2024-01-15T12:00:00Z",
+  "code_commit": "abc123...",
+  "dataset_hash": "def456...",
+  "params_hash": "ghi789...",
+  "snapshot_json": {...},
+  "snapshot_hash": "jkl012...",
+  "has_worm": true,
+  "execution_metrics": {
+    "fill_quality": {
+      "fill_rate": 0.95,
+      "partial_fills": 2,
+      "rejected_orders": 0
+    },
+    "orderbook_fallback_count": 1
+  },
+  "tracking_error": {
+    "tracking_error_pct": 0.5,
+    "tracking_error_bps": 50.0
+  },
+  "worm_snapshot": {
+    "uuid": "...",
+    "path": "...",
+    "hash": "...",
+    "timestamp": "...",
+    "payload": {...},
+    "metadata": {...}
+  }
+}
+```
+
+---
+
 ## Error Responses
 
 All errors follow this format:

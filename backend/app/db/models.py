@@ -29,6 +29,7 @@ class RecommendationORM(Base):
     stop_loss_pct: Mapped[float] = mapped_column(Float)
     take_profit_pct: Mapped[float] = mapped_column(Float)
     confidence: Mapped[float] = mapped_column(Float)
+    confidence_calibrated: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_price: Mapped[float] = mapped_column(Float)
     market_timestamp: Mapped[str | None] = mapped_column(String(32), nullable=True)
     spot_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -163,6 +164,7 @@ class ExportAuditORM(Base):
     file_hash: Mapped[str] = mapped_column(String(64))  # SHA-256
     file_size_bytes: Mapped[int] = mapped_column(Integer)
     export_params: Mapped[dict] = mapped_column(JSON, default={})
+    exported_by: Mapped[str] = mapped_column(String(128), default="anonymous", index=True)  # User ID or identifier
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -282,6 +284,25 @@ class UserReadingORM(Base):
     read_count: Mapped[int] = mapped_column(Integer, default=1)
     pdf_downloaded: Mapped[bool] = mapped_column(Boolean, default=False)
     pdf_downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class EnsembleWeightORM(Base):
+    """Store ensemble strategy weights by regime with performance metrics."""
+
+    __tablename__ = "ensemble_weights"
+    __table_args__ = (
+        UniqueConstraint("regime", "strategy_name", "snapshot_date", name="uq_ensemble_weights_regime_strategy_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    regime: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # bull|bear|range|neutral
+    strategy_name: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    weight: Mapped[float] = mapped_column(Float, nullable=False)
+    snapshot_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)  # YYYY-MM-DD
+    metrics: Mapped[dict] = mapped_column(JSON, default={})  # calmar, drawdown, hit_rate, sharpe, etc.
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 

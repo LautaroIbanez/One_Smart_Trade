@@ -7,7 +7,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import analytics, diagnostics, execution, export, knowledge, market, observability, operational, orderbook, orders, performance, positions, recommendation, risk, user_risk
+from app.api.v1 import analytics, diagnostics, execution, export, knowledge, market, observability, operational, orderbook, orders, performance, positions, recommendation, risk, transparency, user_risk
+from app.services.transparency_service import TransparencyService
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.logging import setup_logging
@@ -54,6 +55,7 @@ app.include_router(market.router, prefix="/api/v1/market", tags=["market"])
 app.include_router(performance.router, prefix="/api/v1/performance", tags=["performance"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(observability.router, prefix="/api/v1/observability", tags=["observability"])
+app.include_router(transparency.router, prefix="/api/v1/transparency", tags=["transparency"])
 app.include_router(risk.router, prefix="/api/v1/risk", tags=["risk"])
 app.include_router(orderbook.router, prefix="/api/v1/orderbook", tags=["orderbook"])
 app.include_router(orders.router, prefix="/api/v1/orders", tags=["orders"])
@@ -277,6 +279,104 @@ async def job_auto_close_trades() -> None:
 
     service = RecommendationService()
     await service.auto_close_open_trade()
+
+
+@scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_risk_reports")
+async def job_generate_risk_reports() -> None:
+    """Scheduled job to generate daily risk reports for all users."""
+    from app.core.logging import logger
+    from app.services.risk_reporting_service import RiskReportingService
+    
+    try:
+        service = RiskReportingService()
+        results = service.generate_all_user_reports()
+        logger.info(f"Generated {len(results)} risk reports", extra={"reports": results})
+    except Exception as exc:
+        logger.exception("Failed to generate risk reports", extra={"error": str(exc)})
+
+
+@scheduler.scheduled_job("cron", minute="*/15", id="check_exposure_alerts")
+async def job_check_exposure_alerts() -> None:
+    """Scheduled job to check exposure alerts for all users."""
+    from app.core.logging import logger
+    from app.core.config import settings
+    from app.services.exposure_alert_service import ExposureAlertService
+    
+    try:
+        service = ExposureAlertService()
+        # For now, single-user system
+        user_id = settings.DEFAULT_USER_ID
+        result = service.check_exposure_alerts(
+            user_id,
+            alert_threshold_pct=settings.EXPOSURE_ALERT_THRESHOLD_PCT,
+            persistence_minutes=settings.EXPOSURE_ALERT_PERSISTENCE_MINUTES,
+        )
+        if result.get("alert_active"):
+            logger.warning(
+                "Exposure alert active",
+                extra={"user_id": user_id, "result": result}
+            )
+    except Exception as exc:
+        logger.exception("Failed to check exposure alerts", extra={"error": str(exc)})
+
+
+@scheduler.scheduled_job("cron", hour="*/1", minute=0, id="verify_transparency")
+async def job_verify_transparency() -> None:
+    """Scheduled job to verify transparency checks and send alerts if needed."""
+    from app.core.logging import logger
+    import os
+    
+    try:
+        service = TransparencyService()
+        semaphore = service.get_semaphore()
+        
+        # Log semaphore status
+        logger.info(
+            "Transparency verification completed",
+            extra={
+                "overall_status": semaphore.overall_status.value,
+                "hash_status": semaphore.hash_verification.value,
+                "dataset_status": semaphore.dataset_verification.value,
+                "params_status": semaphore.params_verification.value,
+                "tracking_error_status": semaphore.tracking_error_status.value,
+                "drawdown_status": semaphore.drawdown_divergence_status.value,
+            }
+        )
+        
+        # Send alerts if status is not PASS
+        if semaphore.overall_status.value != "pass":
+            alerts = []
+            if semaphore.hash_verification.value != "pass":
+                alerts.append(f"Hash verification: {semaphore.hash_verification.value}")
+            if semaphore.dataset_verification.value != "pass":
+                alerts.append(f"Dataset verification: {semaphore.dataset_verification.value}")
+            if semaphore.params_verification.value != "pass":
+                alerts.append(f"Params verification: {semaphore.params_verification.value}")
+            if semaphore.tracking_error_status.value != "pass":
+                alerts.append(f"Tracking error: {semaphore.tracking_error_status.value}")
+            if semaphore.drawdown_divergence_status.value != "pass":
+                alerts.append(f"Drawdown divergence: {semaphore.drawdown_divergence_status.value}")
+            
+            message = f"Transparency verification failed: {', '.join(alerts)}"
+            logger.warning(message, extra={"semaphore": semaphore.overall_status.value})
+            
+            # Send webhook if configured
+            webhook_url = os.getenv("ALERT_WEBHOOK_URL")
+            if webhook_url:
+                import httpx
+                try:
+                    httpx.post(
+                        webhook_url,
+                        json={
+                            "text": f"Transparency Alert: {message}",
+                            "status": semaphore.overall_status.value,
+                        },
+                        timeout=10.0
+                    )
+                except Exception:
+                    logger.exception("Failed to send transparency webhook alert")
+    except Exception as exc:
+        logger.exception("Failed to verify transparency", extra={"error": str(exc)})
 
 
 @app.on_event("startup")

@@ -8,6 +8,7 @@ from app.core.logging import logger
 from app.data.curation import DataCuration
 from app.indicators.technical import TechnicalIndicators
 from app.strategies.strategy_ensemble import StrategyEnsemble
+from app.strategies.weight_store import MetaWeightStore
 
 
 class RecommendationEngine:
@@ -16,7 +17,8 @@ class RecommendationEngine:
     def __init__(self):
         self.curation = DataCuration()
         self.indicators_calc = TechnicalIndicators()
-        self.ensemble = StrategyEnsemble()
+        weight_store = MetaWeightStore()
+        self.ensemble = StrategyEnsemble(weight_store=weight_store)
 
     def _calculate_entry_range(self, df: pd.DataFrame, signal: str, current_price: float) -> dict[str, float]:
         """Calculate entry price range."""
@@ -119,7 +121,18 @@ class RecommendationEngine:
         else:
             analysis_parts.append("Señal neutral - se recomienda esperar mejores condiciones de entrada.")
 
-        analysis_parts.append(f"Confianza del modelo: {confidence:.1f}%.")
+        confidence_raw = signal_data.get("confidence_raw", confidence)
+        confidence_calibrated = signal_data.get("confidence_calibrated", confidence_raw)
+        band = signal_data.get("confidence_band")
+        analysis_parts.append(f"Confianza heurística: {confidence_raw:.1f}%.")
+        if confidence_calibrated is not None:
+            if band:
+                analysis_parts.append(
+                    f"Confianza calibrada (histórica): {confidence_calibrated:.1f}% "
+                    f"(intervalo observado {band.get('lower', confidence_calibrated):.1f}%–{band.get('upper', confidence_calibrated):.1f}%)."
+                )
+            else:
+                analysis_parts.append(f"Confianza calibrada (histórica): {confidence_calibrated:.1f}%.")
 
         if rsi < 30:
             analysis_parts.append("RSI indica condiciones de sobreventa, potencial rebote alcista.")
@@ -137,6 +150,8 @@ class RecommendationEngine:
             analysis_parts.append("Baja volatilidad - mercado en consolidación.")
 
         analysis_parts.append(f"Ratio riesgo/recompensa: {risk_metrics.get('risk_reward_ratio', 0):.2f}.")
+        if band:
+            analysis_parts.append("Intervalo basado en calibración histórica; no garantiza resultados futuros.")
         analysis_parts.append("Recuerde: Este análisis es solo para fines educativos. Trading conlleva riesgos significativos.")
 
         return " ".join(analysis_parts)

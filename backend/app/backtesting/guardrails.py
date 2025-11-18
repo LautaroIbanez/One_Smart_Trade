@@ -19,6 +19,7 @@ class CampaignRejectedReason(str, Enum):
     INSUFFICIENT_TRADES = "insufficient_trades"
     INSUFFICIENT_MONTHS = "insufficient_months"
     UNSTABLE_CALMAR_CI = "unstable_calmar_ci"
+    TRACKING_ERROR_TOO_HIGH = "tracking_error_too_high"
 
 
 @dataclass
@@ -33,6 +34,7 @@ class GuardrailConfig:
     min_trades: int = 50
     min_months: int = 24
     min_calmar_ci_low: float = 1.0  # Minimum Calmar CI lower bound
+    max_tracking_error_annualized_pct: float = 0.05  # 5% of capital
 
 
 @dataclass
@@ -154,6 +156,19 @@ class GuardrailChecker:
             )
         return GuardrailResult(passed=True)
 
+    def check_tracking_error(self, tracking_error_annualized_pct: float) -> GuardrailResult:
+        """Check if annualized tracking error exceeds configured threshold."""
+        if tracking_error_annualized_pct > self.config.max_tracking_error_annualized_pct:
+            return GuardrailResult(
+                passed=False,
+                reason=CampaignRejectedReason.TRACKING_ERROR_TOO_HIGH,
+                details={
+                    "tracking_error_annualized_pct": tracking_error_annualized_pct,
+                    "max_allowed_pct": self.config.max_tracking_error_annualized_pct,
+                },
+            )
+        return GuardrailResult(passed=True)
+
     def check_calmar_ci_stability(self, calmar_ci_low: float | None) -> GuardrailResult:
         """Check if Calmar confidence interval lower bound meets threshold."""
         if calmar_ci_low is None:
@@ -198,6 +213,7 @@ class GuardrailChecker:
         trade_count: int | None = None,
         duration_days: int | None = None,
         calmar_ci_low: float | None = None,
+        tracking_error_annualized_pct: float | None = None,
     ) -> GuardrailResult:
         """
         Run all applicable guardrail checks.
@@ -240,6 +256,9 @@ class GuardrailChecker:
 
         if calmar_ci_low is not None:
             checks.append(self.check_calmar_ci_stability(calmar_ci_low))
+
+        if tracking_error_annualized_pct is not None:
+            checks.append(self.check_tracking_error(tracking_error_annualized_pct))
 
         # Find first failure
         for check in checks:

@@ -1,13 +1,26 @@
 """Recommendation service."""
-from datetime import datetime
+from __future__ import annotations
+
+import base64
+import csv
+import io
+from datetime import datetime, time
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import pandas as pd
+import yaml
 
+from app.analytics.trade_efficiency import TradeEfficiencyAnalyzer, TradeEfficiencyEvaluation
 from app.core.config import settings
 from app.core.database import SessionLocal
+from sqlalchemy import and_, case, desc, func, or_, select
+from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
+from app.backtesting.risk_sizing import RiskSizer
+from app.backtesting.tracking_error import TrackingErrorCalculator, calculate_tracking_error
+from app.backtesting.unified_risk_manager import UnifiedRiskManager
 from app.core.logging import logger
-from app.data.curation import DataCuration
 from app.db.crud import (
     calculate_production_drawdown,
     close_recommendation,
@@ -17,14 +30,21 @@ from app.db.crud import (
     get_open_recommendation,
     get_recommendation_history as db_history,
 )
-from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
-from app.backtesting.risk_sizing import RiskSizer
-from app.backtesting.tracking_error import calculate_tracking_error
-from app.core.logging import logger
-from app.db.crud import calculate_production_drawdown
+from app.db.models import RecommendationORM
 from app.quant.signal_engine import generate_signal
 from app.services.alert_service import AlertService
+from app.services.strategy_service import StrategyService
+from app.services.user_portfolio_service import UserPortfolioService
+from app.services.user_risk_profile_service import UserRiskProfileService, UserRiskContext
+from app.services.exposure_ledger_service import ExposureLedgerService
 from app.signals.loggers import SignalLogRecord, log_signal_event
+from app.confidence.service import ConfidenceService
+from app.observability.risk_metrics import (
+    USER_RISK_REJECTIONS_TOTAL,
+    USER_RUIN_PROBABILITY,
+    USER_EXPOSURE_RATIO,
+    USER_EXPOSURE_LIMIT_ALERT,
+)
 
 
 class RecommendationService:
@@ -40,9 +60,22 @@ class RecommendationService:
         self.session = session
         self.curation = DataCuration()
         self.alerts = AlertService()
+        self.strategy_service = StrategyService()
+        self.trade_efficiency = TradeEfficiencyAnalyzer()
         self._champion_cache: Optional[dict[str, Any]] = None
         self.shutdown_manager = shutdown_manager or AutoShutdownManager(
             policy=AutoShutdownPolicy()
+        )
+        self.confidence_service = ConfidenceService()
+        self.user_portfolio_service = UserPortfolioService(session=session)
+        self.user_risk_profile_service = UserRiskProfileService(session=session)
+        self.exposure_ledger_service = ExposureLedgerService(session=session)
+        self.tracking_error_threshold_pct = self._load_tracking_error_threshold()
+        # Risk manager will be initialized per-user with real equity
+        self._default_risk_manager = UnifiedRiskManager(
+            base_capital=10000.0,
+            risk_budget_pct=1.0,
+            max_drawdown_pct=50.0,
         )
 
     def _log_signal_emission(self, rec, signal_payload: dict[str, Any]) -> int | None:
@@ -79,18 +112,31 @@ class RecommendationService:
             horizon_minutes = signal_payload.get("horizon_minutes") or 1440
             strategy_id = self._resolve_strategy_id(signal_payload)
 
+            # Get risk_of_ruin from sizing if available
+            suggested_sizing = signal_payload.get("suggested_sizing") or {}
+            risk_of_ruin = suggested_sizing.get("risk_of_ruin")
+            ruin_adjustment = suggested_sizing.get("ruin_adjustment")
+
             metadata = {
                 "signal_breakdown": signal_breakdown,
                 "votes": votes,
                 "risk_metrics": risk_metrics,
                 "entry_range": signal_payload.get("entry_range"),
                 "stop_loss_take_profit": signal_payload.get("stop_loss_take_profit"),
+                "calibration_metadata": signal_payload.get("calibration_metadata"),
             }
+            
+            # Add risk_of_ruin and ruin_adjustment to metadata for audit
+            if risk_of_ruin is not None:
+                metadata["risk_of_ruin"] = float(risk_of_ruin)
+            if ruin_adjustment:
+                metadata["ruin_adjustment"] = ruin_adjustment
 
+            confidence_raw = signal_payload.get("confidence_raw", signal_payload.get("confidence", 0.0))
             record = SignalLogRecord(
                 strategy_id=strategy_id,
                 signal=signal_payload["signal"],
-                confidence_raw=float(signal_payload["confidence"]),
+                confidence_raw=float(confidence_raw),
                 decision_timestamp=decision_ts,
                 confidence_calibrated=signal_payload.get("confidence_calibrated"),
                 recommendation_id=rec.id,
@@ -118,6 +164,94 @@ class RecommendationService:
                 return str(value)
         return "ensemble_core"
 
+    def _build_confidence_band(self, confidence_calibrated: float | None, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        if confidence_calibrated is None:
+            return None
+        meta = metadata or {}
+        ece = meta.get("ece")
+        margin = 3.0
+        if isinstance(ece, (int, float)):
+            margin = max(2.0, min(15.0, ece * 100.0 * 1.5))
+        lower = max(0.0, round(confidence_calibrated - margin, 1))
+        upper = min(100.0, round(confidence_calibrated + margin, 1))
+        note = meta.get("band_note") or (
+            f"Histórico en régimen {meta.get('regime', 'ensemble')}" if meta.get("regime") else None
+        )
+        band = {
+            "lower": lower,
+            "upper": upper,
+            "source": meta.get("calibrator_type") or meta.get("regime") or "ensemble_core",
+        }
+        if note:
+            band["note"] = note
+        return band
+
+    def _finalize_confidence_fields(self, payload: dict[str, Any], metadata: dict[str, Any] | None = None) -> None:
+        raw = payload.get("confidence_raw", payload.get("confidence"))
+        try:
+            raw_value = round(float(raw or 0.0), 1)
+        except (TypeError, ValueError):
+            raw_value = 0.0
+        payload["confidence_raw"] = raw_value
+        payload["confidence"] = raw_value
+        cal = payload.get("confidence_calibrated")
+        if cal is None:
+            cal = raw_value
+        else:
+            try:
+                cal = round(float(cal), 1)
+            except (TypeError, ValueError):
+                cal = raw_value
+        payload["confidence_calibrated"] = cal
+        band = payload.get("confidence_band") or self._build_confidence_band(cal, metadata)
+        if band:
+            payload["confidence_band"] = band
+
+    def _apply_confidence_calibration(self, signal_payload: dict[str, Any]) -> None:
+        """Enrich signal payload with calibrated confidence."""
+        try:
+            confidence_raw = float(signal_payload.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence_raw = 0.0
+        signal_payload["confidence_raw"] = round(confidence_raw, 1)
+        factors = signal_payload.get("factors") or {}
+        regime = (
+            signal_payload.get("market_regime")
+            or factors.get("market_regime")
+            or factors.get("regime_label")
+            or factors.get("regime_name")
+        )
+        calibrated, metadata = self.confidence_service.calibrate(confidence_raw, regime=regime)
+        signal_payload["confidence_calibrated"] = round(calibrated, 1) if calibrated is not None else None
+        if metadata:
+            signal_payload.setdefault("calibration_metadata", metadata)
+            breakdown = signal_payload.setdefault("signal_breakdown", {})
+            breakdown["calibration"] = metadata
+        band = self._build_confidence_band(signal_payload.get("confidence_calibrated"), signal_payload.get("calibration_metadata"))
+        if band:
+            signal_payload["confidence_band"] = band
+            breakdown = signal_payload.setdefault("signal_breakdown", {})
+            calibration_block = breakdown.setdefault("calibration", {})
+            calibration_block["confidence_band"] = band
+        self._finalize_confidence_fields(signal_payload, signal_payload.get("calibration_metadata"))
+
+    def _apply_trade_efficiency(self, signal: dict[str, Any]) -> tuple[bool, TradeEfficiencyEvaluation]:
+        """Enforce historical MAE/MFE constraints before publishing a signal."""
+        symbol = signal.get("symbol") or self._champion_cache.get("symbol") if self._champion_cache else None
+        symbol = symbol or "BTCUSDT"
+        factors = signal.get("factors") or {}
+        regime = (
+            factors.get("optimizer_regime")
+            or signal.get("market_regime")
+            or factors.get("market_regime")
+            or factors.get("regime_label")
+        )
+
+        evaluation = self.trade_efficiency.evaluate_signal(signal, symbol=symbol, regime=regime)
+        signal.setdefault("risk_metrics", {})["efficiency_summary"] = evaluation.summary
+        signal["trade_efficiency"] = evaluation.to_dict()
+        return evaluation.accepted, evaluation
+
     def _get_open_recommendation(self):
         if self.session is not None:
             return get_open_recommendation(self.session)
@@ -130,58 +264,446 @@ class RecommendationService:
             finally:
                 db.close()
 
-    def _cache_result(self, rec, include_sizing: bool = True) -> dict[str, Any]:
+    def _cache_result(self, rec, include_sizing: bool = True, user_id: str | None = None) -> dict[str, Any]:
         """Convert RecommendationORM to dict, including ID and metadata."""
         result = self._from_orm(rec)
         self._cache = result
         self._cache_timestamp = rec.created_at
-        
-        # Add recommended risk fraction (default: 1% = 0.01)
-        # This can be customized per strategy or campaign, but defaults to 1%
-        default_risk_fraction = 0.01
-        result["recommended_risk_fraction"] = default_risk_fraction
+        self._finalize_confidence_fields(result, result.get("calibration_metadata") or {})
         
         # Add suggested sizing if entry/stop are available
         if include_sizing:
-            entry_range = result.get("entry_range", {})
-            stop_loss_tp = result.get("stop_loss_take_profit", {})
-            entry = entry_range.get("optimal")
-            stop = stop_loss_tp.get("stop_loss")
+            sizing_result = self._calculate_position_sizing(result, user_id=user_id)
+            if sizing_result:
+                # Check if sizing was blocked due to missing equity, ruin risk, or risk limits
+                if sizing_result.get("status") in ("missing_equity", "ruin_risk_too_high", "risk_blocked", "exposure_limit_exceeded"):
+                    result["sizing_status"] = sizing_result["status"]
+                    result["sizing_message"] = sizing_result.get("message")
+                    result["suggested_sizing"] = sizing_result
+                    result["recommended_position_size"] = None
+                    result["risk_pct"] = None
+                    result["capital_assumed"] = None
+                    result["recommended_risk_fraction"] = None
+                    result["requires_capital_input"] = sizing_result.get("requires_capital_input", False)
+                    if sizing_result.get("status") == "risk_blocked":
+                        result["risk_limit_violations"] = sizing_result.get("violations", [])
+                    elif sizing_result.get("status") == "exposure_limit_exceeded":
+                        result["exposure_summary"] = {
+                            "current_exposure_multiplier": sizing_result.get("current_exposure_multiplier"),
+                            "projected_exposure_multiplier": sizing_result.get("projected_exposure_multiplier"),
+                            "limit_multiplier": sizing_result.get("limit_multiplier"),
+                            "beta_value": sizing_result.get("beta_value"),
+                        }
+                else:
+                    # Valid sizing result
+                result["suggested_sizing"] = sizing_result
+                result["recommended_position_size"] = sizing_result.get("units", 0.0)
+                result["risk_pct"] = sizing_result.get("risk_pct", 0.0)
+                result["capital_assumed"] = sizing_result.get("capital_used", 0.0)
+                result["recommended_risk_fraction"] = sizing_result.get("risk_pct", 0.5) / 100.0
+                    result["exposure_multiplier"] = sizing_result.get("exposure_multiplier")
+                    result["risk_of_ruin"] = sizing_result.get("risk_of_ruin")
+                    result["limits_check"] = sizing_result.get("limits_check", {})
+            else:
+                # No sizing available (missing entry/stop)
+                result["suggested_sizing"] = None
+                result["recommended_position_size"] = None
+                result["risk_pct"] = None
+                result["capital_assumed"] = None
+                result["recommended_risk_fraction"] = None
+        else:
+            result["recommended_risk_fraction"] = None
+        
+        # Add disclaimer
+        result.setdefault("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk. Position sizing requires your portfolio data or explicit capital input via /api/v1/risk/sizing.")
+        
+        return result
+    
+    def _calculate_position_sizing(self, recommendation: dict[str, Any], user_id: str | None = None) -> dict[str, Any] | None:
+        """
+        Calculate position sizing using real user risk context.
+        
+        Returns None if user has no equity data (forces user to provide capital via /api/v1/risk/sizing).
+        """
+        entry_range = recommendation.get("entry_range", {})
+        stop_loss_tp = recommendation.get("stop_loss_take_profit", {})
+        entry = entry_range.get("optimal")
+        stop = stop_loss_tp.get("stop_loss")
+        
+        if not entry or not stop:
+            return None
+        
+        # Get comprehensive user risk context
+        ctx = self.user_risk_profile_service.get_context(user_id, base_risk_pct=1.0)
+        
+        # CRITICAL: If user has no equity data, return None to force explicit capital input
+        if not ctx.has_data or ctx.equity <= 0:
+            logger.info(f"User {user_id or 'anonymous'} has no equity data - sizing requires explicit capital")
+            user_id_str = str(user_id or "default")
+            USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="missing_equity").inc()
+            return {
+                "status": "missing_equity",
+                "message": "Conecta tu cuenta o ingresa capital para recibir sizing personalizado. Usa /api/v1/risk/sizing con tu capital disponible.",
+                "requires_capital_input": True,
+            }
+        
+        # Initialize risk manager with user's real equity
+        risk_manager = UnifiedRiskManager(
+            base_capital=ctx.equity,
+            risk_budget_pct=ctx.base_risk_pct,
+            max_drawdown_pct=50.0,
+        )
+        
+        # Update risk manager with user's current drawdown state
+        risk_manager.current_equity = ctx.equity
+        risk_manager.peak_equity = ctx.peak_equity if ctx.peak_equity else ctx.equity
+        risk_manager.current_drawdown_pct = ctx.drawdown_pct
+        
+        # Get exposure profile multiplier (0.0 to 1.0) based on drawdown and exposure
+        exposure_multiplier = risk_manager.exposure_profile()
+        
+        # Apply risk capacity from context (additional constraint)
+        risk_capacity = ctx.risk_capacity
+        effective_exposure_multiplier = min(exposure_multiplier, risk_capacity)
+        
+        # Adjust base risk percentage by exposure multiplier
+        adjusted_risk_pct = ctx.base_risk_pct * effective_exposure_multiplier
+        
+        # Calculate sizing using UnifiedRiskManager with user's real data
+        sizing_result = risk_manager.size_trade(
+            entry=entry,
+            stop=stop,
+            user_equity=ctx.equity,
+            user_drawdown=ctx.drawdown_pct,
+            volatility_estimate=ctx.realized_vol,
+            base_risk_pct=adjusted_risk_pct,
+            dd_limit=50.0,
+            min_risk_pct=0.2,
+        )
+        
+        # Simulate ruin risk with user's actual trading metrics
+        from app.core.config import settings
+        
+        # Use win_rate and payoff_ratio from context if available
+        win_rate = ctx.win_rate
+        payoff_ratio = ctx.payoff_ratio
+        trade_history = ctx.trade_history or []
+        
+        # Update risk manager with trade history for drawdown tracking
+        if trade_history:
+            risk_manager.update_drawdown(ctx.equity, trade_history)
+        
+        # Simulate ruin with user's actual metrics
+        if win_rate is not None and payoff_ratio is not None:
+            risk_of_ruin = risk_manager.simulate_ruin(
+                win_rate=win_rate,
+                payoff_ratio=payoff_ratio,
+            )
+        elif trade_history:
+            # Use trade history to estimate
+            risk_of_ruin = risk_manager.simulate_ruin()
+        else:
+            # No data, use conservative default
+            risk_of_ruin = 0.0
+        
+        # Apply ruin risk adjustment with smooth reduction curve
+        RUIN_THRESHOLD = settings.RISK_OF_RUIN_MAX  # Default: 5%
+        ruin_multiplier = 1.0
+        sizing_adjusted = False
+        
+        if risk_of_ruin > RUIN_THRESHOLD:
+            # Calculate smooth reduction multiplier
+            # At threshold, multiplier = 1.0
+            # At 2x threshold, multiplier = 0.0 (but we cap at 0.1 minimum)
+            # Formula: max(0.1, 1 - (ruin - threshold) / threshold)
+            excess_ruin = risk_of_ruin - RUIN_THRESHOLD
+            ruin_multiplier = max(0.1, 1.0 - (excess_ruin / RUIN_THRESHOLD))
+            sizing_adjusted = True
             
-            if entry and stop:
-                # Default sizing calculation (user needs to provide capital)
-                # We'll add a note that capital is required
-                risk_per_unit = abs(entry - stop)
-                if risk_per_unit > 0:
-                    # Calculate sizing for default $10,000 capital and 1% risk
-                    default_capital = 10000.0
-                    default_risk_pct = default_risk_fraction * 100.0
-                    risk_sizer = RiskSizer(risk_budget_pct=default_risk_fraction)
-                    default_units = risk_sizer.compute_size(
-                        equity=default_capital,
-                        entry=entry,
-                        stop=stop,
-                    )
-                    default_notional = default_units * entry
-                    default_risk = default_units * risk_per_unit
-                    
-                    result["suggested_sizing"] = {
-                        "note": f"Calculated with default $10,000 capital and {default_risk_pct}% risk. Use /api/v1/risk/sizing for custom parameters.",
-                        "default_capital": default_capital,
-                        "default_risk_pct": default_risk_pct,
-                        "units": round(default_units, 8),
-                        "notional": round(default_notional, 2),
-                        "risk_amount": round(default_risk, 2),
-                        "risk_per_unit": round(risk_per_unit, 2),
-                        "entry": entry,
-                        "stop": stop,
-                    }
+            logger.warning(
+                f"User {user_id} risk of ruin {risk_of_ruin:.2%} exceeds threshold {RUIN_THRESHOLD:.2%} - "
+                f"applying sizing reduction multiplier {ruin_multiplier:.2%}"
+            )
+            
+            # Update Prometheus metrics
+            user_id_str = str(user_id or "default")
+            USER_RUIN_PROBABILITY.labels(user_id=user_id_str).set(risk_of_ruin)
+            
+            # If multiplier is too low (below 0.2), block completely
+            if ruin_multiplier < 0.2:
+                USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="ruin_risk_too_high").inc()
+                return {
+                    "status": "ruin_risk_too_high",
+                    "message": f"El riesgo de ruina ({risk_of_ruin:.2%}) excede significativamente el umbral seguro ({RUIN_THRESHOLD:.2%}). Reduce exposición o espera recuperación de drawdown.",
+                    "risk_of_ruin": risk_of_ruin,
+                    "threshold": RUIN_THRESHOLD,
+                    "current_equity": ctx.equity,
+                    "current_drawdown_pct": ctx.drawdown_pct,
+                    "win_rate": win_rate,
+                    "payoff_ratio": payoff_ratio,
+                }
+        
+        # Apply ruin multiplier to sizing if needed
+        if sizing_adjusted and sizing_result.get("units", 0.0) > 0:
+            original_units = sizing_result.get("units", 0.0)
+            adjusted_units = original_units * ruin_multiplier
+            sizing_result["units"] = adjusted_units
+            sizing_result["notional"] = adjusted_units * entry
+            sizing_result["risk_amount"] = adjusted_units * abs(entry - stop)
+            sizing_result["risk_percentage"] = (sizing_result["risk_amount"] / ctx.equity * 100.0) if ctx.equity > 0 else 0.0
+            sizing_result["ruin_adjustment"] = {
+                "applied": True,
+                "multiplier": ruin_multiplier,
+                "original_units": original_units,
+                "adjusted_units": adjusted_units,
+                "risk_of_ruin": risk_of_ruin,
+                "threshold": RUIN_THRESHOLD,
+            }
+        
+        # Check for sizing errors
+        if sizing_result.get("error"):
+            if sizing_result.get("sizing_method") == "insufficient_capital":
+                logger.warning(f"User {user_id} has insufficient capital: {sizing_result.get('error')}")
+                return {
+                    "error": sizing_result["error"],
+                    "capital_required": sizing_result.get("capital_required", 0.0),
+                    "capital_available": sizing_result.get("capital_available", 0.0),
+                    "note": "Insufficient capital to open position with minimum risk. Please deposit more funds.",
+                    "capital_used": ctx.equity,
+                    "risk_pct": adjusted_risk_pct,
+                }
+            return None
+        
+        # Apply dynamic risk limits before returning sizing
+        notional = sizing_result.get("notional", 0.0)
+        symbol = recommendation.get("symbol", "BTCUSDT")  # Default symbol
+        signal = recommendation.get("signal", "BUY")
+        
+        # Calculate beta for the symbol
+        from app.core.config import settings
+        beta_value = self.exposure_ledger_service.calculate_beta(symbol)
+        
+        # Validate aggregate exposure with beta-adjusted notional
+        exposure_validation = self.exposure_ledger_service.validate_new_position(
+            user_id=user_id,
+            user_equity=ctx.equity,
+            new_notional=notional,
+            new_beta=beta_value,
+            limit_multiplier=settings.EXPOSURE_LIMIT_MULTIPLIER,
+        )
+        
+        # Update Prometheus metrics
+        user_id_str = str(user_id or "default")
+        USER_EXPOSURE_RATIO.labels(user_id=user_id_str).set(exposure_validation["current_exposure_multiplier"])
+        
+        # Check if exposure exceeds 80% of limit (alert threshold)
+        exposure_utilization = exposure_validation["current_exposure_multiplier"] / exposure_validation["limit_multiplier"] if exposure_validation["limit_multiplier"] > 0 else 0.0
+        if exposure_utilization > 0.8:
+            USER_EXPOSURE_LIMIT_ALERT.labels(user_id=user_id_str).set(1.0)
+        else:
+            USER_EXPOSURE_LIMIT_ALERT.labels(user_id=user_id_str).set(0.0)
+        
+        # If aggregate exposure would exceed limit, block or reduce
+        if not exposure_validation["allowed"]:
+            current_exp = exposure_validation["current_exposure_multiplier"]
+            projected_exp = exposure_validation["projected_exposure_multiplier"]
+            limit_exp = exposure_validation["limit_multiplier"]
+            
+            logger.warning(
+                f"User {user_id} position sizing blocked by aggregate exposure limit: "
+                f"current={current_exp:.2f}×, projected={projected_exp:.2f}×, limit={limit_exp:.2f}×"
+            )
+            
+            # Update Prometheus metrics
+            user_id_str = str(user_id or "default")
+            USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="exposure_limit_exceeded").inc()
+            
+            # Build UI-friendly message
+            ui_message = (
+                f"Exposición actual {current_exp:.1f}×, tras esta señal sería {projected_exp:.1f}× "
+                f"(> límite {limit_exp:.1f}×) → señal rechazada"
+            )
+            
+            return {
+                "status": "exposure_limit_exceeded",
+                "reason": exposure_validation["reason"],
+                "message": ui_message,
+                "current_exposure_multiplier": current_exp,
+                "projected_exposure_multiplier": projected_exp,
+                "limit_multiplier": limit_exp,
+                "current_beta_adjusted_notional": exposure_validation["current_beta_adjusted_notional"],
+                "projected_beta_adjusted_notional": exposure_validation["projected_beta_adjusted_notional"],
+                "limit_beta_adjusted_notional": exposure_validation.get("limit_beta_adjusted_notional", 0.0),
+                "exceeds_by": exposure_validation.get("exceeds_by", 0.0),
+                "capital_used": ctx.equity,
+                "requested_notional": notional,
+                "beta_value": beta_value,
+            }
+        
+        # Get open positions for correlation limit validation
+        open_positions = self.user_risk_profile_service.get_open_positions(user_id)
+        
+        # Calculate correlation matrix if we have multiple symbols (for now, single symbol so skip)
+        correlation_matrix = None  # TODO: Implement when multi-symbol support is added
+        
+        # Apply other limits (concentration, correlation)
+        limits_result = risk_manager.apply_limits(
+            position_request={
+                "symbol": symbol,
+                "notional": notional,
+                "entry": entry,
+                "side": signal,
+            },
+            user_equity=ctx.equity,
+            existing_positions=open_positions,
+            exposure_cap=1.0,  # 100% of equity max (already validated by exposure ledger)
+            concentration_limit_pct=30.0,  # 30% per symbol
+            correlation_threshold=0.7,  # 70% correlation threshold
+            correlation_matrix=correlation_matrix,
+        )
+        
+        # If limits are violated, block the sizing
+        if not limits_result["allowed"]:
+            logger.warning(
+                f"User {user_id} position sizing blocked by risk limits: {limits_result['reason']}",
+                extra={"violations": limits_result.get("violations", [])}
+            )
+            
+            # Update Prometheus metrics
+            user_id_str = str(user_id or "default")
+            USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="risk_blocked").inc()
+            
+            # Log incident for audit
+            self._log_risk_limit_incident(
+                user_id=user_id,
+                recommendation_id=recommendation.get("id"),
+                violations=limits_result.get("violations", []),
+                reason=limits_result["reason"],
+                position_request={
+                    "symbol": symbol,
+                    "notional": notional,
+                    "entry": entry,
+                    "side": signal,
+                },
+            )
+            
+            return {
+                "status": "risk_blocked",
+                "reason": limits_result["reason"],
+                "violations": limits_result.get("violations", []),
+                "message": f"Límites de riesgo excedidos: {limits_result['reason']}. Reduzca exposición o espere a cerrar posiciones existentes.",
+                "capital_used": ctx.equity,
+                "requested_notional": notional,
+            }
+        
+        # Build comprehensive response
+        result = {
+            "units": sizing_result.get("units", 0.0),
+            "notional": sizing_result.get("notional", 0.0),
+            "risk_amount": sizing_result.get("risk_amount", 0.0),
+            "risk_percentage": sizing_result.get("risk_percentage", 0.0),
+            "risk_pct": sizing_result.get("risk_pct", adjusted_risk_pct),
+            "capital_used": ctx.equity,
+            "sizing_method": sizing_result.get("sizing_method", "risk_based"),
+            "adjustments": sizing_result.get("adjustments", {}),
+            "exposure_multiplier": round(exposure_multiplier, 4),
+            "risk_capacity": round(risk_capacity, 4),
+            "effective_exposure_multiplier": round(effective_exposure_multiplier, 4),
+            "risk_of_ruin": round(risk_of_ruin, 4),
+            "current_drawdown_pct": ctx.drawdown_pct,
+            "current_exposure_pct": ctx.avg_exposure_pct,
+            "effective_leverage": ctx.effective_leverage,
+            "win_rate": ctx.win_rate,
+            "payoff_ratio": ctx.payoff_ratio,
+            "limits_check": {
+                "passed": True,
+                "violations": [],
+            },
+            "exposure_summary": {
+                "current_exposure_multiplier": exposure_validation["current_exposure_multiplier"],
+                "projected_exposure_multiplier": exposure_validation["projected_exposure_multiplier"],
+                "limit_multiplier": exposure_validation["limit_multiplier"],
+                "beta_value": beta_value,
+            },
+        }
+        
+        # Update Prometheus metrics for successful sizing
+        user_id_str = str(user_id or "default")
+        USER_RUIN_PROBABILITY.labels(user_id=user_id_str).set(risk_of_ruin)
+        USER_EXPOSURE_RATIO.labels(user_id=user_id_str).set(exposure_validation["current_exposure_multiplier"])
+        
+        # Check exposure alert threshold (80% of limit)
+        exposure_utilization = exposure_validation["current_exposure_multiplier"] / exposure_validation["limit_multiplier"] if exposure_validation["limit_multiplier"] > 0 else 0.0
+        if exposure_utilization > 0.8:
+            USER_EXPOSURE_LIMIT_ALERT.labels(user_id=user_id_str).set(1.0)
+        else:
+            USER_EXPOSURE_LIMIT_ALERT.labels(user_id=user_id_str).set(0.0)
+        
+        # Add ruin adjustment info if applied
+        if sizing_result.get("ruin_adjustment"):
+            result["ruin_adjustment"] = sizing_result["ruin_adjustment"]
+        
+        # Add informative note
+        ruin_note = ""
+        if sizing_adjusted:
+            ruin_note = f" Ajuste por riesgo de ruina aplicado: multiplicador {ruin_multiplier:.1%}."
+        
+        # Build exposure summary message
+        current_exp = exposure_validation["current_exposure_multiplier"]
+        projected_exp = exposure_validation["projected_exposure_multiplier"]
+        limit_exp = exposure_validation["limit_multiplier"]
+        exposure_msg = f"Exposición actual {current_exp:.1f}×, tras esta señal sería {projected_exp:.1f}× (límite {limit_exp:.1f}×)."
+        
+        result["note"] = (
+            f"Calculado con tu equity real (${ctx.equity:,.2f}), drawdown {ctx.drawdown_pct:.2f}%, "
+            f"exposición {ctx.avg_exposure_pct:.2f}%. Multiplicador de exposición: {exposure_multiplier:.2%}, "
+            f"capacidad de riesgo: {risk_capacity:.2%}. Riesgo de ruina: {risk_of_ruin:.2%} "
+            f"(win_rate: {ctx.win_rate:.1%} si disponible, payoff: {ctx.payoff_ratio:.2f} si disponible). "
+            f"{exposure_msg} "
+            f"Límites de riesgo validados: exposición agregada (beta-ajustada), concentración y correlación.{ruin_note}"
+        )
         
         return result
 
     def _reset_cache(self) -> None:
         self._cache = None
         self._cache_timestamp = None
+
+    def _log_risk_limit_incident(
+        self,
+        user_id: str | None,
+        recommendation_id: int | None,
+        violations: list[dict[str, Any]],
+        reason: str,
+        position_request: dict[str, Any],
+    ) -> None:
+        """
+        Log risk limit violation incident for audit trail.
+        
+        Args:
+            user_id: User ID
+            recommendation_id: Recommendation ID if available
+            violations: List of violation details
+            reason: Human-readable reason
+            position_request: Position request that was blocked
+        """
+        try:
+            logger.warning(
+                "Risk limit violation blocked position sizing",
+                extra={
+                    "user_id": user_id,
+                    "recommendation_id": recommendation_id,
+                    "violations": violations,
+                    "reason": reason,
+                    "position_request": position_request,
+                    "incident_type": "risk_limit_violation",
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+            )
+            # TODO: Store in audit table for compliance/analysis
+            # Could create RiskLimitIncidentORM table if needed
+        except Exception as e:
+            logger.error(f"Failed to log risk limit incident: {e}", exc_info=True)
 
     async def _check_shutdown_status(self) -> dict[str, Any]:
         """
@@ -268,6 +790,23 @@ class RecommendationService:
                         "reason": shutdown_status["size_reduction_reason"],
                     },
                 )
+        
+        # Validate user risk context before generating recommendation
+        ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
+        
+        # Check if user is overexposed (should block new signals)
+        if ctx.has_data and ctx.is_overexposed:
+            logger.warning(
+                f"User {settings.DEFAULT_USER_ID} is overexposed (leverage: {ctx.effective_leverage:.2f}x, "
+                f"exposure: {ctx.avg_exposure_pct:.2f}%) - blocking recommendation generation"
+            )
+            return {
+                "status": "overexposed",
+                "reason": f"Exposición excesiva detectada (apalancamiento: {ctx.effective_leverage:.2f}×, exposición: {ctx.avg_exposure_pct:.2f}%). Reduzca posiciones abiertas antes de recibir nuevas señales.",
+                "effective_leverage": float(ctx.effective_leverage),
+                "current_exposure_pct": float(ctx.avg_exposure_pct),
+                "current_equity": float(ctx.equity),
+            }
         
         # Check cooldown status before generating recommendation
         from app.db.crud import get_user_risk_state
@@ -387,12 +926,15 @@ class RecommendationService:
 
         try:
             signal = generate_signal(latest_hourly, latest_daily)
+            signal = await self.strategy_service.apply_sl_tp_policy(signal, latest_daily)
             if "close" in latest_hourly.columns:
                 signal["current_price"] = float(latest_hourly["close"].iloc[-1])
             if "open_time" in latest_hourly.columns:
                 ts = latest_hourly["open_time"].iloc[-1]
                 signal["market_timestamp"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             signal["spot_source"] = "1h"
+            self._apply_confidence_calibration(signal)
+            self._finalize_confidence_fields(signal, signal.get("calibration_metadata"))
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
             return {"status": "invalid", "reason": str(exc)}
@@ -403,6 +945,14 @@ class RecommendationService:
         signal["analysis"] = analysis
         if self._champion_cache:
             signal["champion_config"] = self._champion_cache
+
+        efficiency_ok, efficiency_eval = self._apply_trade_efficiency(signal)
+        if not efficiency_ok:
+            return {
+                "status": "invalid",
+                "reason": efficiency_eval.summary,
+                "trade_efficiency": efficiency_eval.to_dict(),
+            }
 
         rec = None
         signal_log_id: int | None = None
@@ -419,9 +969,49 @@ class RecommendationService:
                     db.close()
 
         logger.info(f"Generated and saved recommendation: {signal['signal']}")
+        
+        # Cache result first to get sizing with risk_of_ruin (this calculates sizing)
+        result = self._cache_result(rec) if rec else signal
+        
+        # Add sizing data to signal payload for logging (before logging)
+        if rec and isinstance(result, dict):
+            suggested_sizing = result.get("suggested_sizing")
+            if suggested_sizing:
+                signal["suggested_sizing"] = suggested_sizing
+            
+            # If recommendation was created and sizing is valid, register position in exposure ledger
+            if suggested_sizing and not suggested_sizing.get("status"):
+                # Valid sizing, register position
+                try:
+                    from app.core.config import settings
+                    symbol = signal.get("symbol", "BTCUSDT")
+                    direction = signal.get("signal", "BUY")
+                    notional = suggested_sizing.get("notional", 0.0)
+                    entry = signal.get("entry_range", {}).get("optimal") or signal.get("current_price", 0.0)
+                    
+                    if notional > 0 and entry > 0:
+                        beta_value = self.exposure_ledger_service.calculate_beta(symbol)
+                        self.exposure_ledger_service.add_position(
+                            user_id=settings.DEFAULT_USER_ID,
+                            recommendation_id=rec.id,
+                            symbol=symbol,
+                            direction=direction,
+                            notional=notional,
+                            entry_price=entry,
+                            beta_value=beta_value,
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to register position in exposure ledger: {e}", exc_info=True)
+        
+        # Log signal emission with risk_of_ruin in metadata
+        signal_log_id: int | None = None
         if rec:
             signal_log_id = self._log_signal_emission(rec, signal)
-        result = self._cache_result(rec) if rec else signal
+        
+        if not rec:
+            self._finalize_confidence_fields(result, result.get("calibration_metadata"))
+        if rec and signal.get("calibration_metadata"):
+            result["calibration_metadata"] = signal["calibration_metadata"]
         if signal_log_id and isinstance(result, dict):
             result["signal_log_id"] = signal_log_id
         
@@ -434,7 +1024,7 @@ class RecommendationService:
         
         return result
 
-    async def get_today_recommendation(self) -> Optional[dict[str, Any]]:
+    async def get_today_recommendation(self, user_id: str | None = None) -> Optional[dict[str, Any]]:
         """Get today's recommendation from DB or generate on-demand."""
         today = datetime.utcnow().date()
 
@@ -447,7 +1037,7 @@ class RecommendationService:
                 open_rec.date,
                 open_rec.status,
             )
-            return self._cache_result(open_rec)
+            return self._cache_result(open_rec, user_id=user_id)
 
         # Check cache first
         if self._cache and self._cache_timestamp and self._cache_timestamp.date() == today:
@@ -462,7 +1052,7 @@ class RecommendationService:
                     rec_date = rec.created_at.date()
                     if rec_date == today:
                         logger.info(f"Found today's recommendation in DB (created at {rec.created_at})")
-                        return self._cache_result(rec)
+                        return self._cache_result(rec, user_id=user_id)
                     else:
                         logger.debug(f"Latest recommendation is from {rec_date}, not today")
             finally:
@@ -493,6 +1083,7 @@ class RecommendationService:
 
         try:
             recommendation = generate_signal(df_1h, df_1d)
+            recommendation = await self.strategy_service.apply_sl_tp_policy(recommendation, df_1d)
             # Add analysis if not present (will be generated in create_recommendation)
             if "analysis" not in recommendation or not recommendation["analysis"]:
                 from app.quant.narrative import build_narrative
@@ -504,12 +1095,20 @@ class RecommendationService:
                 recommendation["market_timestamp"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             recommendation["spot_source"] = "1h"
 
+            efficiency_ok, efficiency_eval = self._apply_trade_efficiency(recommendation)
+            if not efficiency_ok:
+                return {
+                    "status": "invalid",
+                    "reason": efficiency_eval.summary,
+                    "trade_efficiency": efficiency_eval.to_dict(),
+                }
+
             result = None
             with SessionLocal() as db:
                 try:
                     rec = create_recommendation(db, recommendation)
                     logger.info(f"Generated and saved recommendation: {recommendation['signal']}")
-                    result = self._cache_result(rec)
+                    result = self._cache_result(rec, user_id=user_id)
                 finally:
                     db.close()
 
@@ -522,15 +1121,150 @@ class RecommendationService:
             logger.error(f"Error generating recommendation: {e}", exc_info=True)
             return None
 
-    async def get_recommendation_history(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Get recommendation history from DB."""
+    async def get_recommendation_history(
+        self,
+        *,
+        limit: int = 25,
+        cursor: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        signal: str | None = None,
+        result: str | None = None,
+        status: str | None = None,
+        tracking_error_min: float | None = None,
+        tracking_error_max: float | None = None,
+    ) -> dict[str, Any]:
+        """Get recommendation history with pagination and filters."""
         self._ensure_champion_context(run_alerts=False)
-        with SessionLocal() as db:
-            try:
-                recs = db_history(db, limit=limit)
-                return [self._from_orm(r) for r in recs]
-            finally:
-                db.close()
+        limit = max(1, min(limit, 200))
+        signal_value = signal.upper() if signal else None
+        result_value = result.upper() if result else None
+        cursor_tuple = self._decode_cursor(cursor)
+        start_dt = self._parse_date(start_date, start_of_day=True)
+        end_dt = self._parse_date(end_date, start_of_day=False)
+
+        records, has_more, next_cursor = self._query_history_records(
+            limit=limit,
+            cursor_filter=cursor_tuple,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            signal=signal_value,
+            status=status,
+            result=result_value,
+            tracking_error_min=tracking_error_min,
+            tracking_error_max=tracking_error_max,
+            include_pagination=True,
+        )
+
+        items = [self._build_history_item(self._from_orm(rec)) for rec in records]
+        insights = {
+            "sparkline_series": self._build_history_sparklines(items),
+            "stats": self._build_history_stats(items),
+        }
+        response_filters = {
+            "limit": limit,
+            "start_date": start_date,
+            "end_date": end_date,
+            "signal": signal_value,
+            "result": result_value,
+            "status": status,
+            "tracking_error_min": tracking_error_min,
+            "tracking_error_max": tracking_error_max,
+        }
+
+        return {
+            "items": items,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "filters": {k: v for k, v in response_filters.items() if v is not None},
+            "insights": insights,
+            "download_url": self._build_history_export_url(response_filters, cursor),
+        }
+
+    async def export_recommendation_history(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        signal: str | None = None,
+        result: str | None = None,
+        status: str | None = None,
+        tracking_error_min: float | None = None,
+        tracking_error_max: float | None = None,
+        export_format: str = "csv",
+    ) -> dict[str, Any]:
+        """Generate downloadable history snapshot."""
+        self._ensure_champion_context(run_alerts=False)
+        limit = max(1, min(limit, 1000))
+        signal_value = signal.upper() if signal else None
+        result_value = result.upper() if result else None
+        cursor_tuple = self._decode_cursor(cursor)
+        start_dt = self._parse_date(start_date, start_of_day=True)
+        end_dt = self._parse_date(end_date, start_of_day=False)
+
+        records, _, _ = self._query_history_records(
+            limit=limit,
+            cursor_filter=cursor_tuple,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            signal=signal_value,
+            status=status,
+            result=result_value,
+            tracking_error_min=tracking_error_min,
+            tracking_error_max=tracking_error_max,
+            include_pagination=False,
+        )
+        items = [self._build_history_item(self._from_orm(rec)) for rec in records]
+
+        if export_format == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(
+                [
+                    "timestamp",
+                    "signal",
+                    "status",
+                    "execution_status",
+                    "entry_price",
+                    "exit_price",
+                    "return_pct",
+                    "tracking_error_pct",
+                    "tracking_error_bps",
+                    "code_commit",
+                    "dataset_version",
+                ]
+            )
+            for item in items:
+                writer.writerow(
+                    [
+                        item.get("timestamp"),
+                        item.get("signal"),
+                        item.get("status"),
+                        item.get("execution_status"),
+                        item.get("entry_price"),
+                        item.get("exit_price"),
+                        item.get("return_pct"),
+                        item.get("tracking_error_pct"),
+                        item.get("tracking_error_bps"),
+                        item.get("code_commit"),
+                        item.get("dataset_version"),
+                    ]
+                )
+            buffer.seek(0)
+            content = buffer.getvalue().encode("utf-8")
+            filename = f"recommendation_history_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+            return {
+                "content": content,
+                "media_type": "text/csv",
+                "headers": {
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Records": str(len(items)),
+                },
+            }
+
+        raise ValueError(f"Unsupported export format: {export_format}")
 
     async def get_signal_performance(
         self,
@@ -762,9 +1496,21 @@ class RecommendationService:
         average_tracking_error = float(sum(tracking_errors) / len(tracking_errors)) if tracking_errors else 0.0
         win_rate = (wins / trades_count * 100) if trades_count else 0.0
         
-        # Calculate tracking error metrics between theoretical and realistic curves
+        # Calculate tracking error metrics using same structure as backtests (for comparability)
         tracking_error_metrics = {}
+        tracking_error_summary = None
         if len(equity_theoretical) > 1 and len(equity_realistic) > 1:
+            # Use TrackingErrorCalculator to maintain consistency with backtests
+            # Daily bars for signal performance (signals are evaluated daily)
+            bars_per_year = 365
+            tracking_error_calc = TrackingErrorCalculator.from_curves(
+                theoretical=equity_theoretical,
+                realistic=equity_realistic,
+                bars_per_year=bars_per_year,
+            )
+            tracking_error_summary = tracking_error_calc.to_dict()
+            
+            # Also calculate legacy metrics for backward compatibility
             tracking_error_results = calculate_tracking_error(equity_theoretical, equity_realistic)
             tracking_error_metrics = {
                 "mean_deviation": tracking_error_results["mean_deviation"],
@@ -778,6 +1524,11 @@ class RecommendationService:
                 "p99_divergence": tracking_error_results["p99_divergence"],
                 "theoretical_max_drawdown": tracking_error_results.get("theoretical_max_drawdown", 0.0),
                 "realistic_max_drawdown": tracking_error_results.get("realistic_max_drawdown", 0.0),
+                # Add new metrics from TrackingErrorCalculator for comparability
+                "annualized_tracking_error": tracking_error_summary.get("annualized_tracking_error", 0.0),
+                "bars_with_divergence_above_threshold_pct": tracking_error_summary.get("bars_with_divergence_above_threshold_pct", 0.0),
+                "mean_divergence_bps": tracking_error_summary.get("mean_divergence_bps", 0.0),
+                "max_divergence_bps": tracking_error_summary.get("max_divergence_bps", 0.0),
             }
 
         payload = {
@@ -791,6 +1542,7 @@ class RecommendationService:
             "average_tracking_error": round(average_tracking_error, 2),
             "trades_evaluated": trades_count,
             "tracking_error_metrics": tracking_error_metrics,
+            "tracking_error_summary": tracking_error_summary,  # Same structure as backtests for comparability
         }
         if self._champion_cache:
             payload["champion_config"] = self._champion_cache
@@ -825,6 +1577,16 @@ class RecommendationService:
                     exit_pct=exit_pct,
                     user_id=default_user_id,
                 )
+                
+                # Close position in exposure ledger
+                try:
+                    self.exposure_ledger_service.close_position(
+                        user_id=default_user_id,
+                        recommendation_id=rec.id,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to close position in exposure ledger: {e}", exc_info=True)
+                
                 db.expunge(updated_rec)
             finally:
                 db.close()
@@ -914,6 +1676,7 @@ class RecommendationService:
                 "take_profit_pct": r.take_profit_pct,
             },
             "confidence": r.confidence,
+            "confidence_calibrated": r.confidence_calibrated,
             "current_price": r.current_price,
             "market_timestamp": r.market_timestamp,
             "spot_source": r.spot_source,
@@ -922,20 +1685,26 @@ class RecommendationService:
             "risk_metrics": r.risk_metrics or {},
             "factors": r.factors or {},
             "signal_breakdown": r.signal_breakdown or {},
+            "calibration_metadata": None,
             "timestamp": r.created_at.isoformat(),
-             "status": r.status,
-             "opened_at": r.opened_at.isoformat() if r.opened_at else None,
-             "closed_at": r.closed_at.isoformat() if r.closed_at else None,
-             "exit_reason": r.exit_reason,
+            "status": r.status,
+            "opened_at": r.opened_at.isoformat() if r.opened_at else None,
+            "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+            "exit_reason": r.exit_reason,
             "exit_price": r.exit_price,
             "exit_price_pct": r.exit_price_pct,
-            "recommended_risk_fraction": 0.01,  # Default 1%, can be overridden in _cache_result
+            "recommended_risk_fraction": None,  # Will be set by _cache_result if sizing is available
             "code_commit": r.code_commit,
             "dataset_version": r.dataset_version,
             "params_digest": r.params_digest,
             "snapshot_json": r.snapshot_json,
             "disclaimer": "This is not financial advice. Trading cryptocurrencies involves significant risk.",
         }
+        calibration_meta = payload["signal_breakdown"].get("calibration", {}) if payload["signal_breakdown"] else {}
+        payload["calibration_metadata"] = calibration_meta or None
+        payload["confidence_raw"] = r.confidence
+        payload["confidence_band"] = self._build_confidence_band(r.confidence_calibrated, calibration_meta)
+        self._finalize_confidence_fields(payload, calibration_meta)
         if self._champion_cache:
             payload["champion_config"] = self._champion_cache
         return payload
@@ -951,6 +1720,227 @@ class RecommendationService:
         if run_alerts:
             self._check_risk_alerts(champion)
         return champion
+
+    def _load_tracking_error_threshold(self) -> float:
+        """Load divergence threshold (in percentage points) from config."""
+        default_pct = 2.0
+        config_paths = [
+            Path("config/performance.yaml"),
+            Path("backend/config/performance.yaml"),
+            Path(__file__).resolve().parents[2] / "config" / "performance.yaml",
+        ]
+        for path in config_paths:
+            if not path.exists():
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                divergence = config.get("tracking_error", {}).get("divergence_threshold_pct")
+                if isinstance(divergence, (int, float)):
+                    return float(divergence) * 100.0
+            except Exception:
+                continue
+        return default_pct
+
+    def _parse_date(self, value: str | None, *, start_of_day: bool) -> datetime | None:
+        if not value:
+            return None
+        try:
+            if len(value) == 10:
+                date_obj = datetime.strptime(value, "%Y-%m-%d").date()
+                target_time = time.min if start_of_day else time.max
+                return datetime.combine(date_obj, target_time)
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    def _encode_cursor(self, rec) -> str:
+        raw = f"{rec.created_at.isoformat()}|{rec.id}"
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
+
+    def _decode_cursor(self, cursor: str | None) -> tuple[datetime, int] | None:
+        if not cursor:
+            return None
+        try:
+            decoded = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8")
+            ts_str, id_str = decoded.split("|")
+            return datetime.fromisoformat(ts_str), int(id_str)
+        except Exception:
+            return None
+
+    def _tracking_error_expression(self):
+        target_price = case(
+            (RecommendationORM.exit_reason.in_(("TP", "TAKE_PROFIT", "take_profit")), RecommendationORM.take_profit),
+            (RecommendationORM.exit_reason.in_(("SL", "STOP_LOSS", "stop_loss")), RecommendationORM.stop_loss),
+            else_=None,
+        )
+        return func.abs(
+            (RecommendationORM.exit_price - target_price) / func.nullif(target_price, 0.0)
+        ) * 100.0
+
+    def _calculate_return_pct(self, signal: str, entry: float, target: float | None) -> float | None:
+        if not entry or not target or entry == 0:
+            return None
+        if signal == "BUY":
+            return ((target - entry) / entry) * 100.0
+        if signal == "SELL":
+            return ((entry - target) / entry) * 100.0
+        return None
+
+    def _build_history_item(self, data: dict[str, Any]) -> dict[str, Any]:
+        item = dict(data)
+        entry = data.get("entry_range", {}).get("optimal")
+        stop_loss = data.get("stop_loss_take_profit", {}).get("stop_loss")
+        take_profit = data.get("stop_loss_take_profit", {}).get("take_profit")
+        exit_price = data.get("exit_price")
+        exit_reason = (data.get("exit_reason") or "").upper() if data.get("exit_reason") else None
+        signal = data.get("signal")
+
+        theoretical_return_pct = None
+        target_price = None
+        if exit_reason in ("TP", "TAKE_PROFIT"):
+            target_price = take_profit
+            theoretical_return_pct = self._calculate_return_pct(signal, entry, take_profit)
+        elif exit_reason in ("SL", "STOP_LOSS"):
+            target_price = stop_loss
+            theoretical_return_pct = self._calculate_return_pct(signal, entry, stop_loss)
+
+        tracking_error_pct = None
+        if exit_price is not None and target_price:
+            tracking_error_pct = abs((exit_price - target_price) / target_price) * 100.0 if target_price else None
+        tracking_error_bps = tracking_error_pct * 100.0 if tracking_error_pct is not None else None
+        divergence_flag = bool(
+            tracking_error_pct is not None and tracking_error_pct >= self.tracking_error_threshold_pct
+        )
+
+        realistic_return_pct = data.get("exit_price_pct")
+        execution_status = "open"
+        if data.get("status") == "closed":
+            execution_status = exit_reason or "closed"
+            if not exit_reason and realistic_return_pct is not None:
+                execution_status = "win" if realistic_return_pct > 0 else "loss"
+
+        item.update(
+            {
+                "date": data.get("timestamp")[:10] if data.get("timestamp") else None,
+                "execution_status": execution_status,
+                "exit_reason": exit_reason,
+                "entry_price": entry,
+                "exit_price": exit_price,
+                "return_pct": realistic_return_pct,
+                "pnl_pct": realistic_return_pct,
+                "theoretical_return_pct": theoretical_return_pct,
+                "realistic_return_pct": realistic_return_pct,
+                "tracking_error_pct": tracking_error_pct,
+                "tracking_error_bps": tracking_error_bps,
+                "divergence_flag": divergence_flag,
+                "snapshot_url": f"/api/v1/recommendation/{data.get('id')}/snapshot" if data.get("snapshot_json") else None,
+            }
+        )
+        return item
+
+    def _build_history_stats(self, items: list[dict[str, Any]]) -> dict[str, float]:
+        if not items:
+            return {"count": 0, "avg_tracking_error_pct": 0.0, "divergence_rate_pct": 0.0}
+        tracking_errors = [i["tracking_error_pct"] for i in items if i.get("tracking_error_pct") is not None]
+        divergence_count = sum(1 for i in items if i.get("divergence_flag"))
+        avg_tracking_error = sum(tracking_errors) / len(tracking_errors) if tracking_errors else 0.0
+        divergence_rate = (divergence_count / len(items)) * 100.0 if items else 0.0
+        return {
+            "count": float(len(items)),
+            "avg_tracking_error_pct": round(avg_tracking_error, 4),
+            "divergence_rate_pct": round(divergence_rate, 2),
+        }
+
+    def _build_history_sparklines(self, items: list[dict[str, Any]]) -> dict[str, list[dict[str, float]]]:
+        sparkline: dict[str, list[dict[str, float]]] = {}
+        for signal in ("BUY", "SELL", "HOLD"):
+            eq_theoretical = 1.0
+            eq_realistic = 1.0
+            series: list[dict[str, float]] = []
+            signal_items = [item for item in items if item.get("signal") == signal]
+            for item in reversed(signal_items):
+                ret_theoretical = item.get("theoretical_return_pct") or 0.0
+                ret_realistic = (
+                    item.get("realistic_return_pct") if item.get("realistic_return_pct") is not None else ret_theoretical
+                )
+                eq_theoretical *= 1 + (ret_theoretical / 100.0)
+                eq_realistic *= 1 + (ret_realistic / 100.0)
+                series.append(
+                    {
+                        "timestamp": item.get("timestamp"),
+                        "theoretical": round(eq_theoretical, 4),
+                        "realistic": round(eq_realistic, 4),
+                    }
+                )
+            sparkline[signal] = series[-20:]
+        return sparkline
+
+    def _build_history_export_url(self, filters: dict[str, Any], cursor: str | None) -> str:
+        params = {k: v for k, v in filters.items() if v is not None}
+        if cursor:
+            params["cursor"] = cursor
+        params["format"] = "csv"
+        return f"/api/v1/recommendation/history?{urlencode(params)}"
+
+    def _query_history_records(
+        self,
+        *,
+        limit: int,
+        cursor_filter: tuple[datetime, int] | None,
+        start_dt: datetime | None,
+        end_dt: datetime | None,
+        signal: str | None,
+        status: str | None,
+        result: str | None,
+        tracking_error_min: float | None,
+        tracking_error_max: float | None,
+        include_pagination: bool,
+    ) -> tuple[list[RecommendationORM], bool, str | None]:
+        stmt = select(RecommendationORM).order_by(desc(RecommendationORM.created_at), desc(RecommendationORM.id))
+        if cursor_filter:
+            cursor_ts, cursor_id = cursor_filter
+            stmt = stmt.where(
+                or_(
+                    RecommendationORM.created_at < cursor_ts,
+                    and_(
+                        RecommendationORM.created_at == cursor_ts,
+                        RecommendationORM.id < cursor_id,
+                    ),
+                )
+            )
+        if start_dt:
+            stmt = stmt.where(RecommendationORM.created_at >= start_dt)
+        if end_dt:
+            stmt = stmt.where(RecommendationORM.created_at <= end_dt)
+        if signal:
+            stmt = stmt.where(RecommendationORM.signal == signal)
+        if status:
+            stmt = stmt.where(RecommendationORM.status == status)
+        if result:
+            stmt = stmt.where(RecommendationORM.exit_reason == result)
+
+        te_expr = self._tracking_error_expression()
+        if tracking_error_min is not None:
+            stmt = stmt.where(RecommendationORM.exit_price.isnot(None)).where(te_expr >= tracking_error_min)
+        if tracking_error_max is not None:
+            stmt = stmt.where(RecommendationORM.exit_price.isnot(None)).where(te_expr <= tracking_error_max)
+
+        query_limit = limit + 1 if include_pagination else limit
+        with SessionLocal() as db:
+            try:
+                rows = list(db.execute(stmt.limit(query_limit)).scalars().all())
+            finally:
+                db.close()
+
+        has_more = False
+        next_cursor = None
+        records = rows
+        if include_pagination and len(rows) > limit:
+            has_more = True
+            records = rows[:limit]
+            next_cursor = self._encode_cursor(records[-1])
+        return records, has_more, next_cursor
 
     def _load_active_champion(self):
         """Fetch active champion record using available session."""

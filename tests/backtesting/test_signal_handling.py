@@ -463,3 +463,4 @@ def test_validate_signal_trailing_stop_requires_distance(engine):
     engine._validate_signal({"action": "trailing_stop", "trailing_distance_pct": 0.02}, state)
 
 
+

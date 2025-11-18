@@ -1,0 +1,29 @@
+# Performance monitoring and tracking error thresholds
+tracking_error:
+  # Maximum RMSE percentage threshold (3% default)
+  max_rmse_pct: 0.03
+  # Maximum consecutive days with divergence above threshold (3 days default)
+  max_divergence_days: 3
+  # Divergence threshold percentage for consecutive days check (2% default)
+  divergence_threshold_pct: 0.02
+  # Rolling window size in days for tracking error calculation (30 days default)
+  rolling_window_days: 30
+  # Minimum days of data required for tracking error calculation
+  min_data_days: 7
+
+# Recalibration triggers
+recalibration:
+  # Enable automatic recalibration when thresholds exceeded
+  enabled: true
+  # Minimum days between recalibrations (to avoid too frequent retraining)
+  min_days_between_recalibrations: 7
+
+# Alerting configuration
+alerts:
+  # Enable Slack/email alerts for tracking error violations
+  enabled: true
+  # Alert on RMSE threshold exceeded
+  alert_on_rmse_violation: true
+  # Alert on consecutive divergence days exceeded
+  alert_on_divergence_days: true
+

@@ -3,6 +3,50 @@
 > **Nota:** Este reporte es generado automáticamente por el motor de backtesting. Los resultados se actualizan periódicamente.
 > **Generado:** 2025-11-06 20:21:06 UTC
 
+## Estado de Verificación de Transparencia
+
+El sistema incluye verificaciones automáticas de transparencia que se ejecutan cada hora. El estado actual se puede consultar en:
+
+- **Dashboard de Transparencia**: `/api/v1/transparency/dashboard`
+- **Semáforo de Estado**: `/api/v1/transparency/semaphore`
+
+### Verificaciones Automáticas
+
+1. **Verificación de Hashes**
+   - `code_commit`: Verifica que el código no haya cambiado desde la última recomendación
+   - `dataset_version`: Verifica que el dataset no haya cambiado
+   - `params_digest`: Verifica que los parámetros de estrategia no hayan cambiado
+
+2. **Tracking Error Rolling**
+   - Calcula tracking error en ventanas de 7, 30 y 90 días
+   - Monitorea divergencia entre curvas teórica y realista
+   - Alertas cuando el tracking error anualizado excede 5% (warning) o 10% (critical)
+
+3. **Divergencia de Drawdown**
+   - Compara drawdown máximo teórico vs. realista
+   - Alertas cuando la divergencia excede 10% (warning) o 20% (critical)
+
+4. **Estado de Auditorías**
+   - Monitorea exports y cambios de hash
+   - Registra historial de cambios para trazabilidad
+
+### Semáforo de Estado
+
+El semáforo muestra el estado general de las verificaciones:
+- 🟢 **PASS**: Todas las verificaciones pasan
+- 🟡 **WARN**: Algunas verificaciones tienen advertencias (hashes cambiados, tracking error moderado)
+- 🔴 **FAIL**: Verificaciones críticas fallan (tracking error alto, divergencia significativa)
+
+### Alertas
+
+Las alertas se envían automáticamente cuando:
+- Los hashes cambian (código, dataset o parámetros)
+- El tracking error excede umbrales
+- La divergencia de drawdown es significativa
+- Las verificaciones automáticas fallan
+
+Las alertas se registran en los logs y se pueden enviar a webhooks configurados mediante la variable de entorno `ALERT_WEBHOOK_URL`.
+
 ## Resumen Ejecutivo
 
 Este reporte presenta los resultados del backtesting del sistema One Smart Trade sobre datos históricos de BTC/USDT. El backtesting incluye modelado de comisiones (0.1%) y slippage (0.05%) para simular condiciones realistas de ejecución.

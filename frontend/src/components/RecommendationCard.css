@@ -49,13 +49,38 @@
 
 .price-info,
 .entry-range,
-.confidence,
 .recommended-risk {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0.75rem 0;
   border-bottom: 1px solid var(--border-color);
+}
+
+.confidence-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.confidence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.confidence .hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-align: left;
+  margin-top: 0.25rem;
+}
+
+.confidence.calibrated {
+  border-left: 3px solid var(--accent-primary);
+  padding-left: 0.5rem;
 }
 
 .recommended-risk {

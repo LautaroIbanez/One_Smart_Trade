@@ -9,6 +9,8 @@ import pandas as pd
 
 from app.backtesting.execution_metrics import ExecutionTracker, NoTradeEvent
 from app.backtesting.order_types import BaseOrder, LimitOrder, MarketOrder, OrderResult, OrderStatus, StopOrder
+from app.backtesting.orderbook_warning import OrderBookWarning
+from app.core.logging import logger
 from app.data.fill_model import FillModel, FillModelConfig, FillSimulator, FillSimulationResult
 from app.data.orderbook import OrderBookRepository, OrderBookSnapshot
 
@@ -58,6 +60,8 @@ class ExecutionSimulator:
         self.orderbook_repo = orderbook_repo or OrderBookRepository()
         self.fill_model = fill_model or FillModel()
         self.tracker = execution_tracker or ExecutionTracker()
+        self.orderbook_warnings: list[OrderBookWarning] = []
+        self.orderbook_fallback_count: int = 0
 
     async def simulate_execution(
         self,
@@ -86,7 +90,43 @@ class ExecutionSimulator:
         symbol = symbol or order.symbol
         
         # Get order book snapshot
-        book_snapshot = await self.orderbook_repo.get_snapshot(symbol, timestamp, tolerance_seconds=30)
+        tolerance_seconds = 30
+        book_snapshot = await self.orderbook_repo.get_snapshot(symbol, timestamp, tolerance_seconds=tolerance_seconds)
+        
+        # Emit warning if orderbook not available before falling back
+        if book_snapshot is None:
+            reason = "not_found"  # Default reason
+            # Check if file exists to provide more specific reason
+            try:
+                from pathlib import Path
+                orderbook_path = self.orderbook_repo._get_orderbook_path(symbol)
+                if not orderbook_path.exists():
+                    reason = "file_not_found"
+                else:
+                    # Try to load snapshots to see if within tolerance
+                    start = timestamp - pd.Timedelta(seconds=tolerance_seconds)
+                    end = timestamp + pd.Timedelta(seconds=tolerance_seconds)
+                    snapshots = await self.orderbook_repo.load(symbol, start, end)
+                    if not snapshots:
+                        reason = "no_snapshots_in_range"
+                    else:
+                        # Find closest snapshot to check tolerance
+                        closest = min(snapshots, key=lambda s: abs((s.timestamp - timestamp).total_seconds()))
+                        diff_seconds = abs((closest.timestamp - timestamp).total_seconds())
+                        if diff_seconds > tolerance_seconds:
+                            reason = "out_of_tolerance"
+            except Exception:
+                reason = "not_found"
+            
+            warning = OrderBookWarning(
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                reason=reason,
+                tolerance_seconds=tolerance_seconds,
+            )
+            self.orderbook_warnings.append(warning)
+            self.orderbook_fallback_count += 1
+            logger.warning(str(warning), extra=warning.to_dict())
         
         # Try to fill order
         result = order.try_fill(bar, book_snapshot)
@@ -181,6 +221,8 @@ class ExecutionSimulator:
             "avg_wait_bars": metrics.avg_wait_bars,
             "avg_slippage_bps": metrics.avg_slippage_bps,
             "opportunity_cost": metrics.opportunity_cost,
+            "orderbook_fallback_count": self.orderbook_fallback_count,
+            "orderbook_warnings": [w.to_dict() for w in self.orderbook_warnings],
             "no_trade_events": [
                 {
                     "timestamp": e.timestamp.isoformat(),
@@ -192,4 +234,9 @@ class ExecutionSimulator:
                 for e in metrics.no_trade_events
             ],
         }
+    
+    def reset_counters(self) -> None:
+        """Reset orderbook fallback counters and warnings."""
+        self.orderbook_warnings.clear()
+        self.orderbook_fallback_count = 0
 

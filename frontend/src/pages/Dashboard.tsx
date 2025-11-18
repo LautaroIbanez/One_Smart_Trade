@@ -7,7 +7,9 @@ import { PriceLevelsChart } from '../components/PriceLevelsChart'
 import PerformanceSummary from '../components/PerformanceSummary'
 import SignalCompliance from '../features/performance/SignalCompliance'
 import MonthlyPerformance from '../features/performance/MonthlyPerformance'
+import { RealVsTheoretical } from '../features/performance/RealVsTheoretical'
 import ObservabilityDashboard from '../components/ObservabilityDashboard'
+import TransparencyDashboard from '../components/TransparencyDashboard'
 import LivelihoodDashboard from '../components/LivelihoodDashboard'
 import UserRiskPanel from '../components/UserRiskPanel'
 import AppLayout from '../components/AppLayout'
@@ -118,6 +120,7 @@ function Dashboard() {
           <HistoryExplorer defaultPageSize={25} />
           <UserRiskPanel />
           <PerformanceSummary />
+          <RealVsTheoretical />
           <SignalCompliance />
           <MonthlyPerformance />
           <LivelihoodDashboard enabled={(() => {
@@ -126,6 +129,7 @@ function Dashboard() {
             return envFlag || lsFlag
           })()} />
           <ObservabilityDashboard isPrivate={false} />
+          <TransparencyDashboard />
         </main>
       </div>
     </AppLayout>

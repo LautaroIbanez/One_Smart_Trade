@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const api = axios.create({ baseURL: API_BASE_URL, headers: { 'Content-Type': 'application/json' } })
 
@@ -19,14 +19,38 @@ export const useTodayRecommendation = () => {
   })
 }
 
-export const useRecommendationHistory = (limit: number = 10) => {
+export interface RecommendationHistoryParams {
+  limit?: number
+  cursor?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  signal?: 'BUY' | 'SELL' | 'HOLD' | ''
+  result?: string | null
+  status?: string | null
+  tracking_error_min?: number | null
+  tracking_error_max?: number | null
+}
+
+const sanitizeHistoryParams = (params?: RecommendationHistoryParams) => {
+  const payload: Record<string, unknown> = {}
+  const source = { limit: 25, ...(params || {}) }
+  Object.entries(source).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    payload[key] = value
+  })
+  return payload
+}
+
+export const useRecommendationHistory = (params?: RecommendationHistoryParams) => {
+  const finalParams = sanitizeHistoryParams(params)
   return useQuery({
-    queryKey: ['recommendation', 'history', limit],
+    queryKey: ['recommendation', 'history', finalParams],
     queryFn: async () => {
-      const { data } = await api.get('/api/v1/recommendation/history', { params: { limit } })
+      const { data } = await api.get('/api/v1/recommendation/history', { params: finalParams })
       return data
     },
     staleTime: 60_000,
+    keepPreviousData: true,
   })
 }
 

@@ -12,9 +12,13 @@ from app.backtesting.engine import BacktestEngine, BacktestRunRequest
 from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.backtesting.metrics import calculate_metrics
 from app.backtesting.objectives import CalmarUnderDrawdown, Objective
+from app.backtesting.tracking_error import TrackingErrorCalculator
 from app.backtesting.validation import CampaignAbort, CampaignValidator
 from app.backtesting.walk_forward import WalkForwardPipeline
 from app.core.logging import logger
+
+# Maximum annualized tracking error threshold for candidate acceptance (3%)
+MAX_ANNUALIZED_TRACKING_ERROR_PCT = 3.0
 
 PersistRecordFn = Callable[[dict[str, Any]], None]
 
@@ -44,6 +48,7 @@ class CampaignOptimizer:
         *,
         max_ruin_probability: float | None = None,
         max_negative_month_prob: float | None = None,
+        max_annualized_tracking_error_pct: float | None = None,
         enable_validation: bool = True,
         enable_guardrails: bool = True,
         enable_walk_forward: bool = False,
@@ -57,6 +62,7 @@ class CampaignOptimizer:
             persist_fn: Function to persist records
             max_ruin_probability: Max ruin probability filter
             max_negative_month_prob: Max negative month probability filter
+            max_annualized_tracking_error_pct: Max annualized tracking error filter (default: 3%)
             enable_validation: Enable pre-execution validation (default: True)
             enable_guardrails: Enable guardrail checks (default: True)
             enable_walk_forward: Enable walk-forward analysis (default: False)
@@ -68,6 +74,7 @@ class CampaignOptimizer:
         self.records: list[dict[str, Any]] = []
         self.max_ruin_probability = max_ruin_probability
         self.max_negative_month_prob = max_negative_month_prob
+        self.max_annualized_tracking_error_pct = max_annualized_tracking_error_pct or MAX_ANNUALIZED_TRACKING_ERROR_PCT
         self.enable_validation = enable_validation
         self.enable_guardrails = enable_guardrails
         self.enable_walk_forward = enable_walk_forward
@@ -141,6 +148,55 @@ class CampaignOptimizer:
                 if neg_prob is not None and neg_prob > self.max_negative_month_prob:
                     logger.info("Candidate filtered by negative month probability", extra={"params_id": params_id, "negative_month_prob": neg_prob})
                     continue
+            
+            # Check tracking error if enabled
+            if self.max_annualized_tracking_error_pct is not None:
+                tracking_error = backtest_result.get("tracking_error")
+                equity_theoretical = backtest_result.get("equity_theoretical", [])
+                equity_realistic = backtest_result.get("equity_realistic", [])
+                
+                if equity_theoretical and equity_realistic and len(equity_theoretical) > 1 and len(equity_realistic) > 1:
+                    # Get timeframe from engine args or result metadata
+                    timeframe = engine_args.get("timeframe") or backtest_result.get("metadata", {}).get("timeframe", "1d")
+                    bars_per_year_map = {
+                        "15m": 365 * 24 * 4,
+                        "30m": 365 * 24 * 2,
+                        "1h": 365 * 24,
+                        "4h": 365 * 6,
+                        "1d": 365,
+                        "1w": 52,
+                    }
+                    bars_per_year = bars_per_year_map.get(timeframe, 365)
+                    
+                    tracking_error_calc = TrackingErrorCalculator.from_curves(
+                        theoretical=equity_theoretical,
+                        realistic=equity_realistic,
+                        bars_per_year=bars_per_year,
+                    )
+                    
+                    # Convert annualized tracking error to percentage
+                    annualized_te = tracking_error_calc.annualized_tracking_error
+                    initial_capital = backtest_result.get("initial_capital", 10000.0)
+                    if initial_capital > 0 and annualized_te > 1.0:
+                        # Likely absolute value, convert to percentage
+                        annualized_te_pct = (annualized_te / initial_capital) * 100.0
+                    else:
+                        # Already a percentage
+                        annualized_te_pct = annualized_te * 100.0 if annualized_te <= 1.0 else annualized_te
+                    
+                    if annualized_te_pct > self.max_annualized_tracking_error_pct:
+                        logger.info(
+                            "Candidate filtered by tracking error",
+                            extra={
+                                "params_id": params_id,
+                                "annualized_tracking_error_pct": annualized_te_pct,
+                                "threshold_pct": self.max_annualized_tracking_error_pct,
+                            },
+                        )
+                        continue
+                    
+                    # Store tracking error summary in metrics for persistence
+                    metrics["tracking_error_summary"] = tracking_error_calc.to_dict()
             # Guardrail checks
             if self.guardrail_checker:
                 duration_days = (pd.to_datetime(end) - pd.to_datetime(start)).days
@@ -218,6 +274,9 @@ class CampaignOptimizer:
             "execution_overrides": candidate.execution_overrides,
             "drawdown_limit": getattr(self.objective.config, "max_drawdown_limit", None),
         }
+        # Include tracking_error_summary if available in metrics
+        if "tracking_error_summary" in candidate.metrics:
+            record["tracking_error_summary"] = candidate.metrics["tracking_error_summary"]
         self.records.append(record)
         if self.persist_fn:
             self.persist_fn(record)

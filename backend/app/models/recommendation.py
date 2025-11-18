@@ -1,7 +1,16 @@
 """Recommendation models."""
-from typing import Literal
+from typing import Literal, Any
 
 from pydantic import BaseModel, Field
+
+
+class ConfidenceBand(BaseModel):
+    """Historical confidence interval for calibrated scores."""
+
+    lower: float = Field(..., ge=0.0, le=100.0)
+    upper: float = Field(..., ge=0.0, le=100.0)
+    source: str | None = Field(default=None, description="Calibrator or regime reference")
+    note: str | None = Field(default=None, description="Additional context for the band")
 
 
 class SignalType(str):
@@ -31,7 +40,10 @@ class Recommendation(BaseModel):
     signal: Literal["BUY", "HOLD", "SELL"] = Field(..., description="Trading signal")
     entry_range: EntryRange = Field(..., description="Suggested entry range")
     stop_loss_take_profit: StopLossTakeProfit = Field(..., description="SL/TP levels")
-    confidence: float = Field(..., ge=0, le=100, description="Confidence percentage")
+    confidence: float = Field(..., ge=0, le=100, description="Legacy confidence percentage (raw score)")
+    confidence_raw: float = Field(..., ge=0, le=100, description="Raw confidence before calibration")
+    confidence_calibrated: float | None = Field(default=None, ge=0, le=100, description="Calibrated confidence percentage")
+    confidence_band: ConfidenceBand | None = Field(default=None, description="Historical hit-rate interval for the calibrated score")
     current_price: float = Field(..., description="Current BTC price")
     market_timestamp: str | None = Field(default=None, description="Timestamp of quoted spot price")
     spot_source: str | None = Field(default=None, description="Dataset used for current price (e.g., 1h)")
@@ -40,6 +52,7 @@ class Recommendation(BaseModel):
     risk_metrics: dict = Field(default_factory=dict, description="Risk metrics (RR ratio, SL/TP probabilities, drawdown)")
     factors: dict = Field(default_factory=dict, description="Cross-timeframe factors (momentum alignment, volatility regime)")
     signal_breakdown: dict = Field(default_factory=dict, description="Strategy contributions and agreement metrics")
+    calibration_metadata: dict | None = Field(default=None, description="Metadata about the calibrator used")
     timestamp: str = Field(..., description="ISO timestamp of recommendation")
     status: str = Field(default="closed", description="Current trade status (open|closed|inactive)")
     opened_at: str | None = Field(default=None, description="Timestamp when the trade was opened")
@@ -48,11 +61,24 @@ class Recommendation(BaseModel):
     exit_price: float | None = Field(default=None, description="Exit price when trade closed")
     exit_price_pct: float | None = Field(default=None, description="Return percentage realised at exit")
     signal_log_id: int | None = Field(default=None, description="ID of the signal_outcomes log entry")
-    recommended_risk_fraction: float = Field(
-        default=0.01,
+    confidence_calibrated: float | None = Field(default=None, description="Calibrated confidence percentage")
+    recommended_risk_fraction: float | None = Field(
+        default=None,
         ge=0.0,
         le=1.0,
-        description="Recommended risk fraction of equity (default: 0.01 = 1%)"
+        description="Recommended risk fraction of equity (None if sizing unavailable or requires capital input)"
+    )
+    recommended_position_size: float | None = Field(
+        default=None,
+        description="Recommended position size in units (calculated from user portfolio if available)"
+    )
+    risk_pct: float | None = Field(
+        default=None,
+        description="Effective risk percentage after drawdown adjustment"
+    )
+    capital_assumed: float | None = Field(
+        default=None,
+        description="Capital amount used for sizing calculation (user equity or default assumption)"
     )
     disclaimer: str = Field(
         default="This is not financial advice. Trading cryptocurrencies involves significant risk.",
@@ -67,6 +93,7 @@ class RecommendationResponse(BaseModel):
     entry_range: dict
     stop_loss_take_profit: dict
     confidence: float
+    confidence_raw: float
     current_price: float
     market_timestamp: str | None = None
     spot_source: str | None = None
@@ -86,16 +113,43 @@ class RecommendationResponse(BaseModel):
         default=None,
         description="ID of the signal_outcomes log entry linked to this recommendation",
     )
-    recommended_risk_fraction: float = Field(
-        default=0.01,
+    confidence_calibrated: float | None = Field(
+        default=None,
+        description="Calibrated confidence percentage (0-100)",
+    )
+    confidence_band: ConfidenceBand | None = Field(
+        default=None,
+        description="Historical hit-rate interval for the calibrated score",
+    )
+    calibration_metadata: dict | None = Field(
+        default=None,
+        description="Metadata about the calibrator used (regime, metrics)",
+    )
+    recommended_risk_fraction: float | None = Field(
+        default=None,
         ge=0.0,
         le=1.0,
-        description="Recommended risk fraction of equity (default: 0.01 = 1%)"
+        description="Recommended risk fraction of equity (None if sizing unavailable or requires capital input)"
     )
+    recommended_position_size: float | None = Field(
+        default=None,
+        description="Recommended position size in units (calculated from user portfolio if available)"
+    )
+    risk_pct: float | None = Field(
+        default=None,
+        description="Effective risk percentage after drawdown adjustment"
+    )
+    capital_assumed: float | None = Field(
+        default=None,
+        description="Capital amount used for sizing calculation (user equity or default assumption)"
+    )
+    tracking_error_rmse: float | None = Field(None, description="Tracking error RMSE (Root Mean Squared Error)")
+    tracking_error_max: float | None = Field(None, description="Maximum tracking error (basis points)")
+    orderbook_fallback_events: int | None = Field(None, description="Number of orderbook fallback events")
     disclaimer: str
     suggested_sizing: dict | None = Field(
         None,
-        description="Suggested position sizing information (calculated with default parameters)",
+        description="Suggested position sizing information (calculated with user portfolio data when available)",
     )
 
 
@@ -135,3 +189,53 @@ class SignalPerformanceResponse(BaseModel):
     average_tracking_error: float
     trades_evaluated: int
     tracking_error_metrics: dict = Field(default_factory=dict)
+
+
+class HistorySparklinePoint(BaseModel):
+    """Point for sparkline visualisation."""
+
+    timestamp: str
+    theoretical: float
+    realistic: float
+
+
+class HistoryInsights(BaseModel):
+    """Additional analytics for recommendation history."""
+
+    sparkline_series: dict[str, list[HistorySparklinePoint]] = Field(default_factory=dict)
+    stats: dict[str, float] = Field(default_factory=dict)
+
+
+class RecommendationHistoryItem(BaseModel):
+    """Single entry in paginated recommendation history."""
+
+    id: int
+    timestamp: str
+    date: str
+    signal: Literal["BUY", "HOLD", "SELL"]
+    status: str
+    execution_status: str
+    exit_reason: str | None = None
+    entry_price: float | None = None
+    exit_price: float | None = None
+    return_pct: float | None = None
+    theoretical_return_pct: float | None = None
+    realistic_return_pct: float | None = None
+    tracking_error_pct: float | None = None
+    tracking_error_bps: float | None = None
+    divergence_flag: bool = False
+    code_commit: str | None = None
+    dataset_version: str | None = None
+    snapshot_url: str | None = None
+    risk_metrics: dict[str, Any] | None = None
+
+
+class RecommendationHistoryResponse(BaseModel):
+    """Paginated recommendation history response."""
+
+    items: list[RecommendationHistoryItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+    filters: dict[str, Any] = Field(default_factory=dict)
+    insights: HistoryInsights | None = None
+    download_url: str | None = None

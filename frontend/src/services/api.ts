@@ -23,6 +23,14 @@ export interface Recommendation {
     take_profit_pct: number
   }
   confidence: number
+  confidence_raw: number
+  confidence_calibrated: number
+  confidence_band?: {
+    lower: number
+    upper: number
+    source?: string
+    note?: string
+  }
   current_price: number
   analysis: string
   indicators: Record<string, unknown>
@@ -36,6 +44,7 @@ export interface Recommendation {
     agreement?: number
     risk_adjusted_confidence?: number
   }
+  calibration_metadata?: Record<string, unknown>
   timestamp: string
   disclaimer: string
 }

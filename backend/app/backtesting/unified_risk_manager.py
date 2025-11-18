@@ -147,6 +147,12 @@ class UnifiedRiskManager:
         payoff_ratio: float | None = None,
         realized_vol: float | None = None,
         regime_probabilities: dict[str, float] | None = None,
+        user_equity: float | None = None,
+        user_drawdown: float | None = None,
+        volatility_estimate: float | None = None,
+        base_risk_pct: float | None = None,
+        dd_limit: float = 50.0,
+        min_risk_pct: float = 0.2,
     ) -> dict[str, Any]:
         """
         Calculate position size for a trade.
@@ -158,10 +164,32 @@ class UnifiedRiskManager:
             payoff_ratio: Optional payoff ratio for Kelly sizing
             realized_vol: Optional realized volatility (annualized, e.g., 0.15 for 15%)
             regime_probabilities: Optional regime probabilities
+            user_equity: User's current equity (overrides self.current_equity)
+            user_drawdown: User's current drawdown percentage (overrides self.current_drawdown_pct)
+            volatility_estimate: User's volatility estimate (overrides realized_vol)
+            base_risk_pct: Base risk percentage (default: self.risk_sizer.risk_budget_pct * 100)
+            dd_limit: Drawdown limit for risk adjustment (default: 50.0%)
+            min_risk_pct: Minimum risk percentage after drawdown adjustment (default: 0.2%)
             
         Returns:
             Dict with units, notional, risk_amount, sizing_method, and adjustments
         """
+        # Use user-specific parameters if provided
+        effective_equity = user_equity if user_equity is not None else self.current_equity
+        effective_drawdown = user_drawdown if user_drawdown is not None else self.current_drawdown_pct
+        effective_vol = volatility_estimate if volatility_estimate is not None else realized_vol
+        effective_base_risk = (base_risk_pct / 100.0) if base_risk_pct is not None else self.risk_sizer.risk_budget_pct
+        
+        # Apply user-specific drawdown adjustment formula: risk_pct = base_pct * max(0.2, 1 - user_drawdown / dd_limit)
+        if user_drawdown is not None or user_equity is not None:
+            dd_multiplier = max(min_risk_pct / 100.0, 1.0 - (effective_drawdown / dd_limit))
+            effective_risk_pct = effective_base_risk * dd_multiplier
+        else:
+            # Use existing drawdown controller logic
+            effective_risk_pct = effective_base_risk
+            dd_multiplier = self.drawdown_controller.risk_multiplier(effective_drawdown) if effective_drawdown > 0 else 1.0
+            effective_risk_pct = effective_base_risk * dd_multiplier
+        
         if entry <= 0 or stop <= 0:
             return {
                 "units": 0.0,
@@ -186,38 +214,65 @@ class UnifiedRiskManager:
         size_reduction = shutdown_status.get("size_reduction_factor", 1.0)
         
         # Convert volatility from percentage to decimal if needed
-        if realized_vol is not None and realized_vol > 1.0:
-            realized_vol = realized_vol / 100.0
+        if effective_vol is not None and effective_vol > 1.0:
+            effective_vol = effective_vol / 100.0
+        
+        # Check if user has insufficient capital
+        risk_per_unit = abs(entry - stop)
+        min_risk_amount = effective_risk_pct * effective_equity if effective_equity > 0 else 0.0
+        min_units = min_risk_amount / risk_per_unit if risk_per_unit > 0 else 0.0
+        min_notional = min_units * entry
+        estimated_fees = min_notional * 0.001  # Assume 0.1% fees
+        
+        if effective_equity > 0 and (min_notional + estimated_fees) > effective_equity:
+            return {
+                "units": 0.0,
+                "notional": 0.0,
+                "risk_amount": 0.0,
+                "sizing_method": "insufficient_capital",
+                "error": f"Insufficient capital: need {min_notional + estimated_fees:.2f}, have {effective_equity:.2f}",
+                "capital_required": min_notional + estimated_fees,
+                "capital_available": effective_equity,
+            }
         
         # Use combined sizer if Kelly or volatility targeting enabled
         if self.use_kelly or self.volatility_targeting_enabled:
+            # Temporarily override risk budget for user-specific sizing
+            original_risk_budget = self.risk_sizer.risk_budget_pct
+            self.risk_sizer.risk_budget_pct = effective_risk_pct
+            
             result = self.combined_sizer.compute_size(
-                capital=self.current_equity,
+                capital=effective_equity,
                 entry=entry,
                 stop=stop,
                 win_rate=win_rate if self.use_kelly else None,
                 payoff_ratio=payoff_ratio if self.use_kelly else None,
-                realized_vol=realized_vol if self.volatility_targeting_enabled else None,
-                current_dd_pct=self.current_drawdown_pct,
+                realized_vol=effective_vol if self.volatility_targeting_enabled else None,
+                current_dd_pct=effective_drawdown,
                 drawdown_controller=self.drawdown_controller,
                 regime_probabilities=regime_probabilities,
             )
             
+            # Restore original risk budget
+            self.risk_sizer.risk_budget_pct = original_risk_budget
+            
             units = result["units"]
             sizing_method = result["sizing_method"]
             adjustments = result.get("adjustments", {})
+            adjustments["user_risk_pct"] = effective_risk_pct * 100.0
+            adjustments["user_dd_multiplier"] = dd_multiplier
         else:
-            # Standard risk-based sizing with drawdown adjustment
-            units = self.risk_manager.compute_size(
-                equity=self.current_equity,
-                entry=entry,
-                stop=stop,
-                current_dd_pct=self.current_drawdown_pct,
-            )
-            sizing_method = "risk_with_drawdown"
+            # Standard risk-based sizing with user-specific adjustment
+            if effective_equity > 0 and risk_per_unit > 0:
+                units = (effective_equity * effective_risk_pct) / risk_per_unit
+            else:
+                units = 0.0
+            sizing_method = "user_risk_adjusted" if (user_equity is not None or user_drawdown is not None) else "risk_with_drawdown"
             adjustments = {
-                "drawdown_pct": self.current_drawdown_pct,
-                "dd_multiplier": self.drawdown_controller.risk_multiplier(self.current_drawdown_pct),
+                "drawdown_pct": effective_drawdown,
+                "dd_multiplier": dd_multiplier,
+                "user_risk_pct": effective_risk_pct * 100.0,
+                "base_risk_pct": effective_base_risk * 100.0,
             }
         
         # Apply size reduction if shutdown manager recommends it
@@ -225,11 +280,10 @@ class UnifiedRiskManager:
         
         # Calculate metrics
         notional = units * entry
-        risk_per_unit = abs(entry - stop)
         risk_amount = units * risk_per_unit
         
         # Calculate suggested fraction (for metrics)
-        suggested_fraction = (risk_amount / self.current_equity) if self.current_equity > 0 else 0.0
+        suggested_fraction = (risk_amount / effective_equity) if effective_equity > 0 else 0.0
         
         # If Kelly was used, include Kelly fraction
         if self.use_kelly and win_rate and payoff_ratio:
@@ -240,11 +294,13 @@ class UnifiedRiskManager:
             "units": round(units, 8),
             "notional": round(notional, 2),
             "risk_amount": round(risk_amount, 2),
-            "risk_percentage": round((risk_amount / self.current_equity * 100.0) if self.current_equity > 0 else 0.0, 2),
+            "risk_percentage": round((risk_amount / effective_equity * 100.0) if effective_equity > 0 else 0.0, 2),
             "sizing_method": sizing_method,
             "adjustments": adjustments,
             "suggested_fraction": round(suggested_fraction, 4),
             "size_reduction_factor": size_reduction,
+            "capital_used": effective_equity,
+            "risk_pct": round(effective_risk_pct * 100.0, 2),
         }
 
     def update_drawdown(self, current_equity: float, trades: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -413,5 +469,161 @@ class UnifiedRiskManager:
             self.shutdown_manager.reset()
         
         self.last_update = datetime.utcnow()
+
+    def apply_limits(
+        self,
+        position_request: dict[str, Any],
+        *,
+        user_equity: float,
+        existing_positions: list[dict[str, Any]] | None = None,
+        exposure_cap: float = 1.0,
+        concentration_limit_pct: float = 30.0,
+        correlation_threshold: float = 0.7,
+        correlation_matrix: dict[str, dict[str, float]] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Apply dynamic risk limits to position request.
+        
+        Validates:
+        1. Total exposure cap: sum(notional) ≤ equity * exposure_cap
+        2. Concentration limit: notional per symbol ≤ equity * concentration_limit_pct / 100
+        3. Correlation limit: no highly correlated positions (correlation > threshold)
+        
+        Args:
+            position_request: Dict with 'symbol', 'notional', 'entry', 'side' keys
+            user_equity: User's current equity
+            existing_positions: List of existing positions, each with 'symbol', 'notional', 'side' keys
+            exposure_cap: Maximum total exposure as fraction of equity (default: 1.0 = 100%)
+            concentration_limit_pct: Maximum concentration per symbol as % of equity (default: 30%)
+            correlation_threshold: Maximum allowed correlation between positions (default: 0.7)
+            correlation_matrix: Optional pre-calculated correlation matrix (symbol -> {symbol: corr})
+            
+        Returns:
+            Dict with 'allowed': bool, 'reason': str if blocked, 'violations': list
+        """
+        if user_equity <= 0:
+            return {
+                "allowed": False,
+                "reason": "Invalid equity: must be > 0",
+                "violations": ["invalid_equity"],
+            }
+        
+        symbol = position_request.get("symbol", "BTCUSDT")
+        requested_notional = position_request.get("notional", 0.0)
+        side = position_request.get("side", "BUY")
+        
+        if requested_notional <= 0:
+            return {
+                "allowed": True,  # Zero size is always allowed
+                "reason": None,
+                "violations": [],
+            }
+        
+        existing_positions = existing_positions or []
+        violations = []
+        
+        # 1. Check total exposure cap
+        total_existing_notional = sum(pos.get("notional", 0.0) for pos in existing_positions)
+        total_projected_notional = total_existing_notional + requested_notional
+        exposure_cap_notional = user_equity * exposure_cap
+        
+        if total_projected_notional > exposure_cap_notional:
+            violations.append({
+                "type": "exposure_cap",
+                "current": total_existing_notional,
+                "requested": requested_notional,
+                "total": total_projected_notional,
+                "limit": exposure_cap_notional,
+                "exceeded_by": total_projected_notional - exposure_cap_notional,
+            })
+        
+        # 2. Check concentration limit per symbol
+        # Check existing position in same symbol
+        existing_symbol_notional = sum(
+            pos.get("notional", 0.0)
+            for pos in existing_positions
+            if pos.get("symbol") == symbol
+        )
+        total_symbol_notional = existing_symbol_notional + requested_notional
+        concentration_limit_notional = user_equity * (concentration_limit_pct / 100.0)
+        
+        if total_symbol_notional > concentration_limit_notional:
+            violations.append({
+                "type": "concentration_limit",
+                "symbol": symbol,
+                "existing": existing_symbol_notional,
+                "requested": requested_notional,
+                "total": total_symbol_notional,
+                "limit": concentration_limit_notional,
+                "limit_pct": concentration_limit_pct,
+                "exceeded_by": total_symbol_notional - concentration_limit_notional,
+            })
+        
+        # 3. Check correlation limits
+        if correlation_matrix and existing_positions:
+            # Get correlation for requested symbol with existing positions
+            symbol_correlations = correlation_matrix.get(symbol, {})
+            
+            for existing_pos in existing_positions:
+                existing_symbol = existing_pos.get("symbol")
+                if existing_symbol == symbol:
+                    continue  # Same symbol, skip (handled by concentration limit)
+                
+                # Check if positions are in same direction (both long or both short)
+                existing_side = existing_pos.get("side", "BUY")
+                same_direction = (
+                    (side == "BUY" and existing_side == "BUY") or
+                    (side == "SELL" and existing_side == "SELL")
+                )
+                
+                if same_direction:
+                    # Get correlation
+                    corr = symbol_correlations.get(existing_symbol, 0.0)
+                    # Use absolute correlation (negative correlation is actually good for diversification)
+                    abs_corr = abs(corr)
+                    
+                    if abs_corr > correlation_threshold:
+                        violations.append({
+                            "type": "correlation_limit",
+                            "symbol": symbol,
+                            "existing_symbol": existing_symbol,
+                            "correlation": corr,
+                            "abs_correlation": abs_corr,
+                            "threshold": correlation_threshold,
+                            "side": side,
+                            "existing_side": existing_side,
+                        })
+        
+        if violations:
+            # Build reason string
+            reasons = []
+            for v in violations:
+                if v["type"] == "exposure_cap":
+                    reasons.append(
+                        f"Exposure cap exceeded: ${v['total']:,.2f} > ${v['limit']:,.2f} "
+                        f"(exceeds by ${v['exceeded_by']:,.2f})"
+                    )
+                elif v["type"] == "concentration_limit":
+                    reasons.append(
+                        f"Concentration limit exceeded for {v['symbol']}: "
+                        f"${v['total']:,.2f} > ${v['limit']:,.2f} ({v['limit_pct']:.1f}% of equity)"
+                    )
+                elif v["type"] == "correlation_limit":
+                    reasons.append(
+                        f"High correlation between {v['symbol']} and {v['existing_symbol']}: "
+                        f"{v['abs_correlation']:.2f} > {v['threshold']:.2f}"
+                    )
+            
+            return {
+                "allowed": False,
+                "reason": "; ".join(reasons),
+                "violations": violations,
+            }
+        
+        return {
+            "allowed": True,
+            "reason": None,
+            "violations": [],
+        }
 
 

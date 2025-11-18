@@ -46,6 +46,12 @@ EXECUTION_OPPORTUNITY_COST = Counter(
     ["symbol"],
 )
 
+EXECUTION_ORDERBOOK_FALLBACK_TOTAL = Counter(
+    "execution_orderbook_fallback_total",
+    "Total orderbook fallbacks (fallback to no-orderbook mode)",
+    ["symbol", "reason"],
+)
+
 # Tracking error metrics
 TRACKING_ERROR_MEAN_DEVIATION = Gauge(
     "tracking_error_mean_deviation",
@@ -104,6 +110,8 @@ def update_execution_metrics(
     avg_wait_bars: float | None = None,
     opportunity_cost: float | None = None,
     side: str | None = None,
+    orderbook_fallback_count: int | None = None,
+    orderbook_fallback_reason: str | None = None,
 ) -> None:
     """
     Update execution metrics in Prometheus.
@@ -119,6 +127,8 @@ def update_execution_metrics(
         avg_wait_bars: Average wait time in bars
         opportunity_cost: Opportunity cost from missed trades
         side: Order side (buy/sell)
+        orderbook_fallback_count: Number of orderbook fallbacks
+        orderbook_fallback_reason: Reason for orderbook fallback
     """
     labels = {"symbol": symbol, "order_type": order_type}
     
@@ -144,6 +154,10 @@ def update_execution_metrics(
     
     if opportunity_cost is not None and opportunity_cost > 0:
         EXECUTION_OPPORTUNITY_COST.labels(symbol=symbol).inc(opportunity_cost)
+    
+    if orderbook_fallback_count is not None and orderbook_fallback_count > 0:
+        reason = orderbook_fallback_reason or "not_found"
+        EXECUTION_ORDERBOOK_FALLBACK_TOTAL.labels(symbol=symbol, reason=reason).inc(orderbook_fallback_count)
 
 
 def update_tracking_error_metrics(
@@ -228,6 +242,68 @@ def update_tracking_error_metrics(
                 "value": correlation,
                 "threshold": 0.90,
                 "message": f"Tracking error correlation {correlation:.4f} is below threshold 0.90",
+            }
+        )
+    
+    return alerts
+
+
+EXECUTION_ORDERBOOK_FALLBACK_ALERT = Counter(
+    "execution_orderbook_fallback_alert_total",
+    "Total alerts for excessive orderbook fallback rate",
+    ["symbol", "context", "threshold_pct"],
+)
+
+# Alert thresholds
+ORDERBOOK_FALLBACK_THRESHOLD_BACKTEST_PCT = 5.0  # 5% for backtests
+ORDERBOOK_FALLBACK_THRESHOLD_LIVE_PCT = 1.0  # 1% for live signals
+
+
+def check_orderbook_fallback_alerts(
+    symbol: str,
+    fallback_count: int,
+    total_bars: int,
+    *,
+    context: str = "backtest",  # "backtest" or "live"
+) -> list[dict[str, Any]]:
+    """
+    Check for orderbook fallback rate alerts.
+    
+    Args:
+        symbol: Trading symbol
+        fallback_count: Number of orderbook fallbacks
+        total_bars: Total number of bars
+        context: Context ("backtest" or "live")
+        
+    Returns:
+        List of alert dicts if threshold exceeded
+    """
+    alerts = []
+    
+    if total_bars <= 0:
+        return alerts
+    
+    fallback_rate_pct = (fallback_count / total_bars) * 100.0
+    
+    # Determine threshold based on context
+    threshold_pct = ORDERBOOK_FALLBACK_THRESHOLD_BACKTEST_PCT if context == "backtest" else ORDERBOOK_FALLBACK_THRESHOLD_LIVE_PCT
+    
+    if fallback_rate_pct > threshold_pct:
+        EXECUTION_ORDERBOOK_FALLBACK_ALERT.labels(
+            symbol=symbol, context=context, threshold_pct=f"{threshold_pct}%"
+        ).inc()
+        
+        alerts.append(
+            {
+                "type": "orderbook_fallback_rate_exceeded",
+                "symbol": symbol,
+                "context": context,
+                "metric": "fallback_rate_pct",
+                "value": fallback_rate_pct,
+                "fallback_count": fallback_count,
+                "total_bars": total_bars,
+                "threshold_pct": threshold_pct,
+                "message": f"Orderbook fallback rate {fallback_rate_pct:.2f}% exceeds threshold {threshold_pct}% ({fallback_count}/{total_bars} fallbacks)",
             }
         )
     
