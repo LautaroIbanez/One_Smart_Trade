@@ -54,6 +54,26 @@ class CandleSeries:
 
     def __post_init__(self) -> None:
         """Validate and normalize candle data."""
+        def _convert_to_datetime_utc(series: pd.Series) -> pd.Series:
+            """Convert timestamp series to UTC datetime, handling numeric epoch values."""
+            # Check if numeric (int/float) and looks like epoch milliseconds (> 1e12)
+            if pd.api.types.is_numeric_dtype(series):
+                # If values are large (> 1e12), likely epoch milliseconds
+                if series.min() > 1e12:
+                    return pd.to_datetime(series, unit="ms", utc=True)
+                else:
+                    # Small numeric values might be seconds
+                    return pd.to_datetime(series, unit="s", utc=True)
+            else:
+                # String or datetime-like: parse normally
+                result = pd.to_datetime(series, utc=True)
+                # If result is naive, localize to UTC
+                if result.dt.tz is None:
+                    result = result.dt.tz_localize("UTC")
+                else:
+                    result = result.dt.tz_convert("UTC")
+                return result
+        
         # Check if timestamp exists as index or column
         has_timestamp_index = isinstance(self.data.index, pd.DatetimeIndex)
         has_timestamp_col = "timestamp" in self.data.columns
@@ -72,21 +92,11 @@ class CandleSeries:
         
         # If timestamp is a column, use it as index
         if has_timestamp_col:
-            self.data["timestamp"] = pd.to_datetime(self.data["timestamp"])
-            # Ensure UTC timezone
-            if self.data["timestamp"].dt.tz is None:
-                self.data["timestamp"] = self.data["timestamp"].dt.tz_localize("UTC")
-            else:
-                self.data["timestamp"] = self.data["timestamp"].dt.tz_convert("UTC")
+            self.data["timestamp"] = _convert_to_datetime_utc(self.data["timestamp"])
             self.data = self.data.set_index("timestamp")
         elif has_open_time_col:
             # Fallback: derive timestamp from open_time
-            self.data["timestamp"] = pd.to_datetime(self.data["open_time"])
-            # Ensure UTC timezone
-            if self.data["timestamp"].dt.tz is None:
-                self.data["timestamp"] = self.data["timestamp"].dt.tz_localize("UTC")
-            else:
-                self.data["timestamp"] = self.data["timestamp"].dt.tz_convert("UTC")
+            self.data["timestamp"] = _convert_to_datetime_utc(self.data["open_time"])
             self.data = self.data.set_index("timestamp")
         else:
             raise ValueError("No timestamp column/index or open_time column found")
@@ -428,6 +438,26 @@ class BacktestEngine:
 
         df = read_parquet(path)
         
+        def _convert_to_datetime_utc(series: pd.Series) -> pd.Series:
+            """Convert timestamp series to UTC datetime, handling numeric epoch values."""
+            # Check if numeric (int/float) and looks like epoch milliseconds (> 1e12)
+            if pd.api.types.is_numeric_dtype(series):
+                # If values are large (> 1e12), likely epoch milliseconds
+                if series.min() > 1e12:
+                    return pd.to_datetime(series, unit="ms", utc=True)
+                else:
+                    # Small numeric values might be seconds
+                    return pd.to_datetime(series, unit="s", utc=True)
+            else:
+                # String or datetime-like: parse normally
+                result = pd.to_datetime(series, utc=True)
+                # If result is naive, localize to UTC
+                if result.dt.tz is None:
+                    result = result.dt.tz_localize("UTC")
+                else:
+                    result = result.dt.tz_convert("UTC")
+                return result
+        
         # Ensure timestamp column exists (fallback to open_time if needed)
         if "timestamp" not in df.columns:
             if "open_time" in df.columns:
@@ -440,37 +470,27 @@ class BacktestEngine:
                         "path": str(path),
                     },
                 )
-                df["timestamp"] = pd.to_datetime(df["open_time"])
-                # Ensure timestamp is timezone-aware and in UTC
-                if df["timestamp"].dt.tz is None:
-                    df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
-                else:
-                    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+                df["timestamp"] = _convert_to_datetime_utc(df["open_time"])
             else:
                 raise ValueError(
                     f"Dataset missing both 'timestamp' and 'open_time' columns. "
                     f"Available columns: {list(df.columns)}"
                 )
-        
-        # Convert timestamp to datetime and set as index
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        # Ensure UTC timezone
-        if df["timestamp"].dt.tz is None:
-            df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
         else:
-            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+            # Convert existing timestamp column
+            df["timestamp"] = _convert_to_datetime_utc(df["timestamp"])
         
         df = df.set_index("timestamp")
 
         # Filter by date range
-        # Ensure request dates are timezone-aware for comparison
-        start_date = pd.to_datetime(request.start_date)
+        # Ensure request dates are timezone-aware UTC for comparison
+        start_date = pd.to_datetime(request.start_date, utc=True)
         if start_date.tz is None:
             start_date = start_date.tz_localize("UTC")
         else:
             start_date = start_date.tz_convert("UTC")
         
-        end_date = pd.to_datetime(request.end_date)
+        end_date = pd.to_datetime(request.end_date, utc=True)
         if end_date.tz is None:
             end_date = end_date.tz_localize("UTC")
         else:
@@ -823,9 +843,24 @@ class BacktestEngine:
         Returns:
             Backtest result dict with trades, equity curves, and returns
         """
-        # Normalize dates
-        start_ts = pd.to_datetime(start_date)
-        end_ts = pd.to_datetime(end_date)
+        # Normalize dates with proper UTC handling and numeric epoch support
+        def _normalize_date(value) -> pd.Timestamp:
+            """Normalize date to UTC timestamp, handling numeric epoch values."""
+            if isinstance(value, pd.Timestamp):
+                return value.tz_localize("UTC") if value.tz is None else value.tz_convert("UTC")
+            elif pd.api.types.is_numeric_dtype(type(value)) or isinstance(value, (int, float)):
+                # Numeric value: check if epoch milliseconds (> 1e12) or seconds
+                if value > 1e12:
+                    return pd.to_datetime(value, unit="ms", utc=True)
+                else:
+                    return pd.to_datetime(value, unit="s", utc=True)
+            else:
+                # String or other: parse normally with UTC
+                result = pd.to_datetime(value, utc=True)
+                return result.tz_localize("UTC") if result.tz is None else result.tz_convert("UTC")
+        
+        start_ts = _normalize_date(start_date)
+        end_ts = _normalize_date(end_date)
 
         # Set seed if provided
         if seed is not None:

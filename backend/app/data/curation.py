@@ -233,22 +233,33 @@ class DataCuration:
             df["symbol"] = symbol
             ensure_partition_dirs(venue, symbol, interval)
 
+        def _convert_to_datetime_utc(series: pd.Series) -> pd.Series:
+            """Convert timestamp series to UTC datetime, handling numeric epoch values."""
+            # Check if numeric (int/float) and looks like epoch milliseconds (> 1e12)
+            if pd.api.types.is_numeric_dtype(series):
+                # If values are large (> 1e12), likely epoch milliseconds
+                if series.min() > 1e12:
+                    return pd.to_datetime(series, unit="ms", utc=True)
+                else:
+                    # Small numeric values might be seconds
+                    return pd.to_datetime(series, unit="s", utc=True)
+            else:
+                # String or datetime-like: parse normally
+                result = pd.to_datetime(series, utc=True)
+                # If result is naive, localize to UTC
+                if result.dt.tz is None:
+                    result = result.dt.tz_localize(timezone.utc)
+                else:
+                    result = result.dt.tz_convert(timezone.utc)
+                return result
+        
         # Ensure timestamp column exists for backtest compatibility
         # If open_time exists but timestamp doesn't, create timestamp from open_time
         if "timestamp" not in df.columns and "open_time" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["open_time"])
-            # Ensure timestamp is timezone-aware and in UTC
-            if df["timestamp"].dt.tz is None:
-                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
-            else:
-                df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+            df["timestamp"] = _convert_to_datetime_utc(df["open_time"])
         elif "timestamp" in df.columns:
             # Ensure existing timestamp is in UTC
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            if df["timestamp"].dt.tz is None:
-                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
-            else:
-                df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+            df["timestamp"] = _convert_to_datetime_utc(df["timestamp"])
 
         curated_path.parent.mkdir(parents=True, exist_ok=True)
         write_parquet(

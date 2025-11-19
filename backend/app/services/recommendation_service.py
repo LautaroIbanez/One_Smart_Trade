@@ -1773,9 +1773,49 @@ class RecommendationService:
             try:
                 logger.info("Running mandatory backtest validation before publishing recommendation")
                 
-                # Prepare backtest data
-                end_date = pd.to_datetime(latest_hourly.index[-1]) if not latest_hourly.empty else datetime.utcnow()
+                # Prepare backtest data with explicit UTC timezone
+                def _convert_to_datetime_utc(value) -> pd.Timestamp:
+                    """Convert value to UTC datetime, handling numeric epoch values."""
+                    if isinstance(value, pd.Timestamp):
+                        return value.tz_localize("UTC") if value.tz is None else value.tz_convert("UTC")
+                    elif pd.api.types.is_numeric_dtype(type(value)) or isinstance(value, (int, float)):
+                        # Numeric value: check if epoch milliseconds (> 1e12) or seconds
+                        if value > 1e12:
+                            return pd.to_datetime(value, unit="ms", utc=True)
+                        else:
+                            return pd.to_datetime(value, unit="s", utc=True)
+                    else:
+                        # String or other: parse normally
+                        result = pd.to_datetime(value, utc=True)
+                        return result.tz_localize("UTC") if result.tz is None else result.tz_convert("UTC")
+                
+                if not latest_hourly.empty:
+                    # Check if index is DatetimeIndex, otherwise use timestamp column
+                    if isinstance(latest_hourly.index, pd.DatetimeIndex):
+                        end_date_raw = latest_hourly.index[-1]
+                        end_date = _convert_to_datetime_utc(end_date_raw)
+                    elif "timestamp" in latest_hourly.columns:
+                        # Use timestamp column if index is not datetime
+                        end_date_raw = latest_hourly["timestamp"].iloc[-1]
+                        end_date = _convert_to_datetime_utc(end_date_raw)
+                    elif "open_time" in latest_hourly.columns:
+                        # Fallback to open_time
+                        end_date_raw = latest_hourly["open_time"].iloc[-1]
+                        end_date = _convert_to_datetime_utc(end_date_raw)
+                    else:
+                        # Last resort: use current time
+                        logger.warning("Could not determine end_date from latest_hourly, using current time")
+                        end_date = pd.Timestamp.now(tz="UTC")
+                else:
+                    end_date = pd.Timestamp.now(tz="UTC")
+                
                 start_date = end_date - timedelta(days=settings.BACKTEST_LOOKBACK_DAYS)
+                # Ensure start_date is also UTC (should already be, but double-check)
+                if isinstance(start_date, pd.Timestamp):
+                    if start_date.tz is None:
+                        start_date = start_date.tz_localize("UTC")
+                    else:
+                        start_date = start_date.tz_convert("UTC")
                 
                 # Create strategy adapter
                 strategy_adapter = DailyStrategyAdapter(
