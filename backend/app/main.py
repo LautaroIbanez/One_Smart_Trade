@@ -127,6 +127,7 @@ async def job_ingest_all() -> None:
 async def job_transparency_checks() -> None:
     """Scheduled job to run transparency checks hourly."""
     from app.core.logging import logger
+    from app.core.exceptions import RecommendationGenerationError
     
     try:
         transparency_service = TransparencyService()
@@ -245,7 +246,25 @@ async def job_daily_pipeline() -> None:
             if recommendation is None:
                 raise ValueError("generate_recommendation returned None")
             
-            signal = recommendation.get("signal", "UNKNOWN")
+            valid_signals = {"BUY", "SELL", "HOLD"}
+            status_value = recommendation.get("status")
+            signal_value = recommendation.get("signal")
+            
+            if status_value and isinstance(status_value, str) and status_value.upper() not in valid_signals:
+                raise RecommendationGenerationError(
+                    status=status_value,
+                    reason=recommendation.get("reason") or "Recommendation returned an invalid status",
+                    details={"failed_status": status_value, "failed_reason": recommendation.get("reason")},
+                )
+            
+            if not isinstance(signal_value, str) or signal_value.upper() not in valid_signals:
+                raise RecommendationGenerationError(
+                    status=status_value or "invalid_signal",
+                    reason=f"Recommendation returned invalid signal: {signal_value}",
+                    details={"failed_status": status_value, "failed_signal": signal_value},
+                )
+            
+            signal = signal_value.upper()
             confidence = recommendation.get("confidence", 0.0)
             
             outcome_details["steps"]["signal_generation"] = {
