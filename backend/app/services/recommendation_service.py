@@ -71,7 +71,10 @@ class RecommendationService:
         self.trade_efficiency = TradeEfficiencyAnalyzer()
         self._champion_cache: Optional[dict[str, Any]] = None
         self.shutdown_manager = shutdown_manager or AutoShutdownManager(
-            policy=AutoShutdownPolicy()
+            policy=AutoShutdownPolicy(
+                min_rolling_sharpe=settings.AUTO_SHUTDOWN_MIN_ROLLING_SHARPE,
+                lookback_trades=settings.AUTO_SHUTDOWN_LOOKBACK_TRADES,
+            )
         )
         self.confidence_service = ConfidenceService()
         self.user_portfolio_service = UserPortfolioService(session=session)
@@ -1063,6 +1066,8 @@ class RecommendationService:
             )
             
             # Evaluate shutdown policy
+            # Note: allow_missing_data is handled at the caller level (generate_recommendation)
+            # based on environment and settings
             return self.shutdown_manager.evaluate(strategy_metrics)
         finally:
             if not self.session:
@@ -1331,15 +1336,68 @@ class RecommendationService:
         if self.shutdown_manager:
             shutdown_status = await self._check_shutdown_status()
             if shutdown_status["shutdown"]:
-                logger.warning(
-                    "Auto-shutdown active, blocking recommendation generation",
-                    extra={"reason": shutdown_status["shutdown_reason"]},
-                )
-                raise RecommendationGenerationError(
-                    status="shutdown",
-                    reason=shutdown_status["shutdown_reason"],
-                    details={"shutdown_status": shutdown_status},
-                )
+                # Check if this is a "missing data" case in dev environment
+                env = os.getenv("ENV", "dev").lower()
+                is_dev = env in ("dev", "test", "development")
+                is_missing_data = "Insufficient performance history" in shutdown_status["shutdown_reason"]
+                allow_bypass = is_dev and is_missing_data and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
+                
+                if allow_bypass:
+                    logger.warning(
+                        "Auto-shutdown guardrail bypassed in dev due to missing performance history",
+                        extra={
+                            "environment": env,
+                            "shutdown_reason": shutdown_status["shutdown_reason"],
+                            "rolling_sharpe": shutdown_status.get("rolling_sharpe"),
+                            "has_sharpe_data": shutdown_status.get("has_sharpe_data", False),
+                            "lookback_trades": shutdown_status.get("lookback_trades"),
+                            "warning": "This bypass is dev-only. Production requires sufficient trade history.",
+                        },
+                    )
+                    # Continue with recommendation generation, but mark as experimental
+                    # The recommendation will be generated but may be flagged
+                else:
+                    # Production or real breach: block recommendation
+                    logger.error(
+                        "Auto-shutdown active, blocking recommendation generation",
+                        extra={
+                            "environment": env,
+                            "reason": shutdown_status["shutdown_reason"],
+                            "shutdown_status": shutdown_status,
+                        },
+                    )
+                    # Create risk audit for shutdown
+                    db = self.session or SessionLocal()
+                    try:
+                        from app.db.crud import create_risk_audit
+                        create_risk_audit(
+                            db=db,
+                            user_id=settings.DEFAULT_USER_ID,
+                            audit_type="auto_shutdown",
+                            reason=shutdown_status["shutdown_reason"],
+                            context_data={
+                                "rolling_sharpe": shutdown_status.get("rolling_sharpe"),
+                                "has_sharpe_data": shutdown_status.get("has_sharpe_data", False),
+                                "min_rolling_sharpe": shutdown_status.get("min_rolling_sharpe"),
+                                "lookback_trades": shutdown_status.get("lookback_trades"),
+                                "current_drawdown_pct": shutdown_status.get("current_drawdown_pct"),
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to create shutdown audit record: {e}", exc_info=True)
+                    finally:
+                        if not self.session:
+                            db.close()
+                    
+                    raise RecommendationGenerationError(
+                        status="shutdown",
+                        reason=shutdown_status["shutdown_reason"],
+                        details={
+                            "shutdown_status": shutdown_status,
+                            "environment": env,
+                            "message": shutdown_status["shutdown_reason"],
+                        },
+                    )
             
             # Apply size reduction if needed
             if shutdown_status["size_reduction"]:

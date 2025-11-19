@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     # Tracking error monitoring (SL/TP achievability)
     TRACKING_ERROR_THRESHOLD_BPS: float = 50.0  # Alert if tracking error exceeds 50 bps (0.5%)
     TRACKING_ERROR_CHECK_LOOKAHEAD_DAYS: int = 7  # Days to look ahead for price evaluation
+    
+    # Auto-shutdown guardrails
+    AUTO_SHUTDOWN_ENABLED: bool = True  # Enable auto-shutdown policy
+    AUTO_SHUTDOWN_MIN_ROLLING_SHARPE: float = 0.2  # Minimum rolling Sharpe ratio (annualized)
+    AUTO_SHUTDOWN_LOOKBACK_TRADES: int = 50  # Number of trades to look back for rolling metrics
+    AUTO_SHUTDOWN_MIN_TRADES_FOR_SHARPE: int = 2  # Minimum trades required to compute Sharpe
+    AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV: bool = True  # Allow bypass in dev/test when Sharpe data is missing (prod always requires data)
 
     class Config:
         env_file = ".env"

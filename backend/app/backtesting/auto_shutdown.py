@@ -18,28 +18,29 @@ class StrategyMetrics:
     trades: list[dict[str, Any]] | pd.DataFrame | None = None
     equity_curve: list[float] | None = None
 
-    def rolling_sharpe(self, lookback_trades: int) -> float:
+    def rolling_sharpe(self, lookback_trades: int, min_trades: int = 2) -> float | None:
         """
         Calculate rolling Sharpe ratio over last N trades.
         
         Args:
             lookback_trades: Number of trades to look back
+            min_trades: Minimum number of trades required to compute Sharpe (default: 2)
             
         Returns:
-            Rolling Sharpe ratio (annualized)
+            Rolling Sharpe ratio (annualized) or None if insufficient data
         """
         if self.trades is None or self.equity_curve is None:
-            return 0.0
+            return None
         
         if isinstance(self.trades, list):
             if not self.trades:
-                return 0.0
+                return None
             trades_df = pd.DataFrame(self.trades)
         else:
             trades_df = self.trades.copy()
         
-        if trades_df.empty or len(trades_df) < 2:
-            return 0.0
+        if trades_df.empty or len(trades_df) < min_trades:
+            return None
         
         # Get last N trades
         recent_trades = trades_df.tail(lookback_trades)
@@ -53,16 +54,17 @@ class StrategyMetrics:
             else:
                 returns = recent_trades["pnl"].values
         else:
-            return 0.0
+            return None
         
-        if len(returns) < 2:
-            return 0.0
+        if len(returns) < min_trades:
+            return None
         
         mean_return = np.mean(returns)
         std_return = np.std(returns)
         
+        # Zero variance means no risk, but also no meaningful Sharpe
         if std_return == 0:
-            return 0.0
+            return None
         
         # Annualized Sharpe (assuming ~252 trading days, ~1 trade per day)
         sharpe = (mean_return / std_return) * np.sqrt(252)
@@ -132,6 +134,7 @@ class AutoShutdownPolicy:
         *,
         check_sharpe: bool = True,
         check_hit_rate: bool = True,
+        allow_missing_data: bool = False,
     ) -> tuple[bool, str]:
         """
         Determine if strategy should be shut down based on current metrics.
@@ -140,6 +143,7 @@ class AutoShutdownPolicy:
             metrics: Current strategy metrics
             check_sharpe: Check rolling Sharpe breach
             check_hit_rate: Check rolling hit rate breach
+            allow_missing_data: If True, missing Sharpe/hit rate data won't trigger shutdown
             
         Returns:
             Tuple of (should_shutdown, reason)
@@ -151,13 +155,22 @@ class AutoShutdownPolicy:
         # Performance guard: rolling Sharpe
         if check_sharpe:
             rolling_sharpe = metrics.rolling_sharpe(self.lookback_trades)
-            if rolling_sharpe < self.min_rolling_sharpe:
+            if rolling_sharpe is None:
+                # Insufficient data
+                if not allow_missing_data:
+                    return True, f"Insufficient performance history: need at least 2 trades to compute rolling Sharpe (last {self.lookback_trades} trades)"
+                # allow_missing_data=True: skip Sharpe check when data is missing
+            elif rolling_sharpe < self.min_rolling_sharpe:
                 return True, f"Rolling Sharpe breach: {rolling_sharpe:.2f} < {self.min_rolling_sharpe:.2f} (last {self.lookback_trades} trades)"
         
         # Performance guard: rolling hit rate
         if check_hit_rate:
             rolling_hit_rate = metrics.rolling_hit_rate(self.lookback_trades)
-            if rolling_hit_rate < self.min_hit_rate:
+            if rolling_hit_rate == 0.0 and (metrics.trades is None or (isinstance(metrics.trades, list) and not metrics.trades)):
+                # No trades at all
+                if not allow_missing_data:
+                    return True, f"Insufficient performance history: need trade history to compute rolling hit rate (last {self.lookback_trades} trades)"
+            elif rolling_hit_rate < self.min_hit_rate:
                 return True, f"Rolling hit rate breach: {rolling_hit_rate:.2f}% < {self.min_hit_rate:.2f}% (last {self.lookback_trades} trades)"
         
         return False, "ok"
@@ -186,7 +199,7 @@ class AutoShutdownPolicy:
         # Check if Sharpe is below warning threshold (120% of min)
         warning_sharpe = self.min_rolling_sharpe * 1.2
         rolling_sharpe = metrics.rolling_sharpe(self.lookback_trades)
-        if rolling_sharpe < warning_sharpe and rolling_sharpe > self.min_rolling_sharpe:
+        if rolling_sharpe is not None and rolling_sharpe < warning_sharpe and rolling_sharpe > self.min_rolling_sharpe:
             return True, self.reduction_factor, f"Sharpe warning: {rolling_sharpe:.2f} < {warning_sharpe:.2f}"
         
         # Check if hit rate is below warning threshold (120% of min)
@@ -225,6 +238,7 @@ class AutoShutdownPolicy:
             "current_drawdown_pct": metrics.current_drawdown_pct,
             "rolling_sharpe": rolling_sharpe,
             "rolling_hit_rate": rolling_hit_rate,
+            "has_sharpe_data": rolling_sharpe is not None,
             "max_drawdown_pct": self.max_drawdown_pct,
             "min_rolling_sharpe": self.min_rolling_sharpe,
             "min_hit_rate": self.min_hit_rate,
@@ -277,9 +291,9 @@ class AutoShutdownManager:
         else:
             # Check if recovered from shutdown
             if self.is_shutdown:
-                # Recovery: drawdown below 80% of max, Sharpe above min, hit rate above min
+                # Recovery: drawdown below 80% of max, Sharpe above min (if available), hit rate above min
                 recovery_dd = metrics.current_drawdown_pct < (self.policy.max_drawdown_pct * 0.8)
-                recovery_sharpe = status["rolling_sharpe"] >= self.policy.min_rolling_sharpe
+                recovery_sharpe = status["rolling_sharpe"] is None or status["rolling_sharpe"] >= self.policy.min_rolling_sharpe
                 recovery_hit_rate = status["rolling_hit_rate"] >= self.policy.min_hit_rate
                 
                 if recovery_dd and recovery_sharpe and recovery_hit_rate:
@@ -297,7 +311,7 @@ class AutoShutdownManager:
             if self.size_reduction_factor < 1.0:
                 # Recovery: all metrics above warning thresholds
                 recovery_dd = metrics.current_drawdown_pct < (self.policy.max_drawdown_pct * 0.6)
-                recovery_sharpe = status["rolling_sharpe"] >= (self.policy.min_rolling_sharpe * 1.5)
+                recovery_sharpe = status["rolling_sharpe"] is None or status["rolling_sharpe"] >= (self.policy.min_rolling_sharpe * 1.5)
                 recovery_hit_rate = status["rolling_hit_rate"] >= (self.policy.min_hit_rate * 1.2)
                 
                 if recovery_dd and recovery_sharpe and recovery_hit_rate:
