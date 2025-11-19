@@ -12,6 +12,7 @@ from app.services.transparency_service import TransparencyService
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.logging import setup_logging
+from app.core.exceptions import RecommendationGenerationError
 from app.data.curation import DataCuration
 from app.data.ingestion import DataIngestion
 from app.db.crud import log_run
@@ -247,21 +248,36 @@ async def job_daily_pipeline() -> None:
                 raise ValueError("generate_recommendation returned None")
             
             valid_signals = {"BUY", "SELL", "HOLD"}
+            failure_statuses = {
+                "capital_missing",
+                "data_stale",
+                "data_gaps",
+                "backtest_failed",
+                "backtest_error",
+                "audit_failed",
+                "invalid",
+            }
+            
             status_value = recommendation.get("status")
+            normalized_status = status_value.lower() if isinstance(status_value, str) else None
             signal_value = recommendation.get("signal")
             
-            if status_value and isinstance(status_value, str) and status_value.upper() not in valid_signals:
+            if normalized_status and normalized_status in failure_statuses:
                 raise RecommendationGenerationError(
                     status=status_value,
-                    reason=recommendation.get("reason") or "Recommendation returned an invalid status",
-                    details={"failed_status": status_value, "failed_reason": recommendation.get("reason")},
+                    reason=recommendation.get("reason") or "Recommendation reported a failure status",
+                    details={
+                        "failed_status": status_value,
+                        "failed_reason": recommendation.get("reason"),
+                        "payload": recommendation,
+                    },
                 )
             
             if not isinstance(signal_value, str) or signal_value.upper() not in valid_signals:
                 raise RecommendationGenerationError(
                     status=status_value or "invalid_signal",
                     reason=f"Recommendation returned invalid signal: {signal_value}",
-                    details={"failed_status": status_value, "failed_signal": signal_value},
+                    details={"failed_status": status_value, "failed_signal": signal_value, "payload": recommendation},
                 )
             
             signal = signal_value.upper()
