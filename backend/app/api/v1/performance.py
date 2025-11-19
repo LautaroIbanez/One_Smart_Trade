@@ -1,5 +1,5 @@
 """Performance endpoints."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.models.performance import (

@@ -167,7 +167,7 @@ async def get_articles_by_category_endpoint(
 async def download_article_pdf(
     slug: str,
     user_id: str = Query(..., description="User UUID"),
-) -> StreamingResponse | dict[str, Any]:
+) -> StreamingResponse:
     """
     Download article as PDF.
     

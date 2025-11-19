@@ -8,6 +8,9 @@ RISK_CURRENT_DRAWDOWN = Gauge(
     ["strategy", "asset"],
 )
 
+# Backward-compatible alias
+RISK_CURRENT_DRAWDOWN_PCT = RISK_CURRENT_DRAWDOWN
+
 RISK_PEAK_EQUITY = Gauge(
     "risk_peak_equity",
     "Peak equity value",

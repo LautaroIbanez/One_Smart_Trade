@@ -1,6 +1,7 @@
 """Recommendation service."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import io
@@ -86,6 +87,14 @@ class RecommendationService:
             risk_budget_pct=1.0,
             max_drawdown_pct=50.0,
         )
+
+    def _schedule_async_task(self, coro) -> None:
+        """Schedule an async coroutine from either sync or async contexts."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            asyncio.run(coro)
 
     def _log_signal_emission(self, rec, signal_payload: dict[str, Any]) -> int | None:
         """Persist structured signal metadata for calibration."""
@@ -469,14 +478,16 @@ class RecommendationService:
                 # Send internal alert
                 try:
                     from app.services.risk_block_alert_service import risk_block_alert_service
-                    await risk_block_alert_service.send_daily_risk_limit_alert(
-                        user_id=user_id,
-                        daily_risk_pct=total_risk_pct,
-                        daily_limit_pct=daily_risk_limit_pct,
-                        context_data={
-                            "equity": ctx.equity,
-                            "trades_count": activity_summary.trades_count if activity_summary else None,
-                        },
+                    self._schedule_async_task(
+                        risk_block_alert_service.send_daily_risk_limit_alert(
+                            user_id=user_id,
+                            daily_risk_pct=total_risk_pct,
+                            daily_limit_pct=daily_risk_limit_pct,
+                            context_data={
+                                "equity": ctx.equity,
+                                "trades_count": activity_summary.trades_count if activity_summary else None,
+                            },
+                        )
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send daily risk limit alert: {e}", exc_info=True)

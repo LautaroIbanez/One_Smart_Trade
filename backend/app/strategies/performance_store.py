@@ -222,7 +222,7 @@ class StrategyPerformanceStore:
             mfe_values = []
 
             for row in rows:
-                metadata = row.metadata or {}
+                metadata = row.context_metadata or {}
                 trade_efficiency = metadata.get("trade_efficiency", {})
                 metrics = trade_efficiency.get("metrics", {})
 

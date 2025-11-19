@@ -436,6 +436,12 @@ def save_backtest_result(db: Session, version: str, start_date: str, end_date: s
     return result
 
 
+def get_latest_backtest_result(db: Session) -> BacktestResultORM | None:
+    """Return the most recent backtest result if present."""
+    stmt = select(BacktestResultORM).order_by(desc(BacktestResultORM.created_at)).limit(1)
+    return db.execute(stmt).scalars().first()
+
+
 def get_backtest_results(db: Session, limit: int = 10) -> list[BacktestResultORM]:
     stmt = select(BacktestResultORM).order_by(desc(BacktestResultORM.created_at)).limit(limit)
     return list(db.execute(stmt).scalars().all())
@@ -1205,7 +1211,7 @@ def create_knowledge_engagement(
         user_id=user_uuid,
         article_id=article_id,
         engagement_type=engagement_type,
-        metadata=metadata or {},
+        engagement_metadata=metadata or {},
     )
     db.add(engagement)
     db.commit()

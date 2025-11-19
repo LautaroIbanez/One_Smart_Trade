@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from app.core.logging import logger
-from app.data.exchanges.base import ExchangeClient
+from app.data.exchanges.base import ExchangeDataSource
 from app.data.storage import ensure_partition_dirs, get_raw_path, write_parquet
 
 
@@ -144,7 +144,7 @@ class OrderBookCollector:
 
     def __init__(
         self,
-        exchange_client: ExchangeClient,
+        exchange_client: ExchangeDataSource,
         symbol: str,
         *,
         interval_seconds: int = 5,
@@ -155,7 +155,7 @@ class OrderBookCollector:
         Initialize order book collector.
         
         Args:
-            exchange_client: Exchange client for fetching order books
+            exchange_client: Exchange data source for fetching order books
             symbol: Trading symbol
             interval_seconds: Snapshot interval in seconds (default: 5)
             depth_levels: Number of levels to keep (L1-L10, default: 10)

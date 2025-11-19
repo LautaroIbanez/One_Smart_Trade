@@ -2,7 +2,7 @@
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.backtesting.position import Position, PositionConfig, PositionManager, PositionSide
@@ -207,7 +207,7 @@ async def get_all_positions() -> dict[str, Any]:
 
 @router.post("/check-exits")
 async def check_exit_conditions(
-    prices: dict[str, float] = Field(..., description="Dict of symbol -> current_price"),
+    prices: dict[str, float] = Body(..., description="Dict of symbol -> current_price"),
 ) -> dict[str, Any]:
     """
     Check exit conditions for all positions given current prices.

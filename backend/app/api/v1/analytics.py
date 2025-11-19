@@ -55,7 +55,7 @@ async def get_latest_run_id() -> dict[str, Any]:
 
 
 class LivelihoodRequest(BaseModel):
-    monthly_returns: conlist(float, min_items=3) = Field(..., description="Monthly return series as decimals, e.g., 0.02 for +2%")
+    monthly_returns: conlist(float, min_length=3) = Field(..., description="Monthly return series as decimals, e.g., 0.02 for +2%")
     expenses_target: float = Field(0.0, ge=0.0, description="Target monthly expenses in USD")
     trials: int = Field(10_000, ge=1000, le=100_000)
     horizon_months: int = Field(36, ge=6, le=120)

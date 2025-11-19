@@ -1,3 +1,10 @@
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+_DEFAULT_REPORT_PATH = Path(__file__).resolve().parents[3] / "docs" / "backtest-report.md"
+
+
 def _render_operational_section(operational_report: dict[str, Any] | None) -> str:
     """Render operational flow section with fill rates, tracking error, and stop rebalancing."""
     if not operational_report:
@@ -71,3 +78,25 @@ def _render_operational_section(operational_report: dict[str, Any] | None) -> st
         section += f"- **Avg Imbalance**: {orderbook_metrics.get('avg_imbalance_pct', 0.0):.2f}%\n\n"
     
     return section
+
+
+def build_campaign_report(
+    operational_report: dict[str, Any] | None = None,
+    *,
+    output_path: str | Path | None = None,
+) -> str:
+    """Generate a lightweight markdown report for the latest campaign."""
+    target_path = Path(output_path) if output_path else _DEFAULT_REPORT_PATH
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    header_lines = [
+        "# Backtest Report - One Smart Trade",
+        "",
+        "> **Nota:** Reporte generado automáticamente por el motor de backtesting.",
+        f"> **Generado:** {datetime.utcnow():%Y-%m-%d %H:%M:%S} UTC",
+        "",
+    ]
+    operational_section = _render_operational_section(operational_report)
+    content = "\n".join(header_lines) + operational_section
+    target_path.write_text(content, encoding="utf-8")
+    return str(target_path)

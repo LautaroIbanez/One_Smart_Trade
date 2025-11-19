@@ -1,4 +1,6 @@
 """Prometheus metrics for execution and tracking error monitoring."""
+from typing import Any
+
 from prometheus_client import Counter, Gauge, Histogram
 
 # Execution metrics

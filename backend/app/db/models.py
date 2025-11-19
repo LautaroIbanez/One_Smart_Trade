@@ -81,7 +81,7 @@ class SignalOutcomeORM(Base):
     market_regime: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     vol_bucket: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     features_regimen: Mapped[dict] = mapped_column(JSON, default=dict)
-    metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_metadata: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     outcome: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     horizon_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -178,6 +178,30 @@ class ExportAuditORM(Base):
     export_params: Mapped[dict] = mapped_column(JSON, default={})
     exported_by: Mapped[str] = mapped_column(String(128), default="anonymous", index=True)  # User ID or identifier
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ExposureLedgerORM(Base):
+    """Track user positions and aggregate exposure."""
+
+    __tablename__ = "exposure_ledger"
+    __table_args__ = (
+        UniqueConstraint("user_id", "recommendation_id", name="uq_exposure_ledger_user_recommendation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), nullable=False, index=True)
+    recommendation_id: Mapped[int] = mapped_column(Integer, ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    notional: Mapped[float] = mapped_column(Float, nullable=False)
+    beta_bucket: Mapped[str] = mapped_column(String(16), nullable=False, default="high")
+    beta_value: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class PeriodicHorizon(str, Enum):
@@ -313,7 +337,7 @@ class KnowledgeEngagementORM(Base):
     user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
     article_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     engagement_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # download|view|share|complete
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Additional context (device, referrer, etc.)
+    engagement_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)  # Additional context (device, referrer, etc.)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
 
 

@@ -1,6 +1,8 @@
 """Observability endpoints for public/private dashboard."""
-from fastapi import APIRouter, HTTPException, Query
+import json
 from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query
 from prometheus_client import REGISTRY, Gauge
 
 from app.core.logging import logger
@@ -49,7 +51,7 @@ DEGRADATION_THRESHOLD_PCT = 20.0  # 20% degradation triggers alert
 @router.get("/public/dashboard")
 async def get_public_dashboard(
     include_alerts: bool = Query(True, description="Include degradation alerts"),
-    threshold_override: dict[str, float] | None = Query(None, description="Override default thresholds"),
+    threshold_override: str | None = Query(None, description="Override default thresholds as JSON object"),
 ) -> dict[str, Any]:
     """
     Public observability dashboard with key metrics and alerts.
@@ -61,8 +63,9 @@ async def get_public_dashboard(
     """
     try:
         thresholds = {**DEFAULT_THRESHOLDS}
-        if threshold_override:
-            thresholds.update(threshold_override)
+        override_dict = _parse_threshold_override(threshold_override)
+        if override_dict:
+            thresholds.update(override_dict)
         
         # Get current metrics from Prometheus
         metrics = _collect_prometheus_metrics()
@@ -128,7 +131,7 @@ async def get_public_metrics() -> dict[str, Any]:
 @router.get("/private/dashboard")
 async def get_private_dashboard(
     include_alerts: bool = Query(True, description="Include degradation alerts"),
-    threshold_override: dict[str, float] | None = Query(None, description="Override default thresholds"),
+    threshold_override: str | None = Query(None, description="Override default thresholds as JSON object"),
     degradation_threshold_pct: float = Query(DEGRADATION_THRESHOLD_PCT, description="Degradation threshold percentage"),
 ) -> dict[str, Any]:
     """
@@ -143,8 +146,9 @@ async def get_private_dashboard(
     """
     try:
         thresholds = {**DEFAULT_THRESHOLDS}
-        if threshold_override:
-            thresholds.update(threshold_override)
+        override_dict = _parse_threshold_override(threshold_override)
+        if override_dict:
+            thresholds.update(override_dict)
         
         # Get comprehensive metrics
         metrics = _collect_prometheus_metrics()
@@ -185,6 +189,25 @@ async def get_private_dashboard(
     except Exception as e:
         logger.error(f"Error generating private dashboard: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _parse_threshold_override(raw: str | None) -> dict[str, float] | None:
+    """Parse threshold overrides passed via query string."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="threshold_override must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="threshold_override must be a JSON object")
+    clean: dict[str, float] = {}
+    for key, value in parsed.items():
+        try:
+            clean[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return clean
 
 
 def _collect_prometheus_metrics() -> dict[str, Any]:
