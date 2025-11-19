@@ -58,12 +58,32 @@ class DailyStrategyAdapter:
         Generate signal from bar context (StrategyProtocol interface).
         
         Args:
-            context: Bar context with 'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            context: Bar context with 'bar' (Series with timestamp index), 'equity', 'drawdown', etc.
         
         Returns:
             Signal dict with 'action' (BUY/SELL/HOLD), 'entry', 'stop_loss', 'take_profit'
         """
-        timestamp = pd.to_datetime(context.get("timestamp"))
+        # Extract timestamp from bar Series (index) or context
+        bar = context.get("bar")
+        if bar is not None and hasattr(bar, "name") and bar.name is not None:
+            timestamp = pd.to_datetime(bar.name)
+            # Ensure timestamp is timezone-aware UTC
+            if isinstance(timestamp, pd.Timestamp):
+                if timestamp.tz is None:
+                    timestamp = timestamp.tz_localize("UTC")
+                else:
+                    timestamp = timestamp.tz_convert("UTC")
+        elif "timestamp" in context and context["timestamp"] is not None:
+            timestamp = pd.to_datetime(context["timestamp"])
+            # Ensure timestamp is timezone-aware UTC
+            if isinstance(timestamp, pd.Timestamp):
+                if timestamp.tz is None:
+                    timestamp = timestamp.tz_localize("UTC")
+                else:
+                    timestamp = timestamp.tz_convert("UTC")
+        else:
+            # Fallback: return HOLD if no timestamp available
+            return {"action": "hold"}
         
         # Derive seed from timestamp (date) to match production behavior
         # This ensures the same date produces the same seed in both backtest and production
@@ -84,6 +104,7 @@ class DailyStrategyAdapter:
             daily_seed = self.fallback_seed
         
         # Slice dataframes up to current timestamp
+        # Ensure timestamp comparison works with timezone-aware indices
         df_1h = self.df_1h_full[self.df_1h_full.index <= timestamp].copy()
         df_1d = self.df_1d_full[self.df_1d_full.index <= timestamp].copy()
         

@@ -712,19 +712,23 @@ class BacktestEngine:
 
     def _get_equity_at_or_before(
         self,
-        target_timestamp: pd.Timestamp,
+        target_timestamp: pd.Timestamp | None,
         state: BacktestState,
     ) -> float | None:
         """
         Get equity value at or before target timestamp.
         
         Args:
-            target_timestamp: Target timestamp
+            target_timestamp: Target timestamp (can be None/NaT)
             state: BacktestState with equity curve DataFrame
             
         Returns:
-            Equity value at or before timestamp, or None if not found
+            Equity value at or before timestamp, or None if not found or target is None/NaT
         """
+        # Guard clause: return None if target_timestamp is None or NaT
+        if target_timestamp is None or pd.isna(target_timestamp):
+            return None
+        
         if state.equity_curve.empty:
             return None
         
@@ -913,7 +917,29 @@ class BacktestEngine:
             raise ValueError(f"Failed to load candle data: {str(exc)}") from exc
 
         # Initialize state
-        initial_timestamp = start_ts
+        # Ensure initial_timestamp is valid - use first bar_date if start_ts is None/NaT
+        if start_ts is None or pd.isna(start_ts):
+            # Use first timestamp from candle series
+            if not candle_series.data.empty:
+                initial_timestamp = candle_series.data.index[0]
+                # Ensure it's timezone-aware UTC
+                if isinstance(initial_timestamp, pd.Timestamp):
+                    if initial_timestamp.tz is None:
+                        initial_timestamp = initial_timestamp.tz_localize("UTC")
+                    else:
+                        initial_timestamp = initial_timestamp.tz_convert("UTC")
+            else:
+                # Last resort: use current time
+                initial_timestamp = pd.Timestamp.now(tz="UTC")
+        else:
+            initial_timestamp = start_ts
+            # Ensure it's timezone-aware UTC
+            if isinstance(initial_timestamp, pd.Timestamp):
+                if initial_timestamp.tz is None:
+                    initial_timestamp = initial_timestamp.tz_localize("UTC")
+                else:
+                    initial_timestamp = initial_timestamp.tz_convert("UTC")
+        
         initial_equity_df = pd.DataFrame({
             "timestamp": [initial_timestamp],
             "equity_theoretical": [initial_capital],
