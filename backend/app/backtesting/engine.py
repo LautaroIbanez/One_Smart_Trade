@@ -311,10 +311,90 @@ class BacktestEngine:
         self.gap_threshold_multiplier = gap_threshold_multiplier
 
     def _load_candle_series(self, request: BacktestRunRequest) -> CandleSeries:
-        """Load and normalize candle series from curated data."""
-        path = get_curated_path("binance", request.instrument, request.timeframe)
+        """
+        Load and normalize candle series from curated data.
+        
+        Tries to load from latest.parquet first, then falls back to the most recent
+        parquet file in the curated directory if latest.parquet doesn't exist.
+        Also falls back to legacy flat structure if partitioned structure is empty.
+        """
+        venue = "binance"  # Default venue
+        symbol = request.instrument
+        interval = request.timeframe
+        
+        # Try partitioned structure first (venue/symbol/interval/latest.parquet)
+        path = get_curated_path(venue, symbol, interval)
+        
+        # If latest.parquet doesn't exist, find the most recent parquet file
         if not path.exists():
-            raise FileNotFoundError(f"Candle data not found: {path}")
+            curated_dir = path.parent
+            if curated_dir.exists():
+                # Find all parquet files in the directory
+                parquet_files = sorted(curated_dir.glob("*.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if parquet_files:
+                    path = parquet_files[0]
+                    logger.info(
+                        f"Using most recent curated file: {path.name} (latest.parquet not found)",
+                        extra={
+                            "venue": venue,
+                            "symbol": symbol,
+                            "interval": interval,
+                            "file": path.name,
+                            "directory": str(curated_dir),
+                        },
+                    )
+                else:
+                    # Fallback to legacy flat structure (interval/latest.parquet)
+                    from app.data.storage import CURATED_ROOT
+                    legacy_path = CURATED_ROOT / interval / "latest.parquet"
+                    if legacy_path.exists():
+                        path = legacy_path
+                        logger.info(
+                            f"Using legacy curated file structure (partitioned structure is empty)",
+                            extra={
+                                "venue": venue,
+                                "symbol": symbol,
+                                "interval": interval,
+                                "legacy_path": str(legacy_path),
+                            },
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"No curated data available for {venue}/{symbol}/{interval}. "
+                            f"Tried partitioned path: {curated_dir} (empty) and legacy path: {legacy_path} (not found). "
+                            f"Run the curation pipeline first to generate curated data."
+                        )
+            else:
+                # Directory doesn't exist, try legacy structure
+                from app.data.storage import CURATED_ROOT
+                legacy_path = CURATED_ROOT / interval / "latest.parquet"
+                if legacy_path.exists():
+                    path = legacy_path
+                    logger.info(
+                        f"Using legacy curated file structure (partitioned directory doesn't exist)",
+                        extra={
+                            "venue": venue,
+                            "symbol": symbol,
+                            "interval": interval,
+                            "legacy_path": str(legacy_path),
+                        },
+                    )
+                else:
+                    raise FileNotFoundError(
+                        f"No curated data directory found for {venue}/{symbol}/{interval}. "
+                        f"Tried partitioned path: {curated_dir} (doesn't exist) and legacy path: {legacy_path} (not found). "
+                        f"Run the curation pipeline first to generate curated data."
+                    )
+
+        logger.info(
+            f"Loading candle data from: {path}",
+            extra={
+                "venue": venue,
+                "symbol": symbol,
+                "interval": interval,
+                "path": str(path),
+            },
+        )
 
         df = read_parquet(path)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -325,7 +405,10 @@ class BacktestEngine:
         df_filtered = df[mask].copy()
 
         if len(df_filtered) == 0:
-            raise ValueError(f"No data in range {request.start_date} to {request.end_date}")
+            raise ValueError(
+                f"No data in range {request.start_date} to {request.end_date}. "
+                f"Available data range: {df.index.min()} to {df.index.max()}"
+            )
 
         return CandleSeries(
             symbol=request.instrument,
@@ -690,14 +773,34 @@ class BacktestEngine:
         )
 
         if not request.strategy:
-            return {"error": "strategy_required", "error_type": "validation"}
+            raise ValueError("strategy_required: Strategy is required for backtest")
 
         # Load data
         try:
             candle_series = self._load_candle_series(request)
+        except FileNotFoundError as exc:
+            # Re-raise FileNotFoundError as-is (it's a clear business error)
+            logger.error(
+                "Failed to load candle data",
+                extra={
+                    "error": str(exc),
+                    "venue": "binance",
+                    "symbol": instrument,
+                    "interval": timeframe,
+                },
+            )
+            raise
         except Exception as exc:
-            logger.error("Failed to load candle data", extra={"error": str(exc)})
-            return {"error": str(exc), "error_type": "data_load"}
+            logger.error(
+                "Failed to load candle data",
+                extra={
+                    "error": str(exc),
+                    "venue": "binance",
+                    "symbol": instrument,
+                    "interval": timeframe,
+                },
+            )
+            raise ValueError(f"Failed to load candle data: {str(exc)}") from exc
 
         # Initialize state
         initial_timestamp = start_ts
@@ -1344,6 +1447,9 @@ class BacktestEngine:
         return {
             "start_date": start_ts.isoformat(),
             "end_date": end_ts.isoformat(),
+            "symbol": instrument,
+            "venue": "binance",  # Default venue
+            "interval": timeframe,
             "initial_capital": initial_capital,
             "final_capital": final_capital,
             "trades": trades,

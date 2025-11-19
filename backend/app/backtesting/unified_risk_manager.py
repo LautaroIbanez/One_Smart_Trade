@@ -1,6 +1,7 @@
 """Unified Risk Manager integrating sizing, drawdown, shutdown, and ruin simulation."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
+from app.core.config import settings
 from app.backtesting.risk import RuinSimulator
 from app.backtesting.risk_sizing import (
     AdaptiveRiskSizer,
@@ -366,6 +368,11 @@ class UnifiedRiskManager:
         """
         Check if trading should be shut down based on drawdown or performance.
         
+        This method respects the same dev/prod behavior as RecommendationService:
+        - In dev/test with missing Sharpe history and AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV=True,
+          the shutdown guardrail is bypassed (returns shutdown=False with a warning).
+        - In prod, real shutdown states block sizing.
+        
         Returns:
             Dict with shutdown status, reason, and size reduction info
         """
@@ -381,18 +388,42 @@ class UnifiedRiskManager:
             equity_curve=None,  # Can be calculated from trade history if needed
         )
         
-        # Evaluate shutdown
-        self.shutdown_manager.evaluate(metrics)
+        # Evaluate shutdown and get status
+        status = self.shutdown_manager.evaluate(metrics)
         
-        shutdown_active = self.shutdown_manager.is_shutdown_active()
-        size_reduction_active = self.shutdown_manager.is_size_reduction_active()
+        # Check if this is a "missing data" case in dev environment (same logic as RecommendationService)
+        env = os.getenv("ENV", "dev").lower()
+        is_dev = env in ("dev", "test", "development")
+        is_missing_data = "Insufficient performance history" in (status.get("shutdown_reason") or "")
+        allow_bypass = is_dev and is_missing_data and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
+        
+        # Use the status dict directly (new API) or fall back to helper methods (backwards compatibility)
+        shutdown_active = status.get("shutdown", False) or status.get("is_shutdown", False)
+        
+        # Apply dev bypass for missing data
+        if allow_bypass and shutdown_active:
+            shutdown_active = False
+            # Log warning (similar to RecommendationService)
+            from app.core.logging import logger
+            logger.warning(
+                "Auto-shutdown guardrail bypassed in dev due to missing performance history (UnifiedRiskManager)",
+                extra={
+                    "environment": env,
+                    "shutdown_reason": status.get("shutdown_reason"),
+                    "rolling_sharpe": status.get("rolling_sharpe"),
+                    "has_sharpe_data": status.get("has_sharpe_data", False),
+                    "lookback_trades": status.get("lookback_trades"),
+                },
+            )
+        
+        size_reduction_active = status.get("size_reduction", False) or (status.get("size_reduction_factor", 1.0) < 1.0)
         
         return {
             "shutdown": shutdown_active,
-            "reason": self.shutdown_manager.get_shutdown_reason() if shutdown_active else None,
+            "reason": status.get("shutdown_reason") or self.shutdown_manager.get_shutdown_reason() if shutdown_active else None,
             "size_reduction": size_reduction_active,
-            "size_reduction_factor": self.shutdown_manager.get_size_multiplier(),
-            "size_reduction_reason": self.shutdown_manager.get_size_reduction_reason() if size_reduction_active else None,
+            "size_reduction_factor": status.get("size_reduction_factor", status.get("current_size_factor", 1.0)),
+            "size_reduction_reason": status.get("size_reduction_reason") or self.shutdown_manager.get_size_reduction_reason() if size_reduction_active else None,
         }
 
     def simulate_ruin(

@@ -244,9 +244,6 @@ async def job_daily_pipeline() -> None:
             recommendation = await service.generate_recommendation()
             signal_duration = time.time() - signal_start
             
-            if recommendation is None:
-                raise ValueError("generate_recommendation returned None")
-            
             valid_signals = {"BUY", "SELL", "HOLD"}
             failure_statuses = {
                 "capital_missing",
@@ -308,7 +305,7 @@ async def job_daily_pipeline() -> None:
             }
             # Add recommendation generation error details if available
             if hasattr(exc, "status") and hasattr(exc, "details"):
-                from app.core.exceptions import RecommendationGenerationError
+                # RecommendationGenerationError is already imported at the top of the file
                 if isinstance(exc, RecommendationGenerationError):
                     error_details["recommendation_status"] = exc.status
                     error_details["recommendation_details"] = exc.details

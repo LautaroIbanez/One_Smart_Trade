@@ -171,22 +171,24 @@ def generate_signal(df_1h: pd.DataFrame, df_1d: pd.DataFrame, *, mc_trials: int 
         if "open_time" in df_1d.columns:
             latest_date = df_1d["open_time"].iloc[-1]
             if hasattr(latest_date, "date"):
-                date_str = latest_date.date().isoformat()
+                seed_date = latest_date.date()
             elif hasattr(latest_date, "strftime"):
-                date_str = latest_date.strftime("%Y-%m-%d")
+                seed_date = latest_date
             else:
-                date_str = str(latest_date)[:10]
+                seed_date = str(latest_date)[:10]
         else:
             # Fallback: use current date
             from datetime import datetime
-            date_str = datetime.utcnow().date().isoformat()
-        
+
+            seed_date = datetime.utcnow().date()
+
         # Extract symbol from dataframe if available
         symbol = "BTCUSDT"  # Default
         if "symbol" in df_1d.columns:
             symbol = str(df_1d["symbol"].iloc[-1]) if not df_1d["symbol"].empty else "BTCUSDT"
-        
-        seed = generate_deterministic_seed(date_str, symbol)
+
+        # Deterministic seed per (date, symbol) pair
+        seed = generate_deterministic_seed(seed_date, symbol)
 
     # Calculate indicators
     ind_1d = ind.calculate_all(df_1d)

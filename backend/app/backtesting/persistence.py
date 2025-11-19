@@ -293,7 +293,26 @@ def save_backtest_result(
 
     Returns:
         Dict with path, checksum, and metadata
+        
+    Raises:
+        ValueError: If backtest_result is missing required fields
     """
+    # Validate required fields
+    required_fields = ["start_date", "end_date", "initial_capital", "final_capital", "trades"]
+    missing_fields = [field for field in required_fields if field not in backtest_result]
+    
+    if missing_fields:
+        error_msg = f"Backtest result is missing required fields: {', '.join(missing_fields)}"
+        logger.error(
+            error_msg,
+            extra={
+                "missing_fields": missing_fields,
+                "available_fields": list(backtest_result.keys()),
+                "error_type": "validation",
+            },
+        )
+        raise ValueError(error_msg)
+    
     if run_id is None:
         run_id = hashlib.md5(
             f"{backtest_result['start_date']}_{backtest_result['end_date']}_{backtest_result.get('data_hash', '')}".encode()

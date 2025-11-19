@@ -20,6 +20,10 @@ from app.core.database import SessionLocal
 from app.core.exceptions import DataFreshnessError, DataGapError, RecommendationGenerationError, RiskValidationError
 from sqlalchemy import and_, case, desc, func, or_, select
 from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
+from app.backtesting.daily_strategy_adapter import DailyStrategyAdapter
+from app.backtesting.engine import BacktestEngine
+from app.backtesting.metrics import calculate_metrics
+from app.backtesting.persistence import save_backtest_result
 from app.backtesting.risk_sizing import RiskSizer
 from app.backtesting.tracking_error import TrackingErrorCalculator, calculate_tracking_error
 from app.backtesting.unified_risk_manager import UnifiedRiskManager
@@ -1743,9 +1747,13 @@ class RecommendationService:
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
             return {"status": "invalid", "reason": str(exc)}
-        except Exception:
+        except Exception as exc:
             logger.exception("Unexpected error during signal generation")
-            return None
+            raise RecommendationGenerationError(
+                status="error",
+                reason="signal_engine_exception",
+                details={"message": str(exc)},
+            ) from exc
         analysis = build_narrative(signal)
         signal["analysis"] = analysis
         if self._champion_cache:
@@ -1859,10 +1867,11 @@ class RecommendationService:
                 
             except Exception as e:
                 logger.error(f"Backtest execution failed: {e}", exc_info=True)
-                return {
-                    "status": "backtest_error",
-                    "reason": f"Backtest execution failed: {str(e)}",
-                }
+                raise RecommendationGenerationError(
+                    status="backtest_error",
+                    reason=f"Backtest execution failed: {str(e)}",
+                    details={"error": str(e), "error_type": type(e).__name__},
+                ) from e
 
         # Build execution plan before audit (needed for audit check)
         sizing_result = self._calculate_position_sizing(signal, user_id=None)

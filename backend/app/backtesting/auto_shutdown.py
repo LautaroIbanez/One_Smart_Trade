@@ -335,6 +335,79 @@ class AutoShutdownManager:
             return 0.0
         return self.size_reduction_factor
 
+    def is_shutdown_active(self) -> bool:
+        """
+        Backwards-compatible helper used by UnifiedRiskManager.
+        
+        Returns True if the shutdown guardrail is active, False otherwise.
+        This method provides a simple boolean interface for components that
+        only need to know if shutdown is active, without needing full status details.
+        
+        Returns:
+            True if shutdown is active, False otherwise
+        """
+        return self.is_shutdown
+
+    def is_size_reduction_active(self) -> bool:
+        """
+        Backwards-compatible helper used by UnifiedRiskManager.
+        
+        Returns True if size reduction is active (but not full shutdown).
+        
+        Returns:
+            True if size reduction is active, False otherwise
+        """
+        return self.size_reduction_factor < 1.0 and not self.is_shutdown
+
+    def get_shutdown_reason(self) -> str:
+        """
+        Backwards-compatible helper used by UnifiedRiskManager.
+        
+        Returns the current shutdown reason, or empty string if not shutdown.
+        
+        Returns:
+            Shutdown reason string
+        """
+        return self.shutdown_reason
+
+    def get_size_reduction_reason(self) -> str:
+        """
+        Backwards-compatible helper used by UnifiedRiskManager.
+        
+        Returns the current size reduction reason, or empty string if not active.
+        
+        Returns:
+            Size reduction reason string
+        """
+        return self.size_reduction_reason if self.size_reduction_factor < 1.0 else ""
+
+    def get_status(self, metrics: StrategyMetrics | None = None) -> dict[str, Any]:
+        """
+        Get current shutdown status.
+        
+        If metrics are provided, evaluates the policy first.
+        Otherwise, returns the current cached status.
+        
+        Args:
+            metrics: Optional strategy metrics to evaluate (if None, returns cached status)
+            
+        Returns:
+            Dict with shutdown status, reasons, and metrics
+        """
+        if metrics is not None:
+            return self.evaluate(metrics)
+        
+        # Return cached status
+        return {
+            "shutdown": self.is_shutdown,
+            "is_shutdown": self.is_shutdown,
+            "shutdown_reason": self.shutdown_reason,
+            "size_reduction": self.size_reduction_factor < 1.0,
+            "size_reduction_factor": self.size_reduction_factor,
+            "size_reduction_reason": self.size_reduction_reason,
+            "current_size_factor": self.size_reduction_factor,
+        }
+
     def reset(self) -> None:
         """Reset shutdown state (for manual override)."""
         self.is_shutdown = False
