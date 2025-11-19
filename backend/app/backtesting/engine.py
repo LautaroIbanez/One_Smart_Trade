@@ -54,18 +54,48 @@ class CandleSeries:
 
     def __post_init__(self) -> None:
         """Validate and normalize candle data."""
-        required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        # Check if timestamp exists as index or column
+        has_timestamp_index = isinstance(self.data.index, pd.DatetimeIndex)
+        has_timestamp_col = "timestamp" in self.data.columns
+        has_open_time_col = "open_time" in self.data.columns
+        
+        # If timestamp is already the index, we're good
+        if has_timestamp_index:
+            # Ensure required OHLCV columns exist
+            required_cols = ["open", "high", "low", "close", "volume"]
+            missing = [c for c in required_cols if c not in self.data.columns]
+            if missing:
+                raise ValueError(f"Missing required columns: {missing}")
+            # Sort by timestamp
+            self.data = self.data.sort_index()
+            return
+        
+        # If timestamp is a column, use it as index
+        if has_timestamp_col:
+            self.data["timestamp"] = pd.to_datetime(self.data["timestamp"])
+            # Ensure UTC timezone
+            if self.data["timestamp"].dt.tz is None:
+                self.data["timestamp"] = self.data["timestamp"].dt.tz_localize("UTC")
+            else:
+                self.data["timestamp"] = self.data["timestamp"].dt.tz_convert("UTC")
+            self.data = self.data.set_index("timestamp")
+        elif has_open_time_col:
+            # Fallback: derive timestamp from open_time
+            self.data["timestamp"] = pd.to_datetime(self.data["open_time"])
+            # Ensure UTC timezone
+            if self.data["timestamp"].dt.tz is None:
+                self.data["timestamp"] = self.data["timestamp"].dt.tz_localize("UTC")
+            else:
+                self.data["timestamp"] = self.data["timestamp"].dt.tz_convert("UTC")
+            self.data = self.data.set_index("timestamp")
+        else:
+            raise ValueError("No timestamp column/index or open_time column found")
+        
+        # Validate required OHLCV columns
+        required_cols = ["open", "high", "low", "close", "volume"]
         missing = [c for c in required_cols if c not in self.data.columns]
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
-
-        # Ensure timestamp is datetime index
-        if not isinstance(self.data.index, pd.DatetimeIndex):
-            if "timestamp" in self.data.columns:
-                self.data["timestamp"] = pd.to_datetime(self.data["timestamp"])
-                self.data = self.data.set_index("timestamp")
-            else:
-                raise ValueError("No timestamp column or index found")
 
         # Sort by timestamp
         self.data = self.data.sort_index()
@@ -397,16 +427,61 @@ class BacktestEngine:
         )
 
         df = read_parquet(path)
+        
+        # Ensure timestamp column exists (fallback to open_time if needed)
+        if "timestamp" not in df.columns:
+            if "open_time" in df.columns:
+                logger.warning(
+                    "timestamp column not found, deriving from open_time",
+                    extra={
+                        "venue": venue,
+                        "symbol": symbol,
+                        "interval": interval,
+                        "path": str(path),
+                    },
+                )
+                df["timestamp"] = pd.to_datetime(df["open_time"])
+                # Ensure timestamp is timezone-aware and in UTC
+                if df["timestamp"].dt.tz is None:
+                    df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+                else:
+                    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+            else:
+                raise ValueError(
+                    f"Dataset missing both 'timestamp' and 'open_time' columns. "
+                    f"Available columns: {list(df.columns)}"
+                )
+        
+        # Convert timestamp to datetime and set as index
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+        # Ensure UTC timezone
+        if df["timestamp"].dt.tz is None:
+            df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+        else:
+            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+        
         df = df.set_index("timestamp")
 
         # Filter by date range
-        mask = (df.index >= request.start_date) & (df.index <= request.end_date)
+        # Ensure request dates are timezone-aware for comparison
+        start_date = pd.to_datetime(request.start_date)
+        if start_date.tz is None:
+            start_date = start_date.tz_localize("UTC")
+        else:
+            start_date = start_date.tz_convert("UTC")
+        
+        end_date = pd.to_datetime(request.end_date)
+        if end_date.tz is None:
+            end_date = end_date.tz_localize("UTC")
+        else:
+            end_date = end_date.tz_convert("UTC")
+        
+        mask = (df.index >= start_date) & (df.index <= end_date)
         df_filtered = df[mask].copy()
 
         if len(df_filtered) == 0:
             raise ValueError(
-                f"No data in range {request.start_date} to {request.end_date}. "
+                f"No data in range {start_date} to {end_date}. "
                 f"Available data range: {df.index.min()} to {df.index.max()}"
             )
 

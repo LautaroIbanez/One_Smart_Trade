@@ -233,6 +233,23 @@ class DataCuration:
             df["symbol"] = symbol
             ensure_partition_dirs(venue, symbol, interval)
 
+        # Ensure timestamp column exists for backtest compatibility
+        # If open_time exists but timestamp doesn't, create timestamp from open_time
+        if "timestamp" not in df.columns and "open_time" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["open_time"])
+            # Ensure timestamp is timezone-aware and in UTC
+            if df["timestamp"].dt.tz is None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
+            else:
+                df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+        elif "timestamp" in df.columns:
+            # Ensure existing timestamp is in UTC
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            if df["timestamp"].dt.tz is None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
+            else:
+                df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+
         curated_path.parent.mkdir(parents=True, exist_ok=True)
         write_parquet(
             df,
