@@ -452,9 +452,50 @@ def get_recommendation_history(db: Session, limit: int = 10) -> list[Recommendat
     return list(db.execute(stmt).scalars().all())
 
 
-def get_current_champion(db: Session) -> StrategyChampionORM | None:
-    stmt = select(StrategyChampionORM).where(StrategyChampionORM.is_active == True).order_by(desc(StrategyChampionORM.promoted_at)).limit(1)
-    return db.execute(stmt).scalars().first()
+def get_current_champion(
+    db: Session,
+    *,
+    environment: str | None = None,
+    symbol: str | None = None,
+    interval: str | None = None,
+) -> StrategyChampionORM | None:
+    """
+    Get the current active champion strategy.
+    
+    Args:
+        db: Database session
+        environment: Optional environment filter (not yet implemented in schema)
+        symbol: Optional symbol filter (not yet implemented in schema)
+        interval: Optional interval filter (not yet implemented in schema)
+    
+    Returns:
+        Active champion or None if none found. If multiple active champions exist,
+        returns the most recently promoted one.
+    """
+    stmt = select(StrategyChampionORM).where(StrategyChampionORM.is_active == True).order_by(desc(StrategyChampionORM.promoted_at))
+    
+    # TODO: Add environment/symbol/interval filters when schema supports them
+    # if environment:
+    #     stmt = stmt.where(StrategyChampionORM.environment == environment)
+    # if symbol:
+    #     stmt = stmt.where(StrategyChampionORM.symbol == symbol)
+    # if interval:
+    #     stmt = stmt.where(StrategyChampionORM.interval == interval)
+    
+    results = list(db.execute(stmt).scalars().all())
+    
+    if len(results) > 1:
+        from app.core.logging import logger
+        logger.warning(
+            f"Multiple active champions found ({len(results)}). Using most recently promoted: {results[0].params_id}",
+            extra={
+                "champion_count": len(results),
+                "selected_champion": results[0].params_id,
+                "all_champions": [r.params_id for r in results],
+            },
+        )
+    
+    return results[0] if results else None
 
 
 def get_champion_history(db: Session, limit: int = 10) -> list[StrategyChampionORM]:

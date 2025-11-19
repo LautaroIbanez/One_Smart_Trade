@@ -5,6 +5,7 @@ import asyncio
 import base64
 import csv
 import io
+import os
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -1121,10 +1122,16 @@ class RecommendationService:
         # Now safe to proceed with champion context and other operations
         champion = self._ensure_champion_context(run_alerts=True)
         if champion is None:
+            env = os.getenv("ENV", "dev").lower()
+            remediation = "Run 'python -m app.scripts.seed_champion_dev' to seed a dev champion" if env in ("dev", "test", "development") else "Set an active champion via API/CRUD"
             raise RecommendationGenerationError(
                 status="error",
                 reason="no_champion_configuration",
-                details={},
+                details={
+                    "environment": env,
+                    "remediation": remediation,
+                    "message": f"No active champion found in strategy_champions table. {remediation}.",
+                },
             )
 
         # PREVENTIVE VALIDATIONS: Check trade limits and daily risk BEFORE generating signal
@@ -2831,9 +2838,25 @@ class RecommendationService:
         """Load active champion, cache payload, and optionally run alerts."""
         champion = self._load_active_champion()
         if champion is None:
-            logger.error("No active champion configuration available")
+            env = os.getenv("ENV", "dev").lower()
+            logger.error(
+                "No active champion configuration available",
+                extra={
+                    "environment": env,
+                    "remediation": "Run 'python -m app.scripts.seed_champion_dev' to seed a dev champion, or set an active champion via API/CRUD",
+                },
+            )
             self._champion_cache = None
             return None
+        logger.info(
+            f"Using champion: {champion.params_id} (version={champion.params_version}, score={champion.score:.2f})",
+            extra={
+                "champion_id": champion.id,
+                "params_id": champion.params_id,
+                "params_version": champion.params_version,
+                "score": champion.score,
+            },
+        )
         self._champion_cache = self._champion_payload(champion)
         if run_alerts:
             self._check_risk_alerts(champion)
