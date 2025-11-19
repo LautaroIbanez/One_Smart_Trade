@@ -1,6 +1,6 @@
 """Add knowledge base and user readings tables.
 
-Revision ID: 012
+Revision ID: 012_add_knowledge_base
 Revises: 011
 Create Date: 2024-01-18 12:00:00.000000
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "012"
+revision: str = "012_add_knowledge_base"
 down_revision: Union[str, None] = "011"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

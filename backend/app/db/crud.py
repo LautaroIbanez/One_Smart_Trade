@@ -577,8 +577,24 @@ def create_data_run(
 def get_user_risk_state(db: Session, user_id: str | UUID) -> UserRiskStateORM | None:
     """Get user risk state."""
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
-    return db.get(UserRiskStateORM, user_uuid)
+
+    dialect = db.bind.dialect.name if db.bind else None
+    if isinstance(user_id, str):
+        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+    else:
+        user_uuid = user_id
+
+    try:
+        result = db.get(UserRiskStateORM, user_uuid)
+        if result is None and dialect == "sqlite":
+            stmt = select(UserRiskStateORM).where(UserRiskStateORM.__table__.c.user_id == str(user_id))
+            result = db.execute(stmt).scalars().first()
+        return result
+    except Exception:
+        if dialect == "sqlite":
+            stmt = select(UserRiskStateORM).where(UserRiskStateORM.__table__.c.user_id == str(user_id))
+            return db.execute(stmt).scalars().first()
+        raise
 
 
 def create_or_update_user_risk_state(
@@ -602,11 +618,16 @@ def create_or_update_user_risk_state(
 ) -> UserRiskStateORM:
     """Create or update user risk state."""
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
-    
+
+    dialect = db.bind.dialect.name if db.bind else None
+    if isinstance(user_id, str):
+        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+    else:
+        user_uuid = user_id
+
     state = db.get(UserRiskStateORM, user_uuid)
     now = datetime.utcnow()
-    
+
     if state is None:
         state = UserRiskStateORM(
             user_id=user_uuid,
@@ -657,7 +678,7 @@ def create_or_update_user_risk_state(
         if leverage_hard_stop_since is not None:
             state.leverage_hard_stop_since = leverage_hard_stop_since
         state.last_updated = now
-    
+
     db.commit()
     db.refresh(state)
     return state
@@ -682,7 +703,11 @@ def update_user_risk_state(
     from uuid import UUID
     from datetime import timedelta
     
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    dialect = db.bind.dialect.name if db.bind else None
+    if isinstance(user_id, str):
+        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+    else:
+        user_uuid = user_id
     now = datetime.utcnow()
     last_24h = now - timedelta(hours=24)
     
@@ -1000,7 +1025,11 @@ def record_leverage_alert(
 ) -> LeverageAlertORM:
     """Record a leverage alert event in the audit trail."""
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    dialect = db.bind.dialect.name if db.bind else None
+    if isinstance(user_id, str):
+        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+    else:
+        user_uuid = user_id
     
     alert = LeverageAlertORM(
         user_id=user_uuid,

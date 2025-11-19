@@ -25,6 +25,11 @@ class DataQualityPipeline:
         data.sort_values("open_time", inplace=True)
         data.reset_index(drop=True, inplace=True)
 
+        # Ensure open_time is a timezone-aware datetime index for interpolation
+        data["open_time"] = pd.to_datetime(data["open_time"], utc=True, errors="coerce")
+        data = data[~data["open_time"].isna()]
+        data.set_index("open_time", inplace=True)
+
         data["log_return"] = np.log(data["close"]).diff()
         return_std = data["log_return"].std(ddof=1)
         if return_std and not np.isclose(return_std, 0.0):
@@ -40,11 +45,14 @@ class DataQualityPipeline:
 
         data = self._winsorize(data)
 
-        data.interpolate(method="time", limit=self.interpolation_limit, inplace=True)
+        numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+        if numeric_cols:
+            data[numeric_cols] = data[numeric_cols].interpolate(method="time", limit=self.interpolation_limit)
         data.ffill(inplace=True)
         data.bfill(inplace=True)
 
         data.drop(columns=["log_return"], inplace=True, errors="ignore")
+        data.reset_index(inplace=True)
         return data
 
     def _winsorize(self, df: pd.DataFrame) -> pd.DataFrame:

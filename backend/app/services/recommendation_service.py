@@ -1862,7 +1862,6 @@ class RecommendationService:
             if suggested_sizing and not suggested_sizing.get("status"):
                 # Valid sizing, register position
                 try:
-                    from app.core.config import settings
                     symbol = signal.get("symbol", "BTCUSDT")
                     direction = signal.get("signal", "BUY")
                     notional = suggested_sizing.get("notional", 0.0)
