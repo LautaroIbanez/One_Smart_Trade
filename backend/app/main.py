@@ -264,12 +264,21 @@ async def job_daily_pipeline() -> None:
             
         except Exception as exc:
             signal_duration = time.time() - signal_start
-            outcome_details["steps"]["signal_generation"] = {
+            # Include additional details for RecommendationGenerationError
+            error_details = {
                 "status": "failed",
                 "duration_seconds": round(signal_duration, 2),
                 "error": str(exc),
                 "error_type": type(exc).__name__,
             }
+            # Add recommendation generation error details if available
+            if hasattr(exc, "status") and hasattr(exc, "details"):
+                from app.core.exceptions import RecommendationGenerationError
+                if isinstance(exc, RecommendationGenerationError):
+                    error_details["recommendation_status"] = exc.status
+                    error_details["recommendation_details"] = exc.details
+            
+            outcome_details["steps"]["signal_generation"] = error_details
             logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
             record_signal_generation(signal_duration, False, str(type(exc).__name__))
             raise

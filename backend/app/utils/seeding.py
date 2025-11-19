@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 
 
-def generate_deterministic_seed(date: str | datetime, symbol: str = "BTCUSDT") -> int:
+def generate_deterministic_seed(date: str | datetime | date, symbol: str = "BTCUSDT") -> int:
     """
     Generate a deterministic seed from date and symbol.
     
@@ -15,7 +15,7 @@ def generate_deterministic_seed(date: str | datetime, symbol: str = "BTCUSDT") -
     - Seed is reproducible across multiple executions
     
     Args:
-        date: Date string (YYYY-MM-DD) or datetime object
+        date: Date string (YYYY-MM-DD), datetime object, or date object
         symbol: Trading symbol (default: "BTCUSDT")
     
     Returns:
@@ -30,7 +30,7 @@ def generate_deterministic_seed(date: str | datetime, symbol: str = "BTCUSDT") -
         >>> assert seed1 != seed3  # Different date = different seed
     """
     # Normalize date to YYYYMMDD format
-    if isinstance(date, datetime):
+    if isinstance(date, (datetime, date)):
         date_str = date.strftime("%Y%m%d")
     elif isinstance(date, str):
         # Try to parse and normalize

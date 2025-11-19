@@ -36,3 +36,13 @@ class DataGapError(Exception):
         self.gaps = gaps
         self.tolerance_candles = tolerance_candles
         self.context_data = context_data or {}
+
+
+class RecommendationGenerationError(Exception):
+    """Exception raised when recommendation generation fails (audit failed, invalid, etc.)."""
+    
+    def __init__(self, status: str, reason: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+        self.details = details or {}

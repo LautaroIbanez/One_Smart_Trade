@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.backtesting.engine import StrategyProtocol
 from app.quant.signal_engine import DailySignalEngine
+from app.utils.seeding import generate_deterministic_seed
 
 
 class DailyStrategyAdapter:
@@ -23,6 +24,7 @@ class DailyStrategyAdapter:
         df_1h: pd.DataFrame,
         df_1d: pd.DataFrame,
         seed: int | None = None,
+        symbol: str = "BTCUSDT",
     ):
         """
         Initialize the adapter.
@@ -31,12 +33,15 @@ class DailyStrategyAdapter:
             signal_engine: The DailySignalEngine instance to wrap
             df_1h: Hourly dataframe (will be sliced per bar)
             df_1d: Daily dataframe (will be sliced per bar)
-            seed: Optional seed for deterministic signal generation
+            seed: Optional fallback seed (only used if date-based seed cannot be derived).
+                  If None, seed will be derived from timestamp in on_bar().
+            symbol: Trading symbol for seed generation (default: "BTCUSDT")
         """
         self.signal_engine = signal_engine
         self.df_1h_full = df_1h.copy()
         self.df_1d_full = df_1d.copy()
-        self.seed = seed
+        self.fallback_seed = seed  # Renamed to clarify it's only a fallback
+        self.symbol = symbol
         
         # Ensure dataframes have timestamp index
         if not isinstance(self.df_1h_full.index, pd.DatetimeIndex):
@@ -60,6 +65,24 @@ class DailyStrategyAdapter:
         """
         timestamp = pd.to_datetime(context.get("timestamp"))
         
+        # Derive seed from timestamp (date) to match production behavior
+        # This ensures the same date produces the same seed in both backtest and production
+        try:
+            # Extract date from timestamp
+            if hasattr(timestamp, "date"):
+                date_obj = timestamp.date()
+            elif hasattr(timestamp, "to_pydatetime"):
+                date_obj = timestamp.to_pydatetime().date()
+            else:
+                # Fallback: try to parse as string
+                date_obj = pd.to_datetime(str(timestamp)).date()
+            
+            # Generate deterministic seed from date (same as production)
+            daily_seed = generate_deterministic_seed(date_obj, self.symbol)
+        except Exception:
+            # If date extraction fails, use fallback seed or let engine generate it
+            daily_seed = self.fallback_seed
+        
         # Slice dataframes up to current timestamp
         df_1h = self.df_1h_full[self.df_1h_full.index <= timestamp].copy()
         df_1d = self.df_1d_full[self.df_1d_full.index <= timestamp].copy()
@@ -68,9 +91,10 @@ class DailyStrategyAdapter:
         if df_1h.empty or df_1d.empty:
             return {"action": "hold"}  # HOLD - no action
         
-        # Generate signal using DailySignalEngine
+        # Generate signal using DailySignalEngine with date-based seed
+        # This ensures same confidence for same date in both backtest and production
         try:
-            signal = self.signal_engine.generate(df_1h, df_1d, seed=self.seed)
+            signal = self.signal_engine.generate(df_1h, df_1d, seed=daily_seed)
             
             # Convert to backtest format
             signal_type = signal.get("signal", "HOLD")

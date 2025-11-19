@@ -15,7 +15,7 @@ import yaml
 from app.analytics.trade_efficiency import TradeEfficiencyAnalyzer, TradeEfficiencyEvaluation
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.exceptions import DataFreshnessError, DataGapError, RiskValidationError
+from app.core.exceptions import DataFreshnessError, DataGapError, RecommendationGenerationError, RiskValidationError
 from sqlalchemy import and_, case, desc, func, or_, select
 from app.backtesting.auto_shutdown import AutoShutdownManager, AutoShutdownPolicy, StrategyMetrics
 from app.backtesting.risk_sizing import RiskSizer
@@ -1110,7 +1110,11 @@ class RecommendationService:
         # Now safe to proceed with champion context and other operations
         champion = self._ensure_champion_context(run_alerts=True)
         if champion is None:
-            return {"status": "error", "reason": "no_champion_configuration"}
+            raise RecommendationGenerationError(
+                status="error",
+                reason="no_champion_configuration",
+                details={},
+            )
 
         # PREVENTIVE VALIDATIONS: Check trade limits and daily risk BEFORE generating signal
         
@@ -1204,14 +1208,16 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"Failed to send trade limit preventive alert: {e}", exc_info=True)
             
-            return {
-                "status": "trade_limit_preventive",
-                "reason": trade_limit_reason,
-                "trades_count": activity_summary.trades_count,
-                "trades_remaining": activity_summary.trades_remaining,
-                "max_trades_24h": activity_summary.max_trades_24h,
-                "contextual_articles": contextual_articles,
-            }
+            raise RecommendationGenerationError(
+                status="trade_limit_preventive",
+                reason=trade_limit_reason or "Límite preventivo de trades alcanzado",
+                details={
+                    "trades_count": activity_summary.trades_count,
+                    "trades_remaining": activity_summary.trades_remaining,
+                    "max_trades_24h": activity_summary.max_trades_24h,
+                    "contextual_articles": contextual_articles,
+                },
+            )
         
         # 2. Get activity summary for risk calculation and response
         activity_summary = self.trade_activity_ledger.get_activity_summary(
@@ -1311,11 +1317,11 @@ class RecommendationService:
                     "Auto-shutdown active, blocking recommendation generation",
                     extra={"reason": shutdown_status["shutdown_reason"]},
                 )
-                return {
-                    "status": "shutdown",
-                    "reason": shutdown_status["shutdown_reason"],
-                    "shutdown_status": shutdown_status,
-                }
+                raise RecommendationGenerationError(
+                    status="shutdown",
+                    reason=shutdown_status["shutdown_reason"],
+                    details={"shutdown_status": shutdown_status},
+                )
             
             # Apply size reduction if needed
             if shutdown_status["size_reduction"]:
@@ -1334,13 +1340,15 @@ class RecommendationService:
                 f"User {settings.DEFAULT_USER_ID} is overexposed (leverage: {ctx.effective_leverage:.2f}x, "
                 f"exposure: {ctx.avg_exposure_pct:.2f}%) - blocking recommendation generation"
             )
-            return {
-                "status": "overexposed",
-                "reason": f"Exposición excesiva detectada (apalancamiento: {ctx.effective_leverage:.2f}×, exposición: {ctx.avg_exposure_pct:.2f}%). Reduzca posiciones abiertas antes de recibir nuevas señales.",
-                "effective_leverage": float(ctx.effective_leverage),
-                "current_exposure_pct": float(ctx.avg_exposure_pct),
-                "current_equity": float(ctx.equity),
-            }
+            raise RecommendationGenerationError(
+                status="overexposed",
+                reason=f"Exposición excesiva detectada (apalancamiento: {ctx.effective_leverage:.2f}×, exposición: {ctx.avg_exposure_pct:.2f}%). Reduzca posiciones abiertas antes de recibir nuevas señales.",
+                details={
+                    "effective_leverage": float(ctx.effective_leverage),
+                    "current_exposure_pct": float(ctx.avg_exposure_pct),
+                    "current_equity": float(ctx.equity),
+                },
+            )
         
         # Check cooldown status before generating recommendation
         from app.db.crud import get_user_risk_state
@@ -1394,13 +1402,15 @@ class RecommendationService:
                     except Exception as e:
                         logger.warning(f"Failed to fetch contextual articles: {e}", exc_info=True)
                     
-                    return {
-                        "status": "cooldown",
-                        "reason": user_state.cooldown_reason or "Período de enfriamiento activo",
-                        "cooldown_until": cooldown_dt.isoformat(),
-                        "cooldown_remaining_seconds": cooldown_remaining,
-                        "contextual_articles": contextual_articles,
-                    }
+                    raise RecommendationGenerationError(
+                        status="cooldown",
+                        reason=user_state.cooldown_reason or "Período de enfriamiento activo",
+                        details={
+                            "cooldown_until": cooldown_dt.isoformat(),
+                            "cooldown_remaining_seconds": cooldown_remaining,
+                            "contextual_articles": contextual_articles,
+                        },
+                    )
                 
                 # Check leverage hard stop
                 if user_state.leverage_hard_stop:
@@ -1443,15 +1453,17 @@ class RecommendationService:
                     except Exception as e:
                         logger.warning(f"Failed to fetch contextual articles: {e}", exc_info=True)
                     
-                    return {
-                        "status": "leverage_hard_stop",
-                        "reason": f"Apalancamiento excesivo detectado ({user_state.effective_leverage:.2f}×). Reduzca la exposición antes de continuar.",
-                        "effective_leverage": float(user_state.effective_leverage),
-                        "current_equity": float(user_state.current_equity),
-                        "total_notional": float(user_state.total_notional),
-                        "hard_stop_since": user_state.leverage_hard_stop_since.isoformat() if user_state.leverage_hard_stop_since else None,
-                        "contextual_articles": contextual_articles,
-                    }
+                    raise RecommendationGenerationError(
+                        status="leverage_hard_stop",
+                        reason=f"Apalancamiento excesivo detectado ({user_state.effective_leverage:.2f}×). Reduzca la exposición antes de continuar.",
+                        details={
+                            "effective_leverage": float(user_state.effective_leverage),
+                            "current_equity": float(user_state.current_equity),
+                            "total_notional": float(user_state.total_notional),
+                            "hard_stop_since": user_state.leverage_hard_stop_since.isoformat() if user_state.leverage_hard_stop_since else None,
+                            "contextual_articles": contextual_articles,
+                        },
+                    )
         except Exception as e:
             logger.warning(f"Error checking user risk state: {e}", exc_info=True)
         finally:
@@ -1467,7 +1479,11 @@ class RecommendationService:
             latest_daily = self.curation.get_latest_curated("1d")
         except FileNotFoundError:
             logger.warning("Cannot generate recommendation: no 1d curated data available")
-            return None
+            raise RecommendationGenerationError(
+                status="error",
+                reason="No 1d curated data available",
+                details={},
+            )
 
         try:
             latest_hourly = self.curation.get_latest_curated("1h")
@@ -1477,7 +1493,11 @@ class RecommendationService:
 
         if latest_daily is None or latest_daily.empty:
             logger.warning("Cannot generate recommendation: no 1d curated data available")
-            return None
+            raise RecommendationGenerationError(
+                status="error",
+                reason="1d curated dataset is empty",
+                details={},
+            )
 
         if latest_hourly is None or latest_hourly.empty:
             logger.warning("1h dataset empty, using 1d as fallback")
@@ -2069,11 +2089,11 @@ class RecommendationService:
 
             efficiency_ok, efficiency_eval = self._apply_trade_efficiency(recommendation)
             if not efficiency_ok:
-                return {
-                    "status": "invalid",
-                    "reason": efficiency_eval.summary,
-                    "trade_efficiency": efficiency_eval.to_dict(),
-                }
+                raise RecommendationGenerationError(
+                    status="invalid",
+                    reason=efficiency_eval.summary,
+                    details={"trade_efficiency": efficiency_eval.to_dict()},
+                )
 
             # Build execution plan before audit (needed for audit check)
             sizing_result = self._calculate_position_sizing(recommendation, user_id=user_id)
@@ -2091,19 +2111,21 @@ class RecommendationService:
                     f"Preflight audit FAILED - blocking recommendation publication. "
                     f"Failed checks: {', '.join(failed_names)}"
                 )
-                return {
-                    "status": "audit_failed",
-                    "reason": f"Preflight audit failed: {', '.join(failed_names)}",
-                    "audit_result": audit_result.to_dict(),
-                    "failed_checks": [
-                        {
-                            "name": check.name,
-                            "message": check.message,
-                            "details": check.details,
-                        }
-                        for check in failed_checks
-                    ],
-                }
+                raise RecommendationGenerationError(
+                    status="audit_failed",
+                    reason=f"Preflight audit failed: {', '.join(failed_names)}",
+                    details={
+                        "audit_result": audit_result.to_dict(),
+                        "failed_checks": [
+                            {
+                                "name": check.name,
+                                "message": check.message,
+                                "details": check.details,
+                            }
+                            for check in failed_checks
+                        ],
+                    },
+                )
 
             result = None
             with SessionLocal() as db:
@@ -2119,13 +2141,39 @@ class RecommendationService:
                     db.close()
 
             if result:
+                # Verify result has a valid signal status (BUY/SELL/HOLD)
+                signal = result.get("signal", "")
+                if signal not in ("BUY", "SELL", "HOLD"):
+                    # If result doesn't have a valid signal, treat as error
+                    raise RecommendationGenerationError(
+                        status="error",
+                        reason=f"Generated recommendation has invalid signal: {signal}",
+                        details={"result": result},
+                    )
                 return result
+            else:
+                raise RecommendationGenerationError(
+                    status="error",
+                    reason="Failed to create recommendation in database",
+                    details={},
+                )
+        except RecommendationGenerationError:
+            # Re-raise RecommendationGenerationError as-is
+            raise
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
-            return {"status": "invalid", "reason": str(exc)}
+            raise RecommendationGenerationError(
+                status="invalid",
+                reason=str(exc),
+                details={},
+            )
         except Exception as e:
             logger.error(f"Error generating recommendation: {e}", exc_info=True)
-            return None
+            raise RecommendationGenerationError(
+                status="error",
+                reason=f"Unexpected error generating recommendation: {str(e)}",
+                details={"error_type": type(e).__name__},
+            ) from e
 
     async def get_recommendation_history(
         self,

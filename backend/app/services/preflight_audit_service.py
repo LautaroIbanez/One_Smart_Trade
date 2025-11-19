@@ -221,7 +221,10 @@ class PreflightAuditService:
         """Check that data has no gaps exceeding tolerance threshold."""
         try:
             # Use SignalDataProvider to validate gaps
+            # Force refresh to ensure validate_data_gaps() is executed even if cache exists
+            # from previous _check_data_freshness() call
             inputs = self.data_provider.get_validated_inputs(
+                force_refresh=True,  # Force refresh to ensure gap validation runs
                 validate_freshness=False,  # Don't check freshness here (separate check)
                 validate_gaps=True,  # Validate gaps
             )

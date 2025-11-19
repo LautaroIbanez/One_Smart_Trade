@@ -260,3 +260,4 @@ if "tracking_error" not in backtest_result:
 - `docs/execution.md` - Documentación técnica del tracking error
 
 
+
