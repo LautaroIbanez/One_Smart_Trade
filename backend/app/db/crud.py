@@ -577,24 +577,17 @@ def create_data_run(
 def get_user_risk_state(db: Session, user_id: str | UUID) -> UserRiskStateORM | None:
     """Get user risk state."""
     from uuid import UUID
-
-    dialect = db.bind.dialect.name if db.bind else None
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
     if isinstance(user_id, str):
-        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+        try:
+            user_uuid = UUID(user_id)
+        except (ValueError, AttributeError):
+            # Invalid UUID string, return None
+            return None
     else:
         user_uuid = user_id
-
-    try:
-        result = db.get(UserRiskStateORM, user_uuid)
-        if result is None and dialect == "sqlite":
-            stmt = select(UserRiskStateORM).where(UserRiskStateORM.__table__.c.user_id == str(user_id))
-            result = db.execute(stmt).scalars().first()
-        return result
-    except Exception:
-        if dialect == "sqlite":
-            stmt = select(UserRiskStateORM).where(UserRiskStateORM.__table__.c.user_id == str(user_id))
-            return db.execute(stmt).scalars().first()
-        raise
+    
+    return db.get(UserRiskStateORM, user_uuid)
 
 
 def create_or_update_user_risk_state(
@@ -618,10 +611,9 @@ def create_or_update_user_risk_state(
 ) -> UserRiskStateORM:
     """Create or update user risk state."""
     from uuid import UUID
-
-    dialect = db.bind.dialect.name if db.bind else None
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
     if isinstance(user_id, str):
-        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+        user_uuid = UUID(user_id)
     else:
         user_uuid = user_id
 
@@ -703,9 +695,9 @@ def update_user_risk_state(
     from uuid import UUID
     from datetime import timedelta
     
-    dialect = db.bind.dialect.name if db.bind else None
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
     if isinstance(user_id, str):
-        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+        user_uuid = UUID(user_id)
     else:
         user_uuid = user_id
     now = datetime.utcnow()
@@ -1025,9 +1017,9 @@ def record_leverage_alert(
 ) -> LeverageAlertORM:
     """Record a leverage alert event in the audit trail."""
     from uuid import UUID
-    dialect = db.bind.dialect.name if db.bind else None
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
     if isinstance(user_id, str):
-        user_uuid = user_id if dialect == "sqlite" else UUID(user_id)
+        user_uuid = UUID(user_id)
     else:
         user_uuid = user_id
     
@@ -1234,7 +1226,11 @@ def create_knowledge_engagement(
         Created KnowledgeEngagementORM instance
     """
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
+    if isinstance(user_id, str):
+        user_uuid = UUID(user_id)
+    else:
+        user_uuid = user_id
     
     engagement = KnowledgeEngagementORM(
         user_id=user_uuid,
@@ -1272,7 +1268,14 @@ def create_risk_audit(
         Created RiskAuditORM instance
     """
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    from sqlalchemy.exc import StatementError
+    from app.core.logging import logger
+    
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
+    if isinstance(user_id, str):
+        user_uuid = UUID(user_id)
+    else:
+        user_uuid = user_id
     
     audit = RiskAuditORM(
         user_id=user_uuid,
@@ -1283,7 +1286,15 @@ def create_risk_audit(
     )
     db.add(audit)
     db.commit()
-    db.refresh(audit)
+    
+    # Try to refresh, but handle legacy integer IDs gracefully
+    try:
+        db.refresh(audit)
+    except StatementError as e:
+        # If refresh fails due to legacy integer IDs, log and continue
+        # The audit was still created successfully
+        logger.warning(f"Could not refresh risk audit record (legacy data may be present): {e}")
+    
     return audit
 
 
@@ -1313,7 +1324,11 @@ def record_user_reading(
 ) -> UserReadingORM:
     """Record or update user reading of an article."""
     from uuid import UUID
-    user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    # Normalize to UUID object - the type decorator will handle SQLite conversion
+    if isinstance(user_id, str):
+        user_uuid = UUID(user_id)
+    else:
+        user_uuid = user_id
     
     # Check if reading record exists
     stmt = select(UserReadingORM).where(

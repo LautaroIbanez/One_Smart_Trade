@@ -5,10 +5,10 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.db.types import SqliteUUID
 
 from sqlalchemy import Enum as SAEnum
 from enum import Enum
@@ -189,7 +189,7 @@ class ExposureLedgerORM(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), nullable=False, index=True)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), nullable=False, index=True)
     recommendation_id: Mapped[int] = mapped_column(Integer, ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=False, index=True)
     symbol: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -233,7 +233,7 @@ class UserRiskStateORM(Base):
 
     __tablename__ = "user_risk_state"
 
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), primary_key=True)
     current_drawdown_pct: Mapped[float] = mapped_column(Float, default=0.0)
     longest_losing_streak: Mapped[int] = mapped_column(Integer, default=0)
     current_losing_streak: Mapped[int] = mapped_column(Integer, default=0)
@@ -257,7 +257,7 @@ class CooldownEventORM(Base):
     __tablename__ = "cooldown_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), index=True)
     triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     cooldown_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     reason: Mapped[str] = mapped_column(String(128))
@@ -273,7 +273,7 @@ class LeverageAlertORM(Base):
     __tablename__ = "leverage_alerts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), index=True)
     triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     leverage: Mapped[float] = mapped_column(Float)
     equity: Mapped[float] = mapped_column(Float)
@@ -316,7 +316,7 @@ class UserReadingORM(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), index=True, nullable=False)
     article_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     first_read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     last_read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
@@ -334,7 +334,7 @@ class KnowledgeEngagementORM(Base):
     __tablename__ = "knowledge_engagement"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), index=True, nullable=False)
     article_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     engagement_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # download|view|share|complete
     engagement_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)  # Additional context (device, referrer, etc.)
@@ -366,7 +366,7 @@ class RiskAuditORM(Base):
     __tablename__ = "risk_audit"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(PostgresUUID(as_uuid=True), index=True, nullable=False)
+    user_id: Mapped[UUID] = mapped_column(SqliteUUID(as_uuid=True), index=True, nullable=False)
     blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     audit_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # capital_missing|overexposed|leverage_hard_stop|cooldown|risk_limit_violation
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
