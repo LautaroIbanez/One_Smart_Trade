@@ -10,7 +10,7 @@ import pandas as pd
 from app.backtesting.execution_metrics import ExecutionTracker, NoTradeEvent
 from app.backtesting.order_types import BaseOrder, LimitOrder, MarketOrder, OrderResult, OrderStatus, StopOrder
 from app.backtesting.orderbook_warning import OrderBookWarning
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.data.fill_model import FillModel, FillModelConfig, FillSimulator, FillSimulationResult
 from app.data.orderbook import OrderBookRepository, OrderBookSnapshot
 
@@ -126,7 +126,8 @@ class ExecutionSimulator:
             )
             self.orderbook_warnings.append(warning)
             self.orderbook_fallback_count += 1
-            logger.warning(str(warning), extra=warning.to_dict())
+            # Warning payloads come from dataclasses—sanitize before logging.
+            logger.warning(str(warning), extra=sanitize_log_extra(warning.to_dict()))
         
         # Try to fill order
         result = order.try_fill(bar, book_snapshot)

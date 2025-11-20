@@ -15,7 +15,7 @@ from app.backtesting.objectives import CalmarUnderDrawdown, Objective
 from app.backtesting.tracking_error import TrackingErrorCalculator
 from app.backtesting.validation import CampaignAbort, CampaignValidator
 from app.backtesting.walk_forward import WalkForwardPipeline
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 
 # Maximum annualized tracking error threshold for candidate acceptance (3%)
 MAX_ANNUALIZED_TRACKING_ERROR_PCT = 3.0
@@ -302,5 +302,6 @@ class CampaignOptimizer:
         if self.persist_fn:
             self.persist_fn(record)
         else:
-            logger.info("Campaign candidate evaluated", extra=record)
+            # Persisted records may include dynamic metrics; scrub reserved logging keys.
+            logger.info("Campaign candidate evaluated", extra=sanitize_log_extra(record))
 

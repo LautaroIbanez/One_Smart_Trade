@@ -16,7 +16,7 @@ from app.backtesting.order_types import BaseOrder, LimitOrder, MarketOrder, Orde
 from app.backtesting.position import Position, PositionSide
 from app.backtesting.tracking_error import TrackingErrorCalculator, calculate_tracking_error
 from app.backtesting.unified_risk_manager import UnifiedRiskManager
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.data.orderbook import OrderBookRepository
 from app.data.storage import get_curated_path, read_parquet
 from app.observability.execution_metrics import (
@@ -1583,7 +1583,11 @@ class BacktestEngine:
             
             # Log alerts if any
             for alert in orderbook_alerts:
-                logger.warning(alert["message"], extra=alert)
+                alert_message = alert.get("message", "Orderbook fallback alert")
+                alert_payload = dict(alert)
+                alert_payload["alert_message"] = alert_message
+                # Avoid reserved LogRecord keys when logging externally-built payloads.
+                logger.warning(alert_message, extra=sanitize_log_extra(alert_payload))
 
         return {
             "start_date": start_ts.isoformat(),

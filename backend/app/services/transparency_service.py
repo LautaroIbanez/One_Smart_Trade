@@ -246,7 +246,11 @@ class TransparencyService:
             return None
 
         if summary.get("status") == "error":
-            logger.warning("Performance summary returned error status; skipping drawdown divergence", extra={"message": summary.get("message")})
+            summary_message = summary.get("message") or "No summary message provided"
+            logger.warning(
+                "Performance summary returned error status; skipping drawdown divergence",
+                extra={"summary_message": summary_message},
+            )
             return None
 
         tracking_error_metrics = summary.get("tracking_error_metrics") or {}

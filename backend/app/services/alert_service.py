@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 
 
 class AlertService:
@@ -13,6 +13,8 @@ class AlertService:
         extra = {"category": category}
         if payload:
             extra.update(payload)
+        # Sanitize payload to prevent reserved LogRecord collisions in structured logs.
+        extra = sanitize_log_extra(extra)
         log_message = message
         if level == "error":
             logger.error(log_message, extra=extra)

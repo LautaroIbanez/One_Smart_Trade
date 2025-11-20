@@ -9,7 +9,7 @@ from app.backtesting.monitoring import RecalibrationEvent, statistical_significa
 from app.backtesting.optimizer import CampaignOptimizer, CandidateResult
 from app.backtesting.champion import persist_campaign_record
 from app.core.database import SessionLocal
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.db import crud
 from app.quant.regime import RegimeClassifier
 
@@ -219,5 +219,6 @@ class AdaptiveCampaignOptimizer(CampaignOptimizer):
         if self.persist_fn:
             self.persist_fn(record)
         else:
-            logger.info("Campaign candidate evaluated", extra=record)
+            # Records can contain user-provided metadata; sanitize to avoid reserved keys.
+            logger.info("Campaign candidate evaluated", extra=sanitize_log_extra(record))
 

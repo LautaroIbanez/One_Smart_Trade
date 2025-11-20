@@ -8,7 +8,7 @@ import pandas as pd
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.data.curation import DataCuration
 from app.db.crud import get_open_recommendation, get_recommendation_history
 from app.db.models import RecommendationORM
@@ -73,7 +73,7 @@ class TrackingErrorService:
                             
                             logger.warning(
                                 f"Tracking error exceeds threshold for recommendation {rec.id}: {tracking_error_bps:.2f} bps > {settings.TRACKING_ERROR_THRESHOLD_BPS} bps",
-                                extra=alert,
+                                extra=sanitize_log_extra(alert),  # Avoid reserved LogRecord keys.
                             )
                             
                             # Send alert
