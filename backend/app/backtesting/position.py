@@ -136,6 +136,8 @@ class Position:
         self.mae: float = 0.0
         self.mfe: float = 0.0
         self.initial_size: float = 0.0
+        self.unrealized_pnl: float = 0.0
+        self.unrealized_pnl_pct: float = 0.0
 
         # Apply initial fill if provided
         if initial_fill_price is not None and initial_qty is not None:
@@ -145,6 +147,15 @@ class Position:
         if self.config.risk_reward_ratio is not None and self.risk_per_unit is not None:
             self.reward_per_unit = self.risk_per_unit * self.config.risk_reward_ratio
             self._recalculate_levels()
+
+    @property
+    def entry_price(self) -> float:
+        """Backward-compatible alias for avg_entry."""
+        return self.avg_entry
+
+    @entry_price.setter
+    def entry_price(self, value: float) -> None:
+        self.avg_entry = value
 
     def apply_fill(
         self,

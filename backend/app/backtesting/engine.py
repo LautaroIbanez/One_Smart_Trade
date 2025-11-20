@@ -1268,7 +1268,7 @@ class BacktestEngine:
                 # Apply commission (proportional to filled qty)
                 fees = fill_price * filled_qty * request.commission_rate
 
-                # Update equity (theoretical: no frictions, realistic: with frictions)
+                    # Update equity (theoretical: no frictions, realistic: with frictions)
                 if order.side == OrderSide.BUY:
                     # Entry
                     if not state.position:
@@ -1276,16 +1276,21 @@ class BacktestEngine:
                         state.position = Position(
                             symbol=request.instrument,
                             side=PositionSide.LONG,
-                            size=filled_qty,  # Use filled qty, not requested
-                            entry_price=fill_price,
+                            initial_fill_price=fill_price,
+                            initial_qty=filled_qty,  # Use filled qty, not requested
+                            opened_at=bar_date,
                         )
                         trade = TradeFill(
                             timestamp_entry=bar_date,
+                            timestamp_exit=None,
                             price_entry=fill_price,
+                            price_exit=None,
                             size=filled_qty,  # Use filled qty
                             side="BUY",
                             fees_entry=fees,
+                            fees_exit=0.0,
                             slippage_entry=slippage_pct,
+                            slippage_exit=0.0,
                         )
                         state.open_trades.append(trade)
 
