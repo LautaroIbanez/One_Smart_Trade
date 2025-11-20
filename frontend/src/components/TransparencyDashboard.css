@@ -306,3 +306,38 @@
   font-weight: 500;
 }
 
+.transparency-stale-banner {
+  background: #f0f7ff;
+  border: 1px solid #b6dcff;
+  border-left: 4px solid #2196f3;
+  color: #0b4880;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.transparency-stale-banner .stale-banner-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.transparency-stale-banner .stale-indicator {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #0b4880;
+  text-transform: uppercase;
+}
+
+.transparency-stale-banner .stale-banner-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.transparency-stale-banner .stale-label {
+  font-weight: 600;
+  margin-right: 0.25rem;
+}
+

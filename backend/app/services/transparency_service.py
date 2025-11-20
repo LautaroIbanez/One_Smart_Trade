@@ -255,18 +255,43 @@ class TransparencyService:
             logger.warning("Performance summary unavailable for drawdown divergence calculation")
             return None
 
-        if summary_payload.get("status") == "error":
+        is_error_payload = summary_payload.get("status") == "error"
+        fallback_summary = summary_payload.get("fallback_summary")
+        if is_error_payload and not fallback_summary:
             summary_message = summary_payload.get("message") or "No summary message provided"
             logger.warning(
-                "Performance summary returned error status; skipping drawdown divergence",
+                "Performance summary returned error status without fallback; skipping drawdown divergence",
                 extra={"summary_message": summary_message},
             )
             return None
+        if is_error_payload and fallback_summary:
+            logger.info(
+                "Performance summary returned error status but fallback summary available; using fallback metrics",
+                extra={"summary_message": summary_payload.get("message")},
+            )
 
-        tracking_error_metrics = summary_payload.get("tracking_error_metrics") or {}
-        if not tracking_error_metrics:
-            metrics = summary_payload.get("metrics") or {}
-            tracking_error_metrics = metrics.get("tracking_error_metrics") or {}
+        summary_sources: list[dict[str, Any]] = [summary_payload]
+        if isinstance(fallback_summary, dict):
+            summary_sources.append(fallback_summary)
+
+        def _extract_tracking_error_metrics(source: dict[str, Any]) -> dict[str, Any] | None:
+            if not source:
+                return None
+            direct = source.get("tracking_error_metrics")
+            if isinstance(direct, dict) and direct:
+                return direct
+            metrics_block = source.get("metrics")
+            if isinstance(metrics_block, dict):
+                nested = metrics_block.get("tracking_error_metrics")
+                if isinstance(nested, dict) and nested:
+                    return nested
+            return None
+
+        tracking_error_metrics: dict[str, Any] | None = None
+        for candidate in summary_sources:
+            tracking_error_metrics = _extract_tracking_error_metrics(candidate)
+            if tracking_error_metrics:
+                break
         if not tracking_error_metrics:
             logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
             return None
@@ -439,6 +464,9 @@ class TransparencyService:
         summary_message: str | None = None
         summary_metadata: dict[str, Any] | None = None
         summary_details: Any = None
+        summary_metrics: dict[str, Any] | None = None
+        summary_period: dict[str, Any] | None = None
+        summary_fallback: dict[str, Any] | None = None
 
         try:
             summary_payload = await self.performance_service.get_summary(use_cache=True, allow_stale_inputs=True)
@@ -456,12 +484,19 @@ class TransparencyService:
             metadata = summary_payload.get("metadata")
             summary_metadata = metadata if isinstance(metadata, dict) else None
             summary_details = summary_payload.get("details")
+            summary_metrics = summary_payload.get("metrics")
+            summary_period = summary_payload.get("period")
+            fallback = summary_payload.get("fallback_summary")
+            summary_fallback = fallback if isinstance(fallback, dict) else None
         else:
             summary_status = "error"
             summary_message = "Performance summary unavailable."
             summary_metadata = {
                 "user_message": "Performance summary unavailable.",
             }
+            summary_metrics = None
+            summary_period = None
+            summary_fallback = None
 
         drawdown_div = await self.get_drawdown_divergence(summary=summary_payload)
         semaphore = await self.get_semaphore(drawdown_divergence=drawdown_div)
@@ -496,6 +531,9 @@ class TransparencyService:
             "summary_message": summary_message,
             "summary_metadata": summary_metadata,
             "summary_details": summary_details,
+            "summary_metrics": summary_metrics,
+            "summary_period": summary_period,
+            "summary_fallback": summary_fallback,
         }
 
     async def run_checks(self) -> TransparencySemaphore:

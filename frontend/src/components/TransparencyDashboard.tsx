@@ -29,6 +29,14 @@ interface DrawdownDivergence {
   timestamp: string
 }
 
+interface FallbackSummary {
+  source?: string
+  metrics?: Record<string, any> | null
+  period?: { start?: string; end?: string } | null
+  report_path?: string | null
+  [key: string]: any
+}
+
 interface TransparencyDashboardData {
   semaphore: {
     overall_status: 'pass' | 'warn' | 'fail' | 'unknown'
@@ -68,6 +76,9 @@ interface TransparencyDashboardData {
   summary_message?: string
   summary_metadata?: Record<string, any> | null
   summary_details?: unknown
+  summary_metrics?: Record<string, any> | null
+  summary_period?: { start?: string; end?: string } | null
+  summary_fallback?: FallbackSummary | null
 }
 
 type DashboardApiResponse = Partial<TransparencyDashboardData> & {
@@ -79,6 +90,9 @@ type DashboardApiResponse = Partial<TransparencyDashboardData> & {
   summary_status?: string
   summary_metadata?: Record<string, any>
   summary_details?: unknown
+  summary_metrics?: Record<string, any> | null
+  summary_period?: { start?: string; end?: string } | null
+  summary_fallback?: FallbackSummary | null
 }
 
 interface DashboardStatusAlert {
@@ -174,6 +188,13 @@ export function TransparencyDashboard() {
       }
       const result: DashboardApiResponse = await response.json()
       const missingMetrics = !result.semaphore
+      const fallbackSummary: FallbackSummary | null =
+        result.summary_fallback && typeof result.summary_fallback === 'object'
+          ? (result.summary_fallback as FallbackSummary)
+          : null
+      const hasFallbackMetrics =
+        Boolean(fallbackSummary?.metrics && Object.keys(fallbackSummary.metrics || {}).length > 0) ||
+        Boolean(fallbackSummary?.period)
       const summaryErrorPayload: DashboardApiResponse | null =
         result.summary_status === 'error'
           ? {
@@ -187,7 +208,9 @@ export function TransparencyDashboard() {
       const isErrorPayload = result.status === 'error'
 
       const alertPayload =
-        summaryErrorPayload ?? (isErrorPayload || missingMetrics ? result : null)
+        summaryErrorPayload && hasFallbackMetrics
+          ? null
+          : summaryErrorPayload ?? (isErrorPayload || missingMetrics ? result : null)
 
       if (alertPayload) {
         setStatusAlert(buildStatusAlert(alertPayload))
@@ -257,7 +280,19 @@ export function TransparencyDashboard() {
     )
   }
 
-  const { semaphore, current_hashes, hash_verifications, tracking_error_rolling, drawdown_divergence, audit_status } = data
+  const {
+    semaphore,
+    current_hashes,
+    hash_verifications,
+    tracking_error_rolling,
+    drawdown_divergence,
+    audit_status,
+    summary_status,
+    summary_message,
+    summary_metadata,
+    summary_fallback,
+  } = data
+  const showingFallbackData = summary_status === 'error' && Boolean(summary_fallback)
 
   return (
     <section className="transparency-dashboard">
@@ -281,6 +316,13 @@ export function TransparencyDashboard() {
       </header>
 
       {statusAlert && <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />}
+      {showingFallbackData && (
+        <FallbackDataBanner
+          message={summary_message}
+          metadata={summary_metadata}
+          fallbackSummary={summary_fallback}
+        />
+      )}
 
       {/* Semaphore Status */}
       <div className="semaphore-section">
@@ -504,6 +546,60 @@ function ErrorBanner({ statusAlert, onRetry }: ErrorBannerProps) {
         <a href="mailto:soporte@onesmarttrade.com" className="support-link">
           Contactar soporte
         </a>
+      </div>
+    </div>
+  )
+}
+
+interface FallbackDataBannerProps {
+  message?: string | null
+  metadata?: Record<string, any> | null
+  fallbackSummary?: FallbackSummary | null
+}
+
+function FallbackDataBanner({ message, metadata, fallbackSummary }: FallbackDataBannerProps) {
+  const warningMessage =
+    message || 'Los datos frescos no están disponibles; mostrando métricas almacenadas.'
+  const fallbackSource = fallbackSummary?.source || 'Histórico'
+  const period = (fallbackSummary?.period || metadata?.period) as
+    | { start?: string; end?: string }
+    | undefined
+  const periodLabel =
+    period?.start && period?.end
+      ? `${new Date(period.start).toLocaleDateString()} — ${new Date(period.end).toLocaleDateString()}`
+      : 'Período no disponible'
+  const staleInterval = metadata?.stale_interval || metadata?.interval
+  const latestTimestamp = metadata?.latest_timestamp || metadata?.latestTimestamp
+  const ageMinutes = metadata?.age_minutes ?? metadata?.latest_candle_age_minutes
+
+  return (
+    <div className="transparency-stale-banner" role="status">
+      <div className="stale-banner-header">
+        <span className="stale-indicator">⚠ Datos en modo lectura</span>
+        <strong>{warningMessage}</strong>
+      </div>
+      <div className="stale-banner-body">
+        <div>
+          <span className="stale-label">Origen:</span> {fallbackSource}
+        </div>
+        <div>
+          <span className="stale-label">Período:</span> {periodLabel}
+        </div>
+        {staleInterval && (
+          <div>
+            <span className="stale-label">Intervalo afectado:</span> {staleInterval}
+          </div>
+        )}
+        {latestTimestamp && (
+          <div>
+            <span className="stale-label">Último timestamp:</span> {new Date(latestTimestamp).toLocaleString()}
+          </div>
+        )}
+        {typeof ageMinutes === 'number' && (
+          <div>
+            <span className="stale-label">Antigüedad aprox.:</span> {ageMinutes.toFixed(2)} minutos
+          </div>
+        )}
       </div>
     </div>
   )

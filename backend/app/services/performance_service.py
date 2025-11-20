@@ -85,7 +85,12 @@ class PerformanceService:
 
         if self._strategy_source == "daily_signal_engine":
             validate_freshness = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA and not allow_stale_data
-            validate_gaps = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA
+            validate_gaps = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA and not allow_stale_data
+            if allow_stale_data and settings.PERFORMANCE_STRATEGY_VALIDATE_DATA:
+                logger.info(
+                    "allow_stale_inputs=True, disabling gap validation to permit cached datasets",
+                    extra={"allow_stale_inputs": allow_stale_data},
+                )
 
             try:
                 inputs = self.signal_data_provider.get_validated_inputs(
@@ -272,9 +277,7 @@ class PerformanceService:
         return payload
 
     def _get_cached_error(self, *, allow_stale_inputs: bool) -> dict[str, Any] | None:
-        """Return cached error response if still valid and caller enforces freshness."""
-        if allow_stale_inputs:
-            return None
+        """Return cached error response if still within TTL."""
         if not self._error_cache:
             return None
         timestamp = self._error_cache["timestamp"]
@@ -287,6 +290,7 @@ class PerformanceService:
         metadata["cached_error"] = True
         metadata["cache_expires_at"] = (timestamp + timedelta(seconds=self.ERROR_CACHE_TTL_SECONDS)).isoformat()
         metadata["retry_after_seconds"] = max(0, int(self.ERROR_CACHE_TTL_SECONDS - age_seconds))
+        metadata["served_with_allow_stale_inputs"] = allow_stale_inputs
         cached_payload["metadata"] = metadata
         return cached_payload
 
@@ -437,6 +441,7 @@ class PerformanceService:
             "http_status": 503,
             "metadata": metadata,
             "fallback_summary": fallback_summary,
+            "period": fallback_summary.get("period"),
         }
 
     def _emit_staleness_observability(
