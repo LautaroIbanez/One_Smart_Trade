@@ -233,29 +233,39 @@ class TransparencyService:
         """Get rolling tracking error metrics for the specified period asynchronously."""
         return await asyncio.to_thread(self._calculate_tracking_error_rolling, period_days)
 
-    async def get_drawdown_divergence(self) -> DrawdownDivergence | None:
+    async def get_drawdown_divergence(
+        self,
+        *,
+        summary: dict[str, Any] | None = None,
+    ) -> DrawdownDivergence | None:
         """Get divergence between theoretical and realistic drawdown."""
         try:
-            summary = await self.performance_service.get_summary(use_cache=True, allow_stale_inputs=True)
+            summary_payload = summary
+            if summary_payload is None:
+                summary_payload = await self.performance_service.get_summary(use_cache=True, allow_stale_inputs=True)
         except Exception as exc:
-            logger.error("Failed to fetch performance summary for drawdown divergence", exc_info=True, extra={"error": str(exc)})
+            logger.error(
+                "Failed to fetch performance summary for drawdown divergence",
+                exc_info=True,
+                extra={"error": str(exc)},
+            )
             return None
 
-        if not summary or not isinstance(summary, dict):
+        if not summary_payload or not isinstance(summary_payload, dict):
             logger.warning("Performance summary unavailable for drawdown divergence calculation")
             return None
 
-        if summary.get("status") == "error":
-            summary_message = summary.get("message") or "No summary message provided"
+        if summary_payload.get("status") == "error":
+            summary_message = summary_payload.get("message") or "No summary message provided"
             logger.warning(
                 "Performance summary returned error status; skipping drawdown divergence",
                 extra={"summary_message": summary_message},
             )
             return None
 
-        tracking_error_metrics = summary.get("tracking_error_metrics") or {}
+        tracking_error_metrics = summary_payload.get("tracking_error_metrics") or {}
         if not tracking_error_metrics:
-            metrics = summary.get("metrics") or {}
+            metrics = summary_payload.get("metrics") or {}
             tracking_error_metrics = metrics.get("tracking_error_metrics") or {}
         if not tracking_error_metrics:
             logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
@@ -424,7 +434,36 @@ class TransparencyService:
 
     async def get_dashboard_data(self) -> dict[str, Any]:
         """Get complete transparency dashboard data."""
-        drawdown_div = await self.get_drawdown_divergence()
+        summary_payload: dict[str, Any] | None = None
+        summary_status = "unknown"
+        summary_message: str | None = None
+        summary_metadata: dict[str, Any] | None = None
+        summary_details: Any = None
+
+        try:
+            summary_payload = await self.performance_service.get_summary(use_cache=True, allow_stale_inputs=True)
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch performance summary for transparency dashboard",
+                exc_info=True,
+                extra={"error": str(exc)},
+            )
+            summary_payload = None
+
+        if summary_payload:
+            summary_status = summary_payload.get("status", "unknown")
+            summary_message = summary_payload.get("message")
+            metadata = summary_payload.get("metadata")
+            summary_metadata = metadata if isinstance(metadata, dict) else None
+            summary_details = summary_payload.get("details")
+        else:
+            summary_status = "error"
+            summary_message = "Performance summary unavailable."
+            summary_metadata = {
+                "user_message": "Performance summary unavailable.",
+            }
+
+        drawdown_div = await self.get_drawdown_divergence(summary=summary_payload)
         semaphore = await self.get_semaphore(drawdown_divergence=drawdown_div)
         tracking_error_7d, tracking_error_30d, tracking_error_90d = await asyncio.gather(
             self.get_tracking_error_rolling(7),
@@ -453,6 +492,10 @@ class TransparencyService:
             "drawdown_divergence": asdict(drawdown_div) if drawdown_div else None,
             "audit_status": audit_info,
             "timestamp": datetime.utcnow().isoformat(),
+            "summary_status": summary_status,
+            "summary_message": summary_message,
+            "summary_metadata": summary_metadata,
+            "summary_details": summary_details,
         }
 
     async def run_checks(self) -> TransparencySemaphore:

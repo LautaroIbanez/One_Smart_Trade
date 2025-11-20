@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -168,6 +169,67 @@ class SignalDataProvider:
     def has_cached_inputs(self) -> bool:
         """Return True if validated inputs are cached in memory."""
         return self._cached_inputs is not None
+
+    def describe_dataset_freshness(self, intervals: list[str] | None = None) -> dict[str, Any]:
+        """Return latest timestamps and freshness metadata for curated datasets."""
+        intervals = intervals or ["1h", "1d"]
+        snapshot: dict[str, Any] = {}
+        for interval in intervals:
+            snapshot[interval] = self._build_interval_freshness(interval)
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "intervals": snapshot,
+        }
+
+    def _build_interval_freshness(self, interval: str) -> dict[str, Any]:
+        """Inspect curated dataset for interval and compute freshness metrics."""
+        try:
+            df = self.curation.get_latest_curated(interval, venue=self.venue, symbol=self.symbol)
+        except FileNotFoundError:
+            return {"status": "missing", "latest_open_time": None, "age_minutes": None, "rows": 0}
+        if df is None or df.empty:
+            return {"status": "empty", "latest_open_time": None, "age_minutes": None, "rows": 0}
+        if "open_time" not in df.columns:
+            return {"status": "invalid", "latest_open_time": None, "age_minutes": None, "rows": len(df)}
+        latest_value = df["open_time"].max()
+        latest_dt = self._normalize_open_time(latest_value)
+        if latest_dt is None:
+            return {"status": "unknown", "latest_open_time": None, "age_minutes": None, "rows": len(df)}
+        age_minutes = (datetime.now(timezone.utc) - latest_dt).total_seconds() / 60.0
+        return {
+            "status": "ok",
+            "latest_open_time": latest_dt.isoformat(),
+            "age_minutes": round(age_minutes, 2),
+            "rows": len(df),
+        }
+
+    @staticmethod
+    def _normalize_open_time(value: Any) -> datetime | None:
+        """Convert various open_time representations into timezone-aware datetime."""
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            ts = value.tz_convert(timezone.utc) if value.tzinfo else value.tz_localize(timezone.utc)
+            return ts.to_pydatetime()
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (int, float)):
+            # Heuristic: treat large numbers as milliseconds
+            try:
+                if value > 1e12:
+                    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        try:
+            parsed = pd.to_datetime(value, utc=True)
+            if isinstance(parsed, pd.Timestamp):
+                return parsed.to_pydatetime()
+            return parsed
+        except (ValueError, TypeError):
+            return None
 
     def _record_data_freshness_failure(self, exc: DataFreshnessError) -> None:
         """Emit structured telemetry when curated data is stale."""

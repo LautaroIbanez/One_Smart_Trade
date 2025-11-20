@@ -64,6 +64,10 @@ interface TransparencyDashboardData {
     last_export: string | null
   }
   timestamp: string
+  summary_status?: string
+  summary_message?: string
+  summary_metadata?: Record<string, any> | null
+  summary_details?: unknown
 }
 
 type DashboardApiResponse = Partial<TransparencyDashboardData> & {
@@ -72,6 +76,9 @@ type DashboardApiResponse = Partial<TransparencyDashboardData> & {
   summary_message?: string
   metadata?: Record<string, any>
   details?: unknown
+  summary_status?: string
+  summary_metadata?: Record<string, any>
+  summary_details?: unknown
 }
 
 interface DashboardStatusAlert {
@@ -166,11 +173,24 @@ export function TransparencyDashboard() {
         return
       }
       const result: DashboardApiResponse = await response.json()
-      const isErrorPayload = result.status === 'error'
       const missingMetrics = !result.semaphore
+      const summaryErrorPayload: DashboardApiResponse | null =
+        result.summary_status === 'error'
+          ? {
+              status: result.summary_status,
+              message: result.summary_message,
+              summary_message: result.summary_message,
+              metadata: result.summary_metadata ?? undefined,
+              details: result.summary_details ?? undefined,
+            }
+          : null
+      const isErrorPayload = result.status === 'error'
 
-      if (isErrorPayload || missingMetrics) {
-        setStatusAlert(buildStatusAlert(result))
+      const alertPayload =
+        summaryErrorPayload ?? (isErrorPayload || missingMetrics ? result : null)
+
+      if (alertPayload) {
+        setStatusAlert(buildStatusAlert(alertPayload))
       } else {
         setStatusAlert(null)
       }

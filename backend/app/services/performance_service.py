@@ -92,6 +92,7 @@ class PerformanceService:
                     validate_freshness=validate_freshness,
                     validate_gaps=validate_gaps,
                 )
+                self._clear_stale_error_cache_if_needed()
             except DataFreshnessError as exc:
                 logger.warning(
                     "Signal data freshness validation failed",
@@ -131,23 +132,11 @@ class PerformanceService:
         """Get performance summary from latest backtest."""
         # Check for cached result in DB
         if use_cache:
-            with SessionLocal() as db:
-                cached = get_latest_backtest_result(db)
-                if cached:
-                    # Return cached if less than 24 hours old
-                    age = (datetime.utcnow() - cached.created_at).total_seconds()
-                    if age < 86400:  # 24 hours
-                        return {
-                            "status": "success",
-                            "metrics": cached.metrics,
-                            "period": {
-                                "start": cached.start_date,
-                                "end": cached.end_date,
-                            },
-                            "report_path": str(self.reports_dir / "backtest-report.md"),
-                        }
+            cached_summary = self._get_db_cached_success_summary(max_age_seconds=86400)
+            if cached_summary:
+                return cached_summary
 
-        cached_error = self._get_cached_error()
+        cached_error = self._get_cached_error(allow_stale_inputs=allow_stale_inputs)
         if cached_error:
             return cached_error
 
@@ -282,8 +271,10 @@ class PerformanceService:
         self._error_cache = {"payload": payload, "timestamp": timestamp}
         return payload
 
-    def _get_cached_error(self) -> dict[str, Any] | None:
-        """Return cached error response if still valid."""
+    def _get_cached_error(self, *, allow_stale_inputs: bool) -> dict[str, Any] | None:
+        """Return cached error response if still valid and caller enforces freshness."""
+        if allow_stale_inputs:
+            return None
         if not self._error_cache:
             return None
         timestamp = self._error_cache["timestamp"]
@@ -302,6 +293,36 @@ class PerformanceService:
     def _clear_error_cache(self) -> None:
         """Clear cached error after successful run."""
         self._error_cache = None
+
+    def _clear_stale_error_cache_if_needed(self) -> None:
+        """Clear cached stale-data errors once fresh inputs succeed."""
+        if not self._error_cache:
+            return
+        payload = self._error_cache.get("payload") or {}
+        if payload.get("error_type") == "DATA_STALE":
+            self._clear_error_cache()
+
+    def _get_db_cached_success_summary(self, *, max_age_seconds: int | None) -> dict[str, Any] | None:
+        """Fetch the latest successful backtest summary stored in the DB."""
+        with SessionLocal() as db:
+            cached = get_latest_backtest_result(db)
+            if not cached:
+                return None
+            age_seconds = (datetime.utcnow() - cached.created_at).total_seconds()
+            if max_age_seconds is not None and age_seconds > max_age_seconds:
+                return None
+            return {
+                "status": "success",
+                "metrics": cached.metrics,
+                "period": {
+                    "start": cached.start_date,
+                    "end": cached.end_date,
+                },
+                "report_path": str(self.reports_dir / "backtest-report.md"),
+                "source": "db_cache",
+                "cached_at": cached.created_at.isoformat(),
+                "cache_age_seconds": age_seconds,
+            }
 
     def _build_config_error_response(self, exc: StrategyConfigurationError) -> dict[str, Any]:
         """Standardize strategy configuration errors for caching."""
@@ -352,6 +373,23 @@ class PerformanceService:
             ],
         }
 
+        dataset_snapshot = None
+        try:
+            dataset_snapshot = self.signal_data_provider.describe_dataset_freshness()
+        except Exception as snapshot_exc:
+            logger.warning(
+                "Failed to collect dataset freshness snapshot",
+                extra={"error": str(snapshot_exc)},
+            )
+
+        if dataset_snapshot:
+            metadata["dataset_freshness"] = dataset_snapshot
+
+        remediation_hint = "Ejecuta job_ingest_all para regenerar datasets 1h/1d antes de reintentar."
+        metadata["recovery_hints"].append(remediation_hint)
+        metadata["remediation"] = remediation_hint
+        metadata["remediation_commands"] = ["job_ingest_all"]
+
         if allow_stale_inputs and not settings.PERFORMANCE_STRATEGY_VALIDATE_DATA:
             metadata["freshness_validation_disabled_globally"] = True
 
@@ -371,16 +409,34 @@ class PerformanceService:
             age_minutes=age_minutes,
             threshold_minutes=exc.threshold_minutes,
             allow_stale_inputs=allow_stale_inputs,
+            dataset_snapshot=dataset_snapshot,
         )
+
+        fallback_summary = self._get_db_cached_success_summary(max_age_seconds=None)
+        historical_fallback = fallback_summary is not None
+        if not fallback_summary:
+            fallback_summary = {
+                "status": "success",
+                "metrics": {},
+                "period": None,
+                "report_path": None,
+                "source": "placeholder",
+            }
+        else:
+            fallback_summary["source"] = "db_cache"
+
+        metadata["fallback_summary_available"] = historical_fallback
+        metadata["fallback_summary_source"] = fallback_summary.get("source")
 
         return {
             "status": "error",
             "message": exc.reason,
             "error_type": "DATA_STALE",
             "details": details,
-            "metrics": {},
+            "metrics": fallback_summary.get("metrics") or {},
             "http_status": 503,
             "metadata": metadata,
+            "fallback_summary": fallback_summary,
         }
 
     def _emit_staleness_observability(
@@ -391,6 +447,7 @@ class PerformanceService:
         age_minutes: float | None,
         threshold_minutes: int | None,
         allow_stale_inputs: bool,
+        dataset_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Emit structured telemetry for monitoring dashboards."""
         logger.warning(
@@ -401,6 +458,7 @@ class PerformanceService:
                 "latest_candle_age_minutes": age_minutes,
                 "threshold_minutes": threshold_minutes,
                 "allow_stale_inputs_requested": allow_stale_inputs,
+                "dataset_freshness": dataset_snapshot,
             },
         )
 
