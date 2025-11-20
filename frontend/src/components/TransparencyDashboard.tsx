@@ -66,6 +66,52 @@ interface TransparencyDashboardData {
   timestamp: string
 }
 
+type DashboardApiResponse = Partial<TransparencyDashboardData> & {
+  status?: string
+  message?: string
+  summary_message?: string
+  metadata?: Record<string, any>
+  details?: unknown
+}
+
+interface DashboardStatusAlert {
+  message: string
+  details?: string
+  lastAttempt?: string
+  retryAfterSeconds?: number
+  cacheExpiresAt?: string
+}
+
+function buildStatusAlert(payload: DashboardApiResponse): DashboardStatusAlert {
+  const metadata = payload.metadata || {}
+  const rawDetails = (() => {
+    if (metadata.summary_message) return metadata.summary_message as string
+    if (metadata.remediation) return metadata.remediation as string
+    if (typeof payload.details === 'string') return payload.details
+    if (payload.details && typeof payload.details === 'object' && 'message' in payload.details) {
+      return String((payload.details as { message?: string }).message || '')
+    }
+    return undefined
+  })()
+
+  return {
+    message:
+      (metadata.user_message as string) ||
+      (metadata.summary_message as string) ||
+      payload.summary_message ||
+      payload.message ||
+      'El dashboard de transparencia no está disponible temporalmente.',
+    details: rawDetails,
+    lastAttempt: (metadata.last_attempt as string) || (metadata.lastAttempt as string),
+    retryAfterSeconds:
+      (metadata.retry_after_seconds as number | undefined) ??
+      (metadata.retryAfterSeconds as number | undefined),
+    cacheExpiresAt:
+      (metadata.cache_expires_at as string) ||
+      (metadata.cacheExpiresAt as string),
+  }
+}
+
 function getStatusColor(status: string): string {
   switch (status) {
     case 'pass':
@@ -97,6 +143,7 @@ export function TransparencyDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
+  const [statusAlert, setStatusAlert] = useState<DashboardStatusAlert | null>(null)
 
   const fetchData = async () => {
     try {
@@ -105,10 +152,26 @@ export function TransparencyDashboard() {
       if (!response.ok) {
         throw new Error('Failed to fetch transparency dashboard')
       }
-      const result = await response.json()
-      setData(result)
+      const result: DashboardApiResponse = await response.json()
+      const isErrorPayload = result.status === 'error'
+      const missingMetrics = !result.semaphore
+
+      if (isErrorPayload || missingMetrics) {
+        setStatusAlert(buildStatusAlert(result))
+      } else {
+        setStatusAlert(null)
+      }
+
+      if (missingMetrics) {
+        setData(null)
+        setError(null)
+        return
+      }
+
+      setData(result as TransparencyDashboardData)
       setError(null)
     } catch (err) {
+      setStatusAlert(null)
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setLoading(false)
@@ -147,7 +210,44 @@ export function TransparencyDashboard() {
   }
 
   if (!data) {
-    return null
+    return (
+      <section className="transparency-dashboard" aria-live="polite">
+        <header>
+          <div className="transparency-header-row">
+            <h2>Dashboard de Transparencia</h2>
+            <div className="transparency-actions">
+              <label className="refresh-toggle">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                />
+                <span>Actualización automática</span>
+              </label>
+              <button type="button" className="refresh-button" onClick={fetchData}>
+                🔄 Actualizar
+              </button>
+            </div>
+          </div>
+        </header>
+        {statusAlert ? (
+          <div className="error" role="alert">
+            <p>{statusAlert.message}</p>
+            {statusAlert.details && <p>{statusAlert.details}</p>}
+            <div>
+              {statusAlert.lastAttempt && (
+                <small>Último intento: {new Date(statusAlert.lastAttempt).toLocaleString()}</small>
+              )}
+              {typeof statusAlert.retryAfterSeconds === 'number' && (
+                <small> Reintento automático en ~{statusAlert.retryAfterSeconds}s.</small>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p>No se pudieron cargar los datos del dashboard.</p>
+        )}
+      </section>
+    )
   }
 
   const { semaphore, current_hashes, hash_verifications, tracking_error_rolling, drawdown_divergence, audit_status } = data
@@ -172,6 +272,24 @@ export function TransparencyDashboard() {
           </div>
         </div>
       </header>
+
+      {statusAlert && (
+        <div className="error" role="alert">
+          <p>{statusAlert.message}</p>
+          {statusAlert.details && <p>{statusAlert.details}</p>}
+          <div>
+            {statusAlert.lastAttempt && (
+              <small>Último intento: {new Date(statusAlert.lastAttempt).toLocaleString()}</small>
+            )}
+            {statusAlert.cacheExpiresAt && (
+              <small> | Próximo refresco: {new Date(statusAlert.cacheExpiresAt).toLocaleString()}</small>
+            )}
+            {typeof statusAlert.retryAfterSeconds === 'number' && (
+              <small> | Reintento automático en ~{statusAlert.retryAfterSeconds}s.</small>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Semaphore Status */}
       <div className="semaphore-section">

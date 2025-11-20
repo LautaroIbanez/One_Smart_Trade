@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     BACKTEST_MAX_DRAWDOWN_PCT: float = 50.0  # Maximum drawdown percentage allowed
     BACKTEST_COMMISSION_RATE: float = 0.001  # 0.1% commission rate
     BACKTEST_SLIPPAGE_BPS: float = 5.0  # 5 basis points slippage
+    PERFORMANCE_STRATEGY_SOURCE: str | None = "daily_signal_engine"
+    PERFORMANCE_STRATEGY_VENUE: str = "binance"
+    PERFORMANCE_STRATEGY_SYMBOL: str = "BTCUSDT"
+    PERFORMANCE_STRATEGY_VALIDATE_DATA: bool = True
     
     # Tracking error monitoring (SL/TP achievability)
     TRACKING_ERROR_THRESHOLD_BPS: float = 50.0  # Alert if tracking error exceeds 50 bps (0.5%)

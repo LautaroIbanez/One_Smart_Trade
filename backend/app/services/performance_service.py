@@ -12,16 +12,28 @@ import yaml
 
 from app import __version__
 from app.backtesting.engine import BacktestEngine
+from app.backtesting.daily_strategy_adapter import DailyStrategyAdapter
 from app.backtesting.metrics import calculate_metrics
 from app.backtesting.report import build_campaign_report
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.db.crud import get_latest_backtest_result, save_backtest_result
+from app.data.signal_data_provider import SignalDataProvider
+from app.quant.signal_engine import DailySignalEngine
+
+
+class StrategyConfigurationError(Exception):
+    """Raised when strategy configuration is missing or invalid."""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
 
 
 class PerformanceService:
     """Service for backtesting performance metrics."""
+    ERROR_CACHE_TTL_SECONDS = 300
 
     def __init__(self):
         self.engine = BacktestEngine()
@@ -31,6 +43,13 @@ class PerformanceService:
         self.docs_assets_dir = self.project_root / "docs" / "assets"
         self.docs_assets_dir.mkdir(parents=True, exist_ok=True)
         self.performance_config = self._load_performance_config()
+        self.signal_engine = DailySignalEngine()
+        self.signal_data_provider = SignalDataProvider(
+            venue=settings.PERFORMANCE_STRATEGY_VENUE,
+            symbol=settings.PERFORMANCE_STRATEGY_SYMBOL,
+        )
+        self._strategy_source = settings.PERFORMANCE_STRATEGY_SOURCE
+        self._error_cache: dict[str, Any] | None = None
 
     def _load_performance_config(self) -> dict[str, Any]:
         """Load performance/tracking error configuration from YAML file."""
@@ -55,6 +74,42 @@ class PerformanceService:
                     logger.warning("Failed to load performance config", extra={"path": str(path), "error": str(exc)})
         return defaults
 
+    def _resolve_strategy(self) -> DailyStrategyAdapter:
+        """Build the strategy object defined in settings."""
+        if not self._strategy_source:
+            raise StrategyConfigurationError(
+                "Strategy configuration missing",
+                details={"setting": "PERFORMANCE_STRATEGY_SOURCE"},
+            )
+
+        if self._strategy_source == "daily_signal_engine":
+            try:
+                inputs = self.signal_data_provider.get_validated_inputs(
+                    validate_freshness=settings.PERFORMANCE_STRATEGY_VALIDATE_DATA,
+                    validate_gaps=settings.PERFORMANCE_STRATEGY_VALIDATE_DATA,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to load strategy inputs",
+                    extra={"error": str(exc)},
+                )
+                raise StrategyConfigurationError(
+                    "Unable to materialize strategy datasets",
+                    details={"setting": "PERFORMANCE_STRATEGY_SOURCE", "cause": str(exc)},
+                ) from exc
+
+            return DailyStrategyAdapter(
+                signal_engine=self.signal_engine,
+                df_1h=inputs.df_1h,
+                df_1d=inputs.df_1d,
+                symbol=inputs.symbol,
+            )
+
+        raise StrategyConfigurationError(
+            f"Unsupported strategy source '{self._strategy_source}'",
+            details={"setting": "PERFORMANCE_STRATEGY_SOURCE"},
+        )
+
     async def get_summary(self, use_cache: bool = True) -> dict[str, Any]:
         """Get performance summary from latest backtest."""
         # Check for cached result in DB
@@ -75,26 +130,44 @@ class PerformanceService:
                             "report_path": str(self.reports_dir / "backtest-report.md"),
                         }
 
+        cached_error = self._get_cached_error()
+        if cached_error:
+            return cached_error
+
         # Run backtest for last 5 years if data available
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=5 * 365)
 
         try:
-            result = await self.engine.run_backtest(start_date, end_date)
+            strategy = self._resolve_strategy()
+        except StrategyConfigurationError as exc:
+            return {
+                "status": "error",
+                "message": str(exc),
+                "error_type": "CONFIG",
+                "details": exc.details,
+                "metrics": {},
+                "http_status": 400,
+            }
+
+        try:
+            result = await self.engine.run_backtest(start_date, end_date, strategy=strategy)
             if "error" in result:
                 error_type = result.get("error_type", "UNKNOWN")
                 error_details = result.get("details", result.get("error", "Unknown error"))
-                return {
+                error_response = {
                     "status": "error",
                     "message": result["error"],
                     "error_type": error_type,
                     "details": error_details,
                     "metrics": {}
                 }
+                return self._cache_error_response(error_response)
 
             metrics = calculate_metrics(result)
             charts, chart_banners = self._generate_charts(result)
             build_campaign_report()
+            self._clear_error_cache()
 
             # Persist to DB with versioning
             with SessionLocal() as db:
@@ -172,13 +245,49 @@ class PerformanceService:
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
-            return {
+            error_response = {
                 "status": "error",
                 "message": str(e),
                 "error_type": "EXCEPTION",
                 "details": error_trace,
                 "metrics": {}
             }
+            return self._cache_error_response(error_response)
+
+    def _cache_error_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Store error payload to avoid repeated engine calls."""
+        timestamp = datetime.utcnow()
+        metadata = dict(payload.get("metadata") or {})
+        metadata.setdefault(
+            "user_message",
+            "Backtest engine temporarily unavailable. Showing the last error while retrying soon.",
+        )
+        metadata["last_attempt"] = timestamp.isoformat()
+        metadata["cache_ttl_seconds"] = self.ERROR_CACHE_TTL_SECONDS
+        payload["metadata"] = metadata
+        self._error_cache = {"payload": payload, "timestamp": timestamp}
+        return payload
+
+    def _get_cached_error(self) -> dict[str, Any] | None:
+        """Return cached error response if still valid."""
+        if not self._error_cache:
+            return None
+        timestamp = self._error_cache["timestamp"]
+        age_seconds = (datetime.utcnow() - timestamp).total_seconds()
+        if age_seconds > self.ERROR_CACHE_TTL_SECONDS:
+            self._error_cache = None
+            return None
+        cached_payload = dict(self._error_cache["payload"])
+        metadata = dict(cached_payload.get("metadata") or {})
+        metadata["cached_error"] = True
+        metadata["cache_expires_at"] = (timestamp + timedelta(seconds=self.ERROR_CACHE_TTL_SECONDS)).isoformat()
+        metadata["retry_after_seconds"] = max(0, int(self.ERROR_CACHE_TTL_SECONDS - age_seconds))
+        cached_payload["metadata"] = metadata
+        return cached_payload
+
+    def _clear_error_cache(self) -> None:
+        """Clear cached error after successful run."""
+        self._error_cache = None
 
     def _generate_charts(self, backtest_result: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         charts: dict[str, str] = {}

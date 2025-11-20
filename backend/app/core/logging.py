@@ -32,17 +32,24 @@ RESERVED_LOG_RECORD_ATTRS = {
 }
 
 
-def setup_logging():
+def setup_logging() -> logging.Logger:
     """Configure structured JSON logging."""
-    log_handler = logging.StreamHandler(sys.stdout)
-    formatter = jsonlogger.JsonFormatter(
-        "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
-    )
-    log_handler.setFormatter(formatter)
-
     root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, settings.LOG_LEVEL.upper()))
-    root_logger.addHandler(log_handler)
+    desired_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    root_logger.setLevel(desired_level)
+
+    stream_handler_exists = any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers)
+
+    if not stream_handler_exists:
+        log_handler = logging.StreamHandler(sys.stdout)
+        formatter = jsonlogger.JsonFormatter(
+            "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+        )
+        log_handler.setFormatter(formatter)
+        root_logger.addHandler(log_handler)
+
+    # Prevent double logging through parent loggers (e.g., uvicorn)
+    root_logger.propagate = False
 
     return root_logger
 

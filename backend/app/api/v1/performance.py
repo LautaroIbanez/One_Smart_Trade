@@ -32,6 +32,16 @@ async def get_performance_summary():
         result = await performance_service.get_summary()
 
         if result.get("status") == "error":
+            error_type = result.get("error_type")
+            if error_type == "CONFIG":
+                raise HTTPException(
+                    status_code=result.get("http_status", 400),
+                    detail={
+                        "message": result.get("message", "Strategy configuration error"),
+                        "error_type": error_type,
+                        "details": result.get("details", {}),
+                    },
+                )
             return PerformanceSummaryResponse(
                 status="error",
                 message=result.get("message", "Unknown error"),

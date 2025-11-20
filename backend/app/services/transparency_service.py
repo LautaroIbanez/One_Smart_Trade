@@ -348,7 +348,11 @@ class TransparencyService:
                 "last_export": None,
             }
 
-    async def get_semaphore(self) -> TransparencySemaphore:
+    async def get_semaphore(
+        self,
+        *,
+        drawdown_divergence: DrawdownDivergence | None = None,
+    ) -> TransparencySemaphore:
         """Get overall transparency semaphore status."""
         verifications = self.verify_hashes()
         
@@ -377,7 +381,11 @@ class TransparencyService:
                 tracking_error_status = VerificationStatus.WARN
         
         # Check drawdown divergence
-        drawdown_div = await self.get_drawdown_divergence()
+        drawdown_div = (
+            drawdown_divergence
+            if drawdown_divergence is not None
+            else await self.get_drawdown_divergence()
+        )
         drawdown_status = VerificationStatus.PASS
         if drawdown_div:
             if drawdown_div.divergence_pct > 10.0:  # 10% divergence
@@ -416,13 +424,13 @@ class TransparencyService:
 
     async def get_dashboard_data(self) -> dict[str, Any]:
         """Get complete transparency dashboard data."""
-        semaphore = await self.get_semaphore()
+        drawdown_div = await self.get_drawdown_divergence()
+        semaphore = await self.get_semaphore(drawdown_divergence=drawdown_div)
         tracking_error_7d, tracking_error_30d, tracking_error_90d = await asyncio.gather(
             self.get_tracking_error_rolling(7),
             self.get_tracking_error_rolling(30),
             self.get_tracking_error_rolling(90),
         )
-        drawdown_div = await self.get_drawdown_divergence()
         audit_info = self.get_audit_status()
         verifications = self.verify_hashes()
         
