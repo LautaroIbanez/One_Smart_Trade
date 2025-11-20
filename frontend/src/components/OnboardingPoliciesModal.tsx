@@ -40,8 +40,8 @@ export default function OnboardingPoliciesModal() {
         <ul className="modal-list">
           <li><strong>Límites de riesgo</strong>: 1% por operación (máx. 2% sin override). Límite diario: 3% (hard warning al 2%).</li>
           <li><strong>Límite preventivo</strong>: máximo 7 trades en 24 horas. El trade #8 se bloquea automáticamente.</li>
-          <li><strong>Cooldowns</strong>: 3 pérdidas consecutivas activan cooldown de 24 horas. Drawdown >20% suspende nuevas entradas.</li>
-          <li><strong>Apalancamiento</strong>: advertencia >2×; hard stop >3× bloquea nuevas entradas hasta reducir exposición.</li>
+          <li><strong>Cooldowns</strong>: 3 pérdidas consecutivas activan cooldown de 24 horas. Drawdown &gt;20% suspende nuevas entradas.</li>
+          <li><strong>Apalancamiento</strong>: advertencia &gt;2×; hard stop &gt;3× bloquea nuevas entradas hasta reducir exposición.</li>
           <li><strong>Capital validado</strong>: no se generan señales sin capital verificado. Debes conectar tu cuenta o ingresar capital manualmente.</li>
           <li><strong>Educación</strong>: materiales de gestión emocional, límites y journaling disponibles en la app.</li>
         </ul>
