@@ -10,12 +10,12 @@ from app.models.performance import (
     RollingMetrics,
 )
 from app.services.monitoring_service import ContinuousMonitoringService
-from app.services.performance_service import PerformanceService
+from app.services.performance_service import get_performance_service
 from app.services.kpis_reporting_service import KPIsReportingService
 from app.core.logging import logger
 
 router = APIRouter()
-performance_service = PerformanceService()
+performance_service = get_performance_service()
 monitoring_service = ContinuousMonitoringService(asset="BTCUSDT", venue="binance")
 kpis_service = KPIsReportingService()
 
@@ -154,6 +154,8 @@ async def get_performance_summary():
         response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
         
         return response_dict
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -175,6 +177,8 @@ async def get_monitoring_health():
             "alerts": alerts,
             "alerts_count": len(alerts),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -192,6 +196,8 @@ async def get_monitoring_metrics():
             "status": "ok",
             "metrics": metrics,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -207,13 +213,13 @@ async def get_monthly_performance():
     - Current win/loss streak
     - Current drawdown
     """
-    from app.services.performance_service import PerformanceService
+    from app.services.performance_service import get_performance_service
     from app.core.database import SessionLocal
     from app.db.crud import get_recommendation_history, calculate_production_drawdown
     from datetime import datetime
     import pandas as pd
 
-    perf_service = PerformanceService()
+    perf_service = get_performance_service()
     
     # Get production trades from recommendations
     with SessionLocal() as db:
@@ -517,6 +523,8 @@ async def get_daily_kpis(lookback_days: int = Query(30, ge=1, le=365, descriptio
             "status": "success",
             "kpis": kpis,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to calculate daily KPIs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -544,6 +552,8 @@ async def export_daily_kpis(
                 "Content-Disposition": f'attachment; filename="{report["filename"]}"',
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to export daily KPIs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

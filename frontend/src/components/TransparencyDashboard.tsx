@@ -141,7 +141,6 @@ function getStatusIcon(status: string): string {
 export function TransparencyDashboard() {
   const [data, setData] = useState<TransparencyDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [statusAlert, setStatusAlert] = useState<DashboardStatusAlert | null>(null)
 
@@ -150,7 +149,21 @@ export function TransparencyDashboard() {
       setLoading(true)
       const response = await fetch(`${API_BASE_URL}/api/v1/transparency/dashboard`)
       if (!response.ok) {
-        throw new Error('Failed to fetch transparency dashboard')
+        let errorPayload: DashboardApiResponse = {
+          status: 'error',
+          message: `Error ${response.status}: no se pudo cargar el dashboard`,
+        }
+        try {
+          const parsed = await response.json()
+          if (parsed && typeof parsed === 'object') {
+            errorPayload = { ...parsed }
+          }
+        } catch {
+          // ignore JSON parse failure; fallback message already set
+        }
+        setStatusAlert(buildStatusAlert(errorPayload))
+        setData(null)
+        return
       }
       const result: DashboardApiResponse = await response.json()
       const isErrorPayload = result.status === 'error'
@@ -164,15 +177,16 @@ export function TransparencyDashboard() {
 
       if (missingMetrics) {
         setData(null)
-        setError(null)
         return
       }
 
       setData(result as TransparencyDashboardData)
-      setError(null)
     } catch (err) {
-      setStatusAlert(null)
-      setError(err instanceof Error ? err.message : 'Unknown error')
+      setData(null)
+      setStatusAlert({
+        message: 'No se pudo conectar con el backend de transparencia.',
+        details: err instanceof Error ? err.message : 'Error desconocido',
+      })
     } finally {
       setLoading(false)
     }
@@ -193,18 +207,6 @@ export function TransparencyDashboard() {
           <h2>Dashboard de Transparencia</h2>
         </header>
         <p>Cargando datos de transparencia...</p>
-      </section>
-    )
-  }
-
-  if (error) {
-    return (
-      <section className="transparency-dashboard" aria-live="polite">
-        <header>
-          <h2>Dashboard de Transparencia</h2>
-        </header>
-        <p className="error">Error: {error}</p>
-        <button onClick={fetchData}>Reintentar</button>
       </section>
     )
   }
@@ -230,22 +232,7 @@ export function TransparencyDashboard() {
             </div>
           </div>
         </header>
-        {statusAlert ? (
-          <div className="error" role="alert">
-            <p>{statusAlert.message}</p>
-            {statusAlert.details && <p>{statusAlert.details}</p>}
-            <div>
-              {statusAlert.lastAttempt && (
-                <small>Último intento: {new Date(statusAlert.lastAttempt).toLocaleString()}</small>
-              )}
-              {typeof statusAlert.retryAfterSeconds === 'number' && (
-                <small> Reintento automático en ~{statusAlert.retryAfterSeconds}s.</small>
-              )}
-            </div>
-          </div>
-        ) : (
-          <p>No se pudieron cargar los datos del dashboard.</p>
-        )}
+        <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />
       </section>
     )
   }
@@ -273,23 +260,7 @@ export function TransparencyDashboard() {
         </div>
       </header>
 
-      {statusAlert && (
-        <div className="error" role="alert">
-          <p>{statusAlert.message}</p>
-          {statusAlert.details && <p>{statusAlert.details}</p>}
-          <div>
-            {statusAlert.lastAttempt && (
-              <small>Último intento: {new Date(statusAlert.lastAttempt).toLocaleString()}</small>
-            )}
-            {statusAlert.cacheExpiresAt && (
-              <small> | Próximo refresco: {new Date(statusAlert.cacheExpiresAt).toLocaleString()}</small>
-            )}
-            {typeof statusAlert.retryAfterSeconds === 'number' && (
-              <small> | Reintento automático en ~{statusAlert.retryAfterSeconds}s.</small>
-            )}
-          </div>
-        </div>
-      )}
+      {statusAlert && <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />}
 
       {/* Semaphore Status */}
       <div className="semaphore-section">
@@ -481,4 +452,40 @@ export function TransparencyDashboard() {
 }
 
 export default TransparencyDashboard
+
+interface ErrorBannerProps {
+  statusAlert: DashboardStatusAlert | null
+  onRetry: () => void
+}
+
+function ErrorBanner({ statusAlert, onRetry }: ErrorBannerProps) {
+  const hasAlert = Boolean(statusAlert)
+  const guidance =
+    'Revisa el estado del backend, vuelve a intentar más tarde o contacta a soporte si el problema persiste.'
+
+  return (
+    <div className="error transparency-error-banner" role="alert">
+      <p>{statusAlert?.message ?? 'No se pudieron cargar los datos del dashboard.'}</p>
+      {statusAlert?.details && <p>{statusAlert.details}</p>}
+      <p className="guidance">{guidance}</p>
+      <div className="error-meta">
+        {statusAlert?.lastAttempt && <small>Último intento: {new Date(statusAlert.lastAttempt).toLocaleString()}</small>}
+        {statusAlert?.cacheExpiresAt && (
+          <small> | Próximo refresco: {new Date(statusAlert.cacheExpiresAt).toLocaleString()}</small>
+        )}
+        {typeof statusAlert?.retryAfterSeconds === 'number' && (
+          <small> | Reintento automático en ~{statusAlert.retryAfterSeconds}s.</small>
+        )}
+      </div>
+      <div className="error-actions">
+        <button type="button" className="refresh-button" onClick={onRetry}>
+          🔄 Reintentar
+        </button>
+        <a href="mailto:soporte@onesmarttrade.com" className="support-link">
+          Contactar soporte
+        </a>
+      </div>
+    </div>
+  )
+}
 

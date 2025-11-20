@@ -20,6 +20,7 @@ from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.db.crud import get_latest_backtest_result, save_backtest_result
 from app.data.signal_data_provider import SignalDataProvider
+from app.core.exceptions import DataFreshnessError
 from app.quant.signal_engine import DailySignalEngine
 
 
@@ -74,7 +75,7 @@ class PerformanceService:
                     logger.warning("Failed to load performance config", extra={"path": str(path), "error": str(exc)})
         return defaults
 
-    def _resolve_strategy(self) -> DailyStrategyAdapter:
+    def _resolve_strategy(self, *, allow_stale_data: bool = False) -> DailyStrategyAdapter:
         """Build the strategy object defined in settings."""
         if not self._strategy_source:
             raise StrategyConfigurationError(
@@ -83,11 +84,27 @@ class PerformanceService:
             )
 
         if self._strategy_source == "daily_signal_engine":
+            validate_freshness = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA and not allow_stale_data
+            validate_gaps = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA
+
             try:
                 inputs = self.signal_data_provider.get_validated_inputs(
-                    validate_freshness=settings.PERFORMANCE_STRATEGY_VALIDATE_DATA,
-                    validate_gaps=settings.PERFORMANCE_STRATEGY_VALIDATE_DATA,
+                    validate_freshness=validate_freshness,
+                    validate_gaps=validate_gaps,
                 )
+            except DataFreshnessError as exc:
+                logger.warning(
+                    "Signal data freshness validation failed",
+                    extra={
+                        "interval": exc.interval,
+                        "latest_timestamp": exc.latest_timestamp,
+                        "latest_candle_age_minutes": getattr(exc, "context_data", {}).get("age_minutes") if getattr(exc, "context_data", None) else None,
+                        "threshold_minutes": exc.threshold_minutes,
+                        "context": exc.context_data,
+                        "allow_stale_data": allow_stale_data,
+                    },
+                )
+                raise
             except Exception as exc:
                 logger.error(
                     "Failed to load strategy inputs",
@@ -110,7 +127,7 @@ class PerformanceService:
             details={"setting": "PERFORMANCE_STRATEGY_SOURCE"},
         )
 
-    async def get_summary(self, use_cache: bool = True) -> dict[str, Any]:
+    async def get_summary(self, use_cache: bool = True, *, allow_stale_inputs: bool = False) -> dict[str, Any]:
         """Get performance summary from latest backtest."""
         # Check for cached result in DB
         if use_cache:
@@ -139,16 +156,13 @@ class PerformanceService:
         start_date = end_date - timedelta(days=5 * 365)
 
         try:
-            strategy = self._resolve_strategy()
+            strategy = self._resolve_strategy(allow_stale_data=allow_stale_inputs)
+        except DataFreshnessError as exc:
+            stale_payload = self._build_data_stale_error(exc, allow_stale_inputs=allow_stale_inputs)
+            return self._cache_error_response(stale_payload)
         except StrategyConfigurationError as exc:
-            return {
-                "status": "error",
-                "message": str(exc),
-                "error_type": "CONFIG",
-                "details": exc.details,
-                "metrics": {},
-                "http_status": 400,
-            }
+            config_payload = self._build_config_error_response(exc)
+            return self._cache_error_response(config_payload)
 
         try:
             result = await self.engine.run_backtest(start_date, end_date, strategy=strategy)
@@ -288,6 +302,107 @@ class PerformanceService:
     def _clear_error_cache(self) -> None:
         """Clear cached error after successful run."""
         self._error_cache = None
+
+    def _build_config_error_response(self, exc: StrategyConfigurationError) -> dict[str, Any]:
+        """Standardize strategy configuration errors for caching."""
+        metadata = {
+            "error_scope": "strategy_configuration",
+            "required_setting": exc.details.get("setting") if exc.details else None,
+            "recovery_hints": [
+                "Ensure PERFORMANCE_STRATEGY_SOURCE is configured",
+                "Verify signal datasets exist and are readable",
+                "Confirm environment variables in backend/app/core/config.py are set",
+            ],
+        }
+
+        return {
+            "status": "error",
+            "message": str(exc),
+            "error_type": "CONFIG",
+            "details": exc.details,
+            "metrics": {},
+            "http_status": 400,
+            "metadata": metadata,
+        }
+
+    def _build_data_stale_error(self, exc: DataFreshnessError, *, allow_stale_inputs: bool) -> dict[str, Any]:
+        """Build a structured payload when signal data is stale."""
+        latest_ts = exc.latest_timestamp
+        if isinstance(latest_ts, datetime):
+            latest_iso = latest_ts.isoformat()
+        else:
+            latest_iso = str(latest_ts) if latest_ts is not None else None
+
+        context = dict(getattr(exc, "context_data", {}) or {})
+        age_minutes = context.get("age_minutes")
+
+        metadata = {
+            "stale_interval": exc.interval,
+            "latest_timestamp": latest_iso,
+            "threshold_minutes": exc.threshold_minutes,
+            "age_minutes": age_minutes,
+            "latest_candle_age_minutes": age_minutes,
+            "reference_time": context.get("reference_time"),
+            "cached_inputs_available": self.signal_data_provider.has_cached_inputs(),
+            "allow_stale_inputs_requested": allow_stale_inputs,
+            "recovery_hints": [
+                "Refresh curated OHLCV datasets",
+                "Re-run ingestion pipeline",
+                "Retry once new candles arrive",
+            ],
+        }
+
+        if allow_stale_inputs and not settings.PERFORMANCE_STRATEGY_VALIDATE_DATA:
+            metadata["freshness_validation_disabled_globally"] = True
+
+        details = {
+            "interval": exc.interval,
+            "latest_timestamp": latest_iso,
+            "threshold_minutes": exc.threshold_minutes,
+            "context": context,
+        }
+        if age_minutes is not None:
+            details["age_minutes"] = age_minutes
+            details["latest_candle_age_minutes"] = age_minutes
+
+        self._emit_staleness_observability(
+            interval=exc.interval,
+            latest_timestamp=latest_iso,
+            age_minutes=age_minutes,
+            threshold_minutes=exc.threshold_minutes,
+            allow_stale_inputs=allow_stale_inputs,
+        )
+
+        return {
+            "status": "error",
+            "message": exc.reason,
+            "error_type": "DATA_STALE",
+            "details": details,
+            "metrics": {},
+            "http_status": 503,
+            "metadata": metadata,
+        }
+
+    def _emit_staleness_observability(
+        self,
+        *,
+        interval: str,
+        latest_timestamp: str | None,
+        age_minutes: float | None,
+        threshold_minutes: int | None,
+        allow_stale_inputs: bool,
+    ) -> None:
+        """Emit structured telemetry for monitoring dashboards."""
+        logger.warning(
+            "Performance summary blocked: stale signal data",
+            extra={
+                "interval": interval,
+                "latest_timestamp": latest_timestamp,
+                "latest_candle_age_minutes": age_minutes,
+                "threshold_minutes": threshold_minutes,
+                "allow_stale_inputs_requested": allow_stale_inputs,
+            },
+        )
 
     def _generate_charts(self, backtest_result: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         charts: dict[str, str] = {}
@@ -462,3 +577,14 @@ class PerformanceService:
             charts["win_rate"] = _save_chart(fig, "win_rate.png")
 
         return charts, banners
+
+
+_performance_service_singleton: PerformanceService | None = None
+
+
+def get_performance_service() -> PerformanceService:
+    """Return a shared PerformanceService instance for all callers."""
+    global _performance_service_singleton
+    if _performance_service_singleton is None:
+        _performance_service_singleton = PerformanceService()
+    return _performance_service_singleton

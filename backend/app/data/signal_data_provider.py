@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.core.logging import logger
 from app.data.curation import DataCuration
+from app.core.exceptions import DataFreshnessError
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,9 +100,13 @@ class SignalDataProvider:
         
         # Validate data freshness if requested
         if validate_freshness:
-            self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol)
-            self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol)
-            logger.debug("Data freshness validation passed")
+            try:
+                self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol)
+                self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol)
+                logger.debug("Data freshness validation passed")
+            except DataFreshnessError as exc:
+                self._record_data_freshness_failure(exc)
+                raise
         
         # Validate data gaps if requested
         if validate_gaps:
@@ -159,4 +164,24 @@ class SignalDataProvider:
         """Clear cached inputs to force refresh on next call."""
         self._cached_inputs = None
         logger.debug("Signal data inputs cache cleared")
+
+    def has_cached_inputs(self) -> bool:
+        """Return True if validated inputs are cached in memory."""
+        return self._cached_inputs is not None
+
+    def _record_data_freshness_failure(self, exc: DataFreshnessError) -> None:
+        """Emit structured telemetry when curated data is stale."""
+        context = getattr(exc, "context_data", {}) or {}
+        age_minutes = context.get("age_minutes")
+        logger.warning(
+            "Data freshness validation failed",
+            extra={
+                "interval": exc.interval,
+                "latest_timestamp": exc.latest_timestamp,
+                "latest_candle_age_minutes": age_minutes,
+                "threshold_minutes": exc.threshold_minutes,
+                "venue": context.get("venue") or self.venue,
+                "symbol": context.get("symbol") or self.symbol,
+            },
+        )
 

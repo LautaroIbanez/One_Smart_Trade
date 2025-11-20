@@ -269,3 +269,40 @@
   background: var(--primary-color-dark, #0056b3);
 }
 
+.transparency-error-banner {
+  background: #fff3cd;
+  border: 1px solid #ffecb5;
+  color: #7a5f00;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.transparency-error-banner .guidance {
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin: 0.5rem 0;
+}
+
+.transparency-error-banner .error-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #6b5b00;
+}
+
+.transparency-error-banner .error-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.transparency-error-banner .support-link {
+  color: #0d6efd;
+  text-decoration: underline;
+  font-weight: 500;
+}
+

@@ -21,7 +21,7 @@ from app.utils.hashing import (
     calculate_params_hash,
 )
 from app.utils.dataset_metadata import get_dataset_version_hash, get_params_digest
-from app.services.performance_service import PerformanceService
+from app.services.performance_service import get_performance_service
 from app.backtesting.tracking_error import TrackingErrorCalculator
 
 
@@ -83,7 +83,7 @@ class TransparencyService:
     """Service for transparency monitoring and verification."""
 
     def __init__(self):
-        self.performance_service = PerformanceService()
+        self.performance_service = get_performance_service()
 
     def verify_hashes(self) -> list[HashVerification]:
         """Verify current hashes against stored hashes in recommendations."""
@@ -236,7 +236,7 @@ class TransparencyService:
     async def get_drawdown_divergence(self) -> DrawdownDivergence | None:
         """Get divergence between theoretical and realistic drawdown."""
         try:
-            summary = await self.performance_service.get_summary(use_cache=True)
+            summary = await self.performance_service.get_summary(use_cache=True, allow_stale_inputs=True)
         except Exception as exc:
             logger.error("Failed to fetch performance summary for drawdown divergence", exc_info=True, extra={"error": str(exc)})
             return None
