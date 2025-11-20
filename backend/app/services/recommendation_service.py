@@ -6,7 +6,7 @@ import base64
 import csv
 import io
 import os
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -56,6 +56,8 @@ from app.observability.risk_metrics import (
     USER_EXPOSURE_RATIO,
     USER_EXPOSURE_LIMIT_ALERT,
 )
+
+MAX_HISTORY_LIMIT = 1000
 
 
 class RecommendationService:
@@ -379,6 +381,53 @@ class RecommendationService:
         result["execution_plan"] = execution_plan
         
         return result
+    
+    def _apply_recency_metadata(self, payload: dict[str, Any], *, as_of: date, today: date) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return payload
+        recency = {
+            "status": "fresh" if as_of == today else "stale",
+            "as_of": as_of.isoformat(),
+        }
+        try:
+            delta = today - as_of
+            if delta.days >= 0:
+                recency["days_since_release"] = delta.days
+        except TypeError:
+            pass
+        payload["data_recency"] = recency
+        return payload
+    
+    def _build_no_data_payload(
+        self,
+        *,
+        reason: str,
+        latest_rec: RecommendationORM | None = None,
+        allow_replay_available: bool = False,
+    ) -> dict[str, Any]:
+        today = datetime.utcnow().date()
+        latest_timestamp = latest_rec.created_at.isoformat() if latest_rec else None
+        latest_date = latest_rec.created_at.date().isoformat() if latest_rec else None
+        data_recency = {
+            "status": "stale" if latest_rec else "missing",
+            "as_of": latest_date,
+        }
+        if latest_rec:
+            try:
+                delta = today - latest_rec.created_at.date()
+                data_recency["days_since_release"] = delta.days
+            except Exception:
+                data_recency["days_since_release"] = None
+        else:
+            data_recency["days_since_release"] = None
+        return {
+            "status": "no_data",
+            "reason": reason,
+            "latest_available_timestamp": latest_timestamp,
+            "latest_available_date": latest_date,
+            "data_recency": data_recency,
+            "allow_replay_hint": allow_replay_available,
+        }
     
     def _calculate_position_sizing(self, recommendation: dict[str, Any], user_id: str | None = None) -> dict[str, Any] | None:
         """
@@ -2046,12 +2095,27 @@ class RecommendationService:
                 open_rec.date,
                 open_rec.status,
             )
-            return self._cache_result(open_rec, user_id=user_id)
+            result = self._cache_result(open_rec, user_id=user_id)
+            return self._apply_recency_metadata(
+                result,
+                as_of=open_rec.created_at.date(),
+                today=today,
+            )
 
         # Check cache first
-        if self._cache and self._cache_timestamp and self._cache_timestamp.date() == today:
-            logger.debug("Returning cached recommendation")
-            return self._cache
+        if self._cache and self._cache_timestamp:
+            cache_date = self._cache_timestamp.date()
+            if cache_date == today:
+                logger.debug("Returning cached recommendation for today")
+                return self._apply_recency_metadata(
+                    self._cache,
+                    as_of=cache_date,
+                    today=today,
+                )
+            logger.debug(
+                "Cache contains recommendation from %s; verifying database for fresher data",
+                cache_date,
+            )
 
         # Try DB first
         with SessionLocal() as db:
@@ -2060,12 +2124,29 @@ class RecommendationService:
                 if rec:
                     rec_date = rec.created_at.date()
                     if rec_date == today:
-                        logger.info(f"Found today's recommendation in DB (created at {rec.created_at})")
-                        return self._cache_result(rec, user_id=user_id)
+                        logger.info("Found today's recommendation in DB (created at %s)", rec.created_at)
                     else:
-                        logger.debug(f"Latest recommendation is from {rec_date}, not today")
+                        logger.info(
+                            "Latest recommendation is from %s (today is %s); serving last available record",
+                            rec_date,
+                            today,
+                        )
+                    result = self._cache_result(rec, user_id=user_id)
+                    return self._apply_recency_metadata(result, as_of=rec_date, today=today)
             finally:
                 db.close()
+
+        if self._cache and self._cache_timestamp:
+            cache_date = self._cache_timestamp.date()
+            logger.info(
+                "Serving cached recommendation from %s after database miss",
+                cache_date,
+            )
+            return self._apply_recency_metadata(
+                self._cache,
+                as_of=cache_date,
+                today=today,
+            )
 
         # Only generate on-demand if allow_replay=True (for replays/testing)
         if not allow_replay:
@@ -2073,7 +2154,10 @@ class RecommendationService:
                 "No recommendation found for today. Signal generation is only allowed via scheduled daily pipeline job. "
                 "Use allow_replay=True for manual replays."
             )
-            return None
+            return self._build_no_data_payload(
+                reason="Todavía no hay recomendaciones generadas para la fecha solicitada.",
+                allow_replay_available=True,
+            )
 
         logger.info("Generating recommendation on-demand (replay mode)")
         # CRITICAL: Validate capital BEFORE generating signal
@@ -2299,6 +2383,13 @@ class RecommendationService:
                 details={"error_type": type(e).__name__},
             ) from e
 
+    def _sanitize_history_limit(self, limit: int | None, *, default: int = 25) -> int:
+        try:
+            value = int(limit) if limit is not None else default
+        except (TypeError, ValueError):
+            value = default
+        return max(1, min(value, MAX_HISTORY_LIMIT))
+
     async def get_recommendation_history(
         self,
         *,
@@ -2314,7 +2405,7 @@ class RecommendationService:
     ) -> dict[str, Any]:
         """Get recommendation history with pagination and filters."""
         self._ensure_champion_context(run_alerts=False)
-        limit = max(1, min(limit, 200))
+        limit = self._sanitize_history_limit(limit)
         signal_value = signal.upper() if signal else None
         result_value = result.upper() if result else None
         cursor_tuple = self._decode_cursor(cursor)
@@ -2375,7 +2466,7 @@ class RecommendationService:
     ) -> dict[str, Any]:
         """Generate downloadable history snapshot."""
         self._ensure_champion_context(run_alerts=False)
-        limit = max(1, min(limit, 1000))
+        limit = self._sanitize_history_limit(limit, default=100)
         signal_value = signal.upper() if signal else None
         result_value = result.upper() if result else None
         cursor_tuple = self._decode_cursor(cursor)

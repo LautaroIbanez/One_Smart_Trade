@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from typing import Any
@@ -167,11 +168,10 @@ class TransparencyService:
         
         return verifications
 
-    def get_tracking_error_rolling(self, period_days: int = 30) -> TrackingErrorRolling | None:
-        """Get rolling tracking error metrics for the specified period."""
+    def _calculate_tracking_error_rolling(self, period_days: int = 30) -> TrackingErrorRolling | None:
+        """Synchronous helper for rolling tracking error metrics."""
         try:
             with SessionLocal() as db:
-                # Get recommendations from the period
                 cutoff_date = datetime.utcnow() - timedelta(days=period_days)
                 stmt = (
                     select(RecommendationORM)
@@ -181,47 +181,43 @@ class TransparencyService:
                     .order_by(RecommendationORM.created_at)
                 )
                 recs = list(db.execute(stmt).scalars().all())
-                
+
                 if len(recs) < 2:
                     return None
-                
-                # Build equity curves from recommendations
+
                 equity_theoretical = [1.0]
                 equity_realistic = [1.0]
-                
+
                 for rec in recs:
-                    # Calculate theoretical return
                     theoretical_return = 0.0
                     if rec.exit_reason and rec.exit_price_pct is not None:
-                        # Use exit_price_pct as realistic, calculate theoretical from target
                         target_price = None
                         entry = rec.entry_optimal
                         if rec.exit_reason.upper() in ("TP", "TAKE_PROFIT"):
                             target_price = rec.take_profit
                         elif rec.exit_reason.upper() in ("SL", "STOP_LOSS"):
                             target_price = rec.stop_loss
-                        
+
                         if target_price and entry:
                             if rec.signal == "BUY":
                                 theoretical_return = ((target_price - entry) / entry) * 100.0
                             elif rec.signal == "SELL":
                                 theoretical_return = ((entry - target_price) / entry) * 100.0
-                    
+
                     realistic_return = rec.exit_price_pct or 0.0
-                    
+
                     equity_theoretical.append(equity_theoretical[-1] * (1 + theoretical_return / 100.0))
                     equity_realistic.append(equity_realistic[-1] * (1 + realistic_return / 100.0))
-                
-                # Calculate tracking error
+
                 if len(equity_theoretical) > 1 and len(equity_realistic) > 1:
                     calc = TrackingErrorCalculator.from_curves(
                         theoretical=equity_theoretical,
                         realistic=equity_realistic,
                     )
-                    
+
                     return TrackingErrorRolling(
                         period_days=period_days,
-                        mean_deviation=calc.mean_divergence_bps / 100.0,  # Convert bps to percentage
+                        mean_deviation=calc.mean_divergence_bps / 100.0,
                         max_divergence=calc.max_divergence_bps / 100.0,
                         correlation=calc.correlation if hasattr(calc, "correlation") else 0.0,
                         rmse=calc.rmse if hasattr(calc, "rmse") else 0.0,
@@ -230,32 +226,57 @@ class TransparencyService:
                     )
         except Exception as e:
             logger.error(f"Error calculating rolling tracking error: {e}", exc_info=True)
-        
+
         return None
 
-    def get_drawdown_divergence(self) -> DrawdownDivergence | None:
+    async def get_tracking_error_rolling(self, period_days: int = 30) -> TrackingErrorRolling | None:
+        """Get rolling tracking error metrics for the specified period asynchronously."""
+        return await asyncio.to_thread(self._calculate_tracking_error_rolling, period_days)
+
+    async def get_drawdown_divergence(self) -> DrawdownDivergence | None:
         """Get divergence between theoretical and realistic drawdown."""
         try:
-            result = self.performance_service.get_summary()
-            
-            tracking_error_metrics = result.get("tracking_error_metrics", {})
-            theoretical_max_dd = tracking_error_metrics.get("theoretical_max_drawdown", 0.0)
-            realistic_max_dd = tracking_error_metrics.get("realistic_max_drawdown", 0.0)
-            
-            if theoretical_max_dd == 0:
-                return None
-            
-            divergence_pct = abs(realistic_max_dd - theoretical_max_dd) / abs(theoretical_max_dd) * 100.0
-            
-            return DrawdownDivergence(
-                theoretical_max_dd=theoretical_max_dd,
-                realistic_max_dd=realistic_max_dd,
-                divergence_pct=divergence_pct,
-                timestamp=datetime.utcnow().isoformat(),
-            )
-        except Exception as e:
-            logger.error(f"Error calculating drawdown divergence: {e}", exc_info=True)
+            summary = await self.performance_service.get_summary(use_cache=True)
+        except Exception as exc:
+            logger.error("Failed to fetch performance summary for drawdown divergence", exc_info=True, extra={"error": str(exc)})
             return None
+
+        if not summary or not isinstance(summary, dict):
+            logger.warning("Performance summary unavailable for drawdown divergence calculation")
+            return None
+
+        if summary.get("status") == "error":
+            logger.warning("Performance summary returned error status; skipping drawdown divergence", extra={"message": summary.get("message")})
+            return None
+
+        tracking_error_metrics = summary.get("tracking_error_metrics") or {}
+        if not tracking_error_metrics:
+            metrics = summary.get("metrics") or {}
+            tracking_error_metrics = metrics.get("tracking_error_metrics") or {}
+        if not tracking_error_metrics:
+            logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
+            return None
+
+        theoretical_max_dd = tracking_error_metrics.get("theoretical_max_drawdown")
+        realistic_max_dd = tracking_error_metrics.get("realistic_max_drawdown")
+
+        if theoretical_max_dd in (None, 0):
+            return None
+
+        if realistic_max_dd is None:
+            realistic_max_dd = 0.0
+
+        try:
+            divergence_pct = abs(realistic_max_dd - theoretical_max_dd) / abs(theoretical_max_dd) * 100.0
+        except ZeroDivisionError:
+            return None
+
+        return DrawdownDivergence(
+            theoretical_max_dd=theoretical_max_dd,
+            realistic_max_dd=realistic_max_dd,
+            divergence_pct=divergence_pct,
+            timestamp=datetime.utcnow().isoformat(),
+        )
 
     def get_audit_status(self) -> dict[str, Any]:
         """Get status of export audits."""
@@ -323,7 +344,7 @@ class TransparencyService:
                 "last_export": None,
             }
 
-    def get_semaphore(self) -> TransparencySemaphore:
+    async def get_semaphore(self) -> TransparencySemaphore:
         """Get overall transparency semaphore status."""
         verifications = self.verify_hashes()
         
@@ -341,7 +362,7 @@ class TransparencyService:
                 params_status = v.status
         
         # Check tracking error
-        tracking_error_30d = self.get_tracking_error_rolling(30)
+        tracking_error_30d = await self.get_tracking_error_rolling(30)
         tracking_error_status = VerificationStatus.PASS
         if tracking_error_30d:
             if tracking_error_30d.annualized_tracking_error > 5.0:  # 5% threshold
@@ -352,7 +373,7 @@ class TransparencyService:
                 tracking_error_status = VerificationStatus.WARN
         
         # Check drawdown divergence
-        drawdown_div = self.get_drawdown_divergence()
+        drawdown_div = await self.get_drawdown_divergence()
         drawdown_status = VerificationStatus.PASS
         if drawdown_div:
             if drawdown_div.divergence_pct > 10.0:  # 10% divergence
@@ -389,13 +410,15 @@ class TransparencyService:
             },
         )
 
-    def get_dashboard_data(self) -> dict[str, Any]:
+    async def get_dashboard_data(self) -> dict[str, Any]:
         """Get complete transparency dashboard data."""
-        semaphore = self.get_semaphore()
-        tracking_error_7d = self.get_tracking_error_rolling(7)
-        tracking_error_30d = self.get_tracking_error_rolling(30)
-        tracking_error_90d = self.get_tracking_error_rolling(90)
-        drawdown_div = self.get_drawdown_divergence()
+        semaphore = await self.get_semaphore()
+        tracking_error_7d, tracking_error_30d, tracking_error_90d = await asyncio.gather(
+            self.get_tracking_error_rolling(7),
+            self.get_tracking_error_rolling(30),
+            self.get_tracking_error_rolling(90),
+        )
+        drawdown_div = await self.get_drawdown_divergence()
         audit_info = self.get_audit_status()
         verifications = self.verify_hashes()
         
@@ -420,12 +443,12 @@ class TransparencyService:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
-    def run_checks(self) -> TransparencySemaphore:
+    async def run_checks(self) -> TransparencySemaphore:
         """
         Run all transparency checks and return semaphore status.
         
         This method is designed to be called by scheduled jobs and returns
         a semaphore that can be used for alerting.
         """
-        return self.get_semaphore()
+        return await self.get_semaphore()
 

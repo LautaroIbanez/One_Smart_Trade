@@ -1,7 +1,7 @@
 """Tests for TransparencyService."""
 import pytest
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 
 from app.services.transparency_service import (
     TransparencyService,
@@ -128,8 +128,9 @@ class TestHashVerification:
 class TestTrackingErrorRolling:
     """Test rolling tracking error calculation."""
 
+    @pytest.mark.asyncio
     @patch("app.services.transparency_service.SessionLocal")
-    def test_get_tracking_error_rolling_insufficient_data(
+    async def test_get_tracking_error_rolling_insufficient_data(
         self,
         mock_session_local,
         transparency_service,
@@ -139,12 +140,13 @@ class TestTrackingErrorRolling:
         mock_session_local.return_value.__enter__.return_value = mock_db
         mock_db.execute.return_value.scalars.return_value.all.return_value = []
 
-        result = transparency_service.get_tracking_error_rolling(30)
+        result = await transparency_service.get_tracking_error_rolling(30)
 
         assert result is None
 
+    @pytest.mark.asyncio
     @patch("app.services.transparency_service.SessionLocal")
-    def test_get_tracking_error_rolling_sufficient_data(
+    async def test_get_tracking_error_rolling_sufficient_data(
         self,
         mock_session_local,
         transparency_service,
@@ -158,7 +160,7 @@ class TestTrackingErrorRolling:
             mock_recommendation,
         ]
 
-        result = transparency_service.get_tracking_error_rolling(30)
+        result = await transparency_service.get_tracking_error_rolling(30)
 
         assert result is not None
         assert isinstance(result, TrackingErrorRolling)
@@ -168,23 +170,24 @@ class TestTrackingErrorRolling:
 class TestDrawdownDivergence:
     """Test drawdown divergence calculation."""
 
-    @patch("app.services.transparency_service.PerformanceService")
-    def test_get_drawdown_divergence(
+    @pytest.mark.asyncio
+    async def test_get_drawdown_divergence(
         self,
-        mock_performance_service,
         transparency_service,
     ):
         """Test drawdown divergence calculation."""
-        mock_service = Mock()
-        mock_service.get_summary.return_value = {
-            "tracking_error_metrics": {
-                "theoretical_max_drawdown": -0.10,
-                "realistic_max_drawdown": -0.12,
+        mock_service = MagicMock()
+        mock_service.get_summary = AsyncMock(
+            return_value={
+                "tracking_error_metrics": {
+                    "theoretical_max_drawdown": -0.10,
+                    "realistic_max_drawdown": -0.12,
+                }
             }
-        }
+        )
         transparency_service.performance_service = mock_service
 
-        result = transparency_service.get_drawdown_divergence()
+        result = await transparency_service.get_drawdown_divergence()
 
         assert result is not None
         assert isinstance(result, DrawdownDivergence)
@@ -192,22 +195,23 @@ class TestDrawdownDivergence:
         assert result.realistic_max_dd == -0.12
         assert result.divergence_pct > 0
 
-    @patch("app.services.transparency_service.PerformanceService")
-    def test_get_drawdown_divergence_no_data(
+    @pytest.mark.asyncio
+    async def test_get_drawdown_divergence_no_data(
         self,
-        mock_performance_service,
         transparency_service,
     ):
         """Test drawdown divergence when no data available."""
-        mock_service = Mock()
-        mock_service.get_summary.return_value = {
-            "tracking_error_metrics": {
-                "theoretical_max_drawdown": 0.0,
+        mock_service = MagicMock()
+        mock_service.get_summary = AsyncMock(
+            return_value={
+                "tracking_error_metrics": {
+                    "theoretical_max_drawdown": 0.0,
+                }
             }
-        }
+        )
         transparency_service.performance_service = mock_service
 
-        result = transparency_service.get_drawdown_divergence()
+        result = await transparency_service.get_drawdown_divergence()
 
         assert result is None
 
@@ -215,11 +219,15 @@ class TestDrawdownDivergence:
 class TestSemaphore:
     """Test semaphore status calculation."""
 
+    @pytest.mark.asyncio
     @patch("app.services.transparency_service.TransparencyService.verify_hashes")
-    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling")
-    @patch("app.services.transparency_service.TransparencyService.get_drawdown_divergence")
+    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling", new_callable=AsyncMock)
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_drawdown_divergence",
+        new_callable=AsyncMock,
+    )
     @patch("app.services.transparency_service.TransparencyService.get_audit_status")
-    def test_get_semaphore_pass(
+    async def test_get_semaphore_pass(
         self,
         mock_audit,
         mock_drawdown,
@@ -255,15 +263,19 @@ class TestSemaphore:
         )
         mock_audit.return_value = {"total_exports": 10}
 
-        semaphore = transparency_service.get_semaphore()
+        semaphore = await transparency_service.get_semaphore()
 
         assert semaphore.overall_status == VerificationStatus.PASS
 
+    @pytest.mark.asyncio
     @patch("app.services.transparency_service.TransparencyService.verify_hashes")
-    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling")
-    @patch("app.services.transparency_service.TransparencyService.get_drawdown_divergence")
+    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling", new_callable=AsyncMock)
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_drawdown_divergence",
+        new_callable=AsyncMock,
+    )
     @patch("app.services.transparency_service.TransparencyService.get_audit_status")
-    def test_get_semaphore_fail_high_tracking_error(
+    async def test_get_semaphore_fail_high_tracking_error(
         self,
         mock_audit,
         mock_drawdown,
@@ -294,7 +306,7 @@ class TestSemaphore:
         mock_drawdown.return_value = None
         mock_audit.return_value = {"total_exports": 10}
 
-        semaphore = transparency_service.get_semaphore()
+        semaphore = await transparency_service.get_semaphore()
 
         assert semaphore.overall_status == VerificationStatus.FAIL
         assert semaphore.tracking_error_status == VerificationStatus.FAIL
@@ -303,8 +315,12 @@ class TestSemaphore:
 class TestRunChecks:
     """Test run_checks method."""
 
-    @patch("app.services.transparency_service.TransparencyService.get_semaphore")
-    def test_run_checks(
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_semaphore",
+        new_callable=AsyncMock,
+    )
+    async def test_run_checks(
         self,
         mock_get_semaphore,
         transparency_service,
@@ -313,24 +329,31 @@ class TestRunChecks:
         mock_semaphore = Mock(spec=TransparencySemaphore)
         mock_get_semaphore.return_value = mock_semaphore
 
-        result = transparency_service.run_checks()
+        result = await transparency_service.run_checks()
 
         assert result == mock_semaphore
-        mock_get_semaphore.assert_called_once()
+        mock_get_semaphore.assert_awaited_once()
 
 
 class TestDashboardData:
     """Test dashboard data aggregation."""
 
-    @patch("app.services.transparency_service.TransparencyService.get_semaphore")
-    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling")
-    @patch("app.services.transparency_service.TransparencyService.get_drawdown_divergence")
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_semaphore",
+        new_callable=AsyncMock,
+    )
+    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling", new_callable=AsyncMock)
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_drawdown_divergence",
+        new_callable=AsyncMock,
+    )
     @patch("app.services.transparency_service.TransparencyService.get_audit_status")
     @patch("app.services.transparency_service.TransparencyService.verify_hashes")
     @patch("app.services.transparency_service.get_git_commit_hash")
     @patch("app.services.transparency_service.get_dataset_version_hash")
     @patch("app.services.transparency_service.get_params_digest")
-    def test_get_dashboard_data(
+    async def test_get_dashboard_data(
         self,
         mock_params,
         mock_dataset,
@@ -343,7 +366,17 @@ class TestDashboardData:
         transparency_service,
     ):
         """Test dashboard data includes all required fields."""
-        mock_semaphore.return_value = Mock()
+        mock_semaphore.return_value = TransparencySemaphore(
+            overall_status=VerificationStatus.PASS,
+            hash_verification=VerificationStatus.PASS,
+            dataset_verification=VerificationStatus.PASS,
+            params_verification=VerificationStatus.PASS,
+            tracking_error_status=VerificationStatus.PASS,
+            drawdown_divergence_status=VerificationStatus.PASS,
+            audit_status=VerificationStatus.PASS,
+            last_verification=datetime.utcnow().isoformat(),
+            details={},
+        )
         mock_tracking.return_value = None
         mock_drawdown.return_value = None
         mock_audit.return_value = {}
@@ -352,7 +385,7 @@ class TestDashboardData:
         mock_dataset.return_value = "sha256:dataset"
         mock_params.return_value = "sha256:params"
 
-        data = transparency_service.get_dashboard_data()
+        data = await transparency_service.get_dashboard_data()
 
         assert "semaphore" in data
         assert "current_hashes" in data

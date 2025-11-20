@@ -23,7 +23,7 @@ async def get_transparency_dashboard() -> dict[str, Any]:
     - Audit status
     """
     try:
-        return transparency_service.get_dashboard_data()
+        return await transparency_service.get_dashboard_data()
     except Exception as e:
         logger.error(f"Error generating transparency dashboard: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -37,7 +37,7 @@ async def get_transparency_semaphore() -> dict[str, Any]:
     Returns overall status and per-check statuses.
     """
     try:
-        semaphore = transparency_service.get_semaphore()
+        semaphore = await transparency_service.get_semaphore()
         from dataclasses import asdict
         return asdict(semaphore)
     except Exception as e:
@@ -64,7 +64,7 @@ async def verify_hashes() -> dict[str, Any]:
 async def get_tracking_error_rolling(period_days: int = 30) -> dict[str, Any]:
     """Get rolling tracking error metrics for specified period."""
     try:
-        result = transparency_service.get_tracking_error_rolling(period_days)
+        result = await transparency_service.get_tracking_error_rolling(period_days)
         if not result:
             raise HTTPException(status_code=404, detail="Insufficient data for tracking error calculation")
         from dataclasses import asdict
@@ -80,7 +80,7 @@ async def get_tracking_error_rolling(period_days: int = 30) -> dict[str, Any]:
 async def get_drawdown_divergence() -> dict[str, Any]:
     """Get divergence between theoretical and realistic drawdown."""
     try:
-        result = transparency_service.get_drawdown_divergence()
+        result = await transparency_service.get_drawdown_divergence()
         if not result:
             raise HTTPException(status_code=404, detail="Insufficient data for drawdown divergence calculation")
         from dataclasses import asdict

@@ -150,6 +150,21 @@ def test_today_recommendation_includes_execution_plan(monkeypatch, sample_recomm
     assert "acceptable_end" in plan["operational_window"]
 
 
+def test_today_recommendation_returns_204_when_empty(monkeypatch):
+    async def fake_get_today_recommendation():
+        return None
+
+    monkeypatch.setattr(
+        recommendation_module.recommendation_service,
+        "get_today_recommendation",
+        fake_get_today_recommendation,
+    )
+
+    response = client.get("/api/v1/recommendation/today")
+    assert response.status_code == 204
+    assert response.text == ""
+
+
 def test_history_endpoint_includes_backtest_metrics(monkeypatch):
     """Test that backtest metrics are included in /history endpoint response."""
     sample_item = {
@@ -391,12 +406,16 @@ def test_history_endpoint_limit_validation(monkeypatch):
     )
 
     # Test limit too high
-    response = client.get("/api/v1/recommendation/history", params={"limit": 300})
+    response = client.get("/api/v1/recommendation/history", params={"limit": 1500})
     assert response.status_code == 422  # Validation error
 
     # Test limit too low
     response = client.get("/api/v1/recommendation/history", params={"limit": 0})
     assert response.status_code == 422
+
+    # Test upper bound limit
+    response = client.get("/api/v1/recommendation/history", params={"limit": 1000})
+    assert response.status_code == 200
 
     # Test valid limit
     response = client.get("/api/v1/recommendation/history", params={"limit": 50})

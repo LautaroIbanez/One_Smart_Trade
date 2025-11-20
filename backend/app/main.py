@@ -132,7 +132,7 @@ async def job_transparency_checks() -> None:
     
     try:
         transparency_service = TransparencyService()
-        semaphore = transparency_service.run_checks()
+        semaphore = await transparency_service.run_checks()
         
         # Log semaphore status
         logger.info(
@@ -567,7 +567,7 @@ async def job_verify_transparency() -> None:
     
     try:
         service = TransparencyService()
-        status = service.run_checks()
+        status = await service.run_checks()
         
         # Log semaphore status
         logger.info(

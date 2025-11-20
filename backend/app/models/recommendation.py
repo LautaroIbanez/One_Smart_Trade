@@ -176,6 +176,29 @@ class RecommendationResponse(BaseModel):
     )
 
 
+class RecommendationFallbackResponse(BaseModel):
+    """Fallback payload when no fresh recommendation is available."""
+
+    status: Literal["no_data"]
+    reason: str
+    latest_available_timestamp: str | None = Field(
+        default=None,
+        description="Timestamp of the last known recommendation, if any",
+    )
+    latest_available_date: str | None = Field(
+        default=None,
+        description="Date of the last known recommendation",
+    )
+    data_recency: dict | None = Field(
+        default=None,
+        description="Recency metadata describing why the data is unavailable",
+    )
+    allow_replay_hint: bool = Field(
+        default=False,
+        description="Indicates whether enabling allow_replay may generate a fresh recommendation",
+    )
+
+
 class SignalPerformancePoint(BaseModel):
     """Single realised recommendation performance record."""
 
