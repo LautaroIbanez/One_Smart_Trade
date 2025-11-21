@@ -1,6 +1,7 @@
 """Transparency monitoring service for automated verification and dashboard."""
 from __future__ import annotations
 
+import hashlib
 import json
 import asyncio
 from datetime import datetime, timedelta
@@ -84,6 +85,34 @@ class TransparencyService:
 
     def __init__(self):
         self.performance_service = get_performance_service()
+        self._missing_metrics_warned: dict[str, float] = {}  # Cache for missing metrics warnings: {summary_key: timestamp}
+        self._missing_metrics_ttl_seconds = 300  # Cache TTL: 5 minutes
+
+    def _create_summary_cache_key(self, summary_payload: dict[str, Any], fallback_summary: dict[str, Any] | None) -> str:
+        """Create a cache key from summary payload to identify unique summary states."""
+        key_parts = [
+            summary_payload.get("status", "unknown"),
+            summary_payload.get("source", "unknown"),
+            summary_payload.get("error_type", ""),
+        ]
+        if fallback_summary:
+            key_parts.extend([
+                fallback_summary.get("source", "unknown"),
+                str(fallback_summary.get("cached_at", "")),
+            ])
+        else:
+            key_parts.append("no_fallback")
+        key_string = "|".join(str(p) for p in key_parts)
+        return hashlib.md5(key_string.encode()).hexdigest()
+
+    def _cleanup_missing_metrics_cache(self, current_timestamp: float) -> None:
+        """Remove expired entries from the missing metrics warning cache."""
+        expired_keys = [
+            key for key, timestamp in self._missing_metrics_warned.items()
+            if (current_timestamp - timestamp) > self._missing_metrics_ttl_seconds
+        ]
+        for key in expired_keys:
+            del self._missing_metrics_warned[key]
 
     def verify_hashes(self) -> list[HashVerification]:
         """Verify current hashes against stored hashes in recommendations."""
@@ -292,8 +321,19 @@ class TransparencyService:
             tracking_error_metrics = _extract_tracking_error_metrics(candidate)
             if tracking_error_metrics:
                 break
+        
         if not tracking_error_metrics:
-            logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
+            # Create a cache key from summary payload to memoize the warning
+            summary_key = self._create_summary_cache_key(summary_payload, fallback_summary)
+            now = datetime.utcnow().timestamp()
+            
+            # Clean up expired cache entries
+            self._cleanup_missing_metrics_cache(now)
+            
+            # Check if we've already warned for this summary
+            if summary_key not in self._missing_metrics_warned:
+                logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
+                self._missing_metrics_warned[summary_key] = now
             return None
 
         theoretical_max_dd = tracking_error_metrics.get("theoretical_max_drawdown")

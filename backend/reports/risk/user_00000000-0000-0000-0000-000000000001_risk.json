@@ -1,0 +1,25 @@
+{
+  "user_id": "00000000-0000-0000-0000-000000000001",
+  "report_date": "2025-11-21T00:00:00.073020",
+  "equity": 10000.0,
+  "drawdown_pct": 0.0,
+  "risk_of_ruin": null,
+  "max_allowed_position_size": 100.0,
+  "rejection_count_30d": 0,
+  "rejection_breakdown": {},
+  "exposure_metrics": {
+    "current_exposure_multiplier": 0.0,
+    "limit_exposure_multiplier": 2.0,
+    "total_notional": 0,
+    "beta_adjusted_notional": 0,
+    "position_count": 0,
+    "exposure_utilization_pct": 0.0
+  },
+  "trading_metrics": {
+    "win_rate": null,
+    "payoff_ratio": null,
+    "current_drawdown_pct": 0.0,
+    "effective_leverage": 0.0,
+    "avg_exposure_pct": 0.0
+  }
+}

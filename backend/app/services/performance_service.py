@@ -99,18 +99,45 @@ class PerformanceService:
                 )
                 self._clear_stale_error_cache_if_needed()
             except DataFreshnessError as exc:
-                logger.warning(
-                    "Signal data freshness validation failed",
-                    extra={
-                        "interval": exc.interval,
-                        "latest_timestamp": exc.latest_timestamp,
-                        "latest_candle_age_minutes": getattr(exc, "context_data", {}).get("age_minutes") if getattr(exc, "context_data", None) else None,
-                        "threshold_minutes": exc.threshold_minutes,
-                        "context": exc.context_data,
-                        "allow_stale_data": allow_stale_data,
-                    },
-                )
-                raise
+                if allow_stale_data:
+                    logger.info(
+                        "DataFreshnessError caught with allow_stale_data=True, retrying with validation disabled",
+                        extra={
+                            "interval": exc.interval,
+                            "latest_timestamp": exc.latest_timestamp,
+                            "latest_candle_age_minutes": getattr(exc, "context_data", {}).get("age_minutes") if getattr(exc, "context_data", None) else None,
+                            "threshold_minutes": exc.threshold_minutes,
+                        },
+                    )
+                    try:
+                        inputs = self.signal_data_provider.get_validated_inputs(
+                            validate_freshness=False,
+                            validate_gaps=False,
+                            force_refresh=False,
+                        )
+                        self._clear_stale_error_cache_if_needed()
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "Failed to load strategy inputs even with validation disabled",
+                            extra={"error": str(retry_exc), "original_error": str(exc)},
+                        )
+                        raise StrategyConfigurationError(
+                            "Unable to materialize strategy datasets with stale data",
+                            details={"setting": "PERFORMANCE_STRATEGY_SOURCE", "cause": str(retry_exc), "original_freshness_error": str(exc)},
+                        ) from retry_exc
+                else:
+                    logger.warning(
+                        "Signal data freshness validation failed",
+                        extra={
+                            "interval": exc.interval,
+                            "latest_timestamp": exc.latest_timestamp,
+                            "latest_candle_age_minutes": getattr(exc, "context_data", {}).get("age_minutes") if getattr(exc, "context_data", None) else None,
+                            "threshold_minutes": exc.threshold_minutes,
+                            "context": exc.context_data,
+                            "allow_stale_data": allow_stale_data,
+                        },
+                    )
+                    raise
             except Exception as exc:
                 logger.error(
                     "Failed to load strategy inputs",
@@ -135,7 +162,25 @@ class PerformanceService:
 
     async def get_summary(self, use_cache: bool = True, *, allow_stale_inputs: bool = False) -> dict[str, Any]:
         """Get performance summary from latest backtest."""
-        # Check for cached result in DB
+        # For transparency callers, serve cached success data first before strict validation
+        if allow_stale_inputs and use_cache:
+            cached_summary = self._get_db_cached_success_summary(max_age_seconds=None)
+            if cached_summary:
+                # Add metadata indicating this is stale/cached data served to transparency callers
+                cached_summary["metadata"] = cached_summary.get("metadata", {})
+                cached_summary["metadata"]["served_with_stale_data"] = True
+                cached_summary["metadata"]["served_before_validation"] = True
+                cached_summary["metadata"]["reason"] = "Serving cached success data to transparency caller before strict validation"
+                logger.info(
+                    "Serving cached success summary to transparency caller before validation",
+                    extra={
+                        "cache_age_seconds": cached_summary.get("cache_age_seconds"),
+                        "cached_at": cached_summary.get("cached_at"),
+                    },
+                )
+                return cached_summary
+
+        # Check for cached result in DB (standard path for non-transparency callers)
         if use_cache:
             cached_summary = self._get_db_cached_success_summary(max_age_seconds=86400)
             if cached_summary:
@@ -152,6 +197,25 @@ class PerformanceService:
         try:
             strategy = self._resolve_strategy(allow_stale_data=allow_stale_inputs)
         except DataFreshnessError as exc:
+            if allow_stale_inputs:
+                logger.info(
+                    "DataFreshnessError in get_summary with allow_stale_inputs=True, attempting to return cached summary",
+                    extra={
+                        "interval": exc.interval,
+                        "latest_timestamp": exc.latest_timestamp,
+                        "threshold_minutes": exc.threshold_minutes,
+                    },
+                )
+                cached_summary = self._get_db_cached_success_summary(max_age_seconds=None)
+                if cached_summary:
+                    cached_summary["metadata"] = cached_summary.get("metadata", {})
+                    cached_summary["metadata"]["served_with_stale_data"] = True
+                    cached_summary["metadata"]["freshness_error"] = {
+                        "interval": exc.interval,
+                        "latest_timestamp": exc.latest_timestamp.isoformat() if isinstance(exc.latest_timestamp, datetime) else str(exc.latest_timestamp),
+                        "threshold_minutes": exc.threshold_minutes,
+                    }
+                    return cached_summary
             stale_payload = self._build_data_stale_error(exc, allow_stale_inputs=allow_stale_inputs)
             return self._cache_error_response(stale_payload)
         except StrategyConfigurationError as exc:
@@ -315,9 +379,15 @@ class PerformanceService:
             age_seconds = (datetime.utcnow() - cached.created_at).total_seconds()
             if max_age_seconds is not None and age_seconds > max_age_seconds:
                 return None
-            return {
+            
+            # Extract tracking error metrics from cached metrics if available
+            metrics = cached.metrics or {}
+            tracking_error_metrics = metrics.get("tracking_error_metrics")
+            
+            # Build response with tracking error fields
+            response = {
                 "status": "success",
-                "metrics": cached.metrics,
+                "metrics": metrics,
                 "period": {
                     "start": cached.start_date,
                     "end": cached.end_date,
@@ -327,6 +397,21 @@ class PerformanceService:
                 "cached_at": cached.created_at.isoformat(),
                 "cache_age_seconds": age_seconds,
             }
+            
+            # Include tracking error metrics if available in cached data
+            if tracking_error_metrics:
+                response["tracking_error_metrics"] = tracking_error_metrics
+                # Also populate tracking_error summary if we can derive it from metrics
+                # The tracking_error_metrics contains fields like max_drawdown_divergence, rmse, etc.
+                # which can be used for transparency calculations
+                response["tracking_error"] = {
+                    "max_drawdown_divergence": tracking_error_metrics.get("max_drawdown_divergence"),
+                    "rmse": tracking_error_metrics.get("rmse"),
+                    "mean_deviation": tracking_error_metrics.get("mean_deviation"),
+                    "max_divergence": tracking_error_metrics.get("max_divergence"),
+                }
+            
+            return response
 
     def _build_config_error_response(self, exc: StrategyConfigurationError) -> dict[str, Any]:
         """Standardize strategy configuration errors for caching."""
@@ -432,7 +517,12 @@ class PerformanceService:
         metadata["fallback_summary_available"] = historical_fallback
         metadata["fallback_summary_source"] = fallback_summary.get("source")
 
-        return {
+        # Extract tracking error fields from fallback summary for downstream consumers
+        tracking_error_metrics = fallback_summary.get("tracking_error_metrics")
+        tracking_error = fallback_summary.get("tracking_error")
+        
+        # Build response with tracking error fields populated
+        response = {
             "status": "error",
             "message": exc.reason,
             "error_type": "DATA_STALE",
@@ -443,6 +533,14 @@ class PerformanceService:
             "fallback_summary": fallback_summary,
             "period": fallback_summary.get("period"),
         }
+        
+        # Include tracking error metrics if available in fallback summary
+        if tracking_error_metrics:
+            response["tracking_error_metrics"] = tracking_error_metrics
+        if tracking_error:
+            response["tracking_error"] = tracking_error
+        
+        return response
 
     def _emit_staleness_observability(
         self,
