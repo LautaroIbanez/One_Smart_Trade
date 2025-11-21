@@ -80,11 +80,28 @@ async def metrics() -> Response:
 
 
 def record_ingestion(interval: str, latency_s: float, success: bool, error: str | None = None) -> None:
-    if success:
-        INGESTION_SUCCESS.inc()
-    else:
-        INGESTION_FAILURE.labels(error or "unknown").inc()
-    INGESTION_LATENCY.observe(latency_s)
+    """
+    Record ingestion metric.
+    
+    This function is designed to be called from code that handles errors gracefully.
+    If you need defensive error handling, wrap the call in try-except.
+    """
+    try:
+        if success:
+            INGESTION_SUCCESS.inc()
+        else:
+            INGESTION_FAILURE.labels(error or "unknown").inc()
+        INGESTION_LATENCY.observe(latency_s)
+    except (ValueError, Exception) as e:
+        # Log warning but don't raise - metrics are optional observability
+        # This allows callers to continue even if metrics fail
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"Failed to record ingestion metric: {e}",
+            extra={"interval": interval, "success": success, "error": error, "error_type": type(e).__name__, "error_message": str(e)},
+            exc_info=False,
+        )
 
 
 def record_signal_generation(latency_s: float, success: bool, error: str | None = None) -> None:
