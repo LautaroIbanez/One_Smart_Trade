@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import { format, subDays, startOfDay, endOfDay, isWithinInterval, parseISO } from 'date-fns'
-import { useRecommendationHistory, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { useRecommendationHistory } from '../api/hooks'
 import { ErrorState } from './shared/ErrorState'
 import { LoadingState } from './shared/LoadingState'
 import { DegradedDataBanner } from './shared/DegradedDataBanner'

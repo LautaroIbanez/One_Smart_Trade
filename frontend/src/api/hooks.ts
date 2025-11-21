@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import axios, { AxiosError, AxiosRequestConfig } from 'axios'
+import axios, { AxiosError } from 'axios'
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -63,6 +63,9 @@ api.interceptors.response.use(
 )
 
 export type Interval = '15m' | '30m' | '1h' | '4h' | '1d' | '1w'
+
+// Export the api instance for use in components
+export { api }
 export const analyticsApi = api
 
 /**
@@ -176,7 +179,7 @@ export const useRecommendationHistory = (params?: RecommendationHistoryParams) =
       return data
     },
     staleTime: 60_000,
-    keepPreviousData: true,
+    placeholderData: (previousData) => previousData,
   })
 }
 

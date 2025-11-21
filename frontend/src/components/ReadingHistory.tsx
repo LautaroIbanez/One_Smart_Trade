@@ -1,4 +1,3 @@
-import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './ReadingHistory.css'

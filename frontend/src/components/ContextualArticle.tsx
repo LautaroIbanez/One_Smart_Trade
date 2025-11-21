@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { api } from '../api/hooks'
 import './ContextualArticle.css'
 
 interface ContextualArticle {
@@ -24,7 +24,7 @@ export function ContextualArticle({ article, userId, onDismiss }: ContextualArti
   const [isReading, setIsReading] = useState(false)
   const queryClient = useQueryClient()
 
-  const { data: articleData, isLoading, error } = useQuery({
+  const { data: articleData, isLoading } = useQuery({
     queryKey: ['knowledge-article', article.slug],
     queryFn: async ({ signal }) => {
       const { data } = await api.get(`/api/v1/knowledge/articles/${article.slug}`, {

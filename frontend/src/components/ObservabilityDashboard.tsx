@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { api } from '../api/hooks'
 import './ObservabilityDashboard.css'
 
 interface MetricValue {
