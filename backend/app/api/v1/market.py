@@ -24,7 +24,7 @@ async def get_market_data(interval: Interval):
     start_time = time.time()
     
     # Check cache
-    cached_result = get_cached("market_data", ttl_seconds=60.0, interval)
+    cached_result = get_cached("market_data", interval=interval, ttl_seconds=60.0)
     if cached_result:
         duration = time.time() - start_time
         ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status="cached").observe(duration)
@@ -52,7 +52,7 @@ async def get_market_data(interval: Interval):
                 data["data"] = []
         
         # Cache result
-        set_cached("market_data", data, ttl_seconds=60.0, interval)
+        set_cached("market_data", data, interval=interval, ttl_seconds=60.0)
         
         duration = time.time() - start_time
         ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status="success").observe(duration)
