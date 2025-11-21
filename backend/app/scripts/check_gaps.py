@@ -40,8 +40,15 @@ def check_gaps(interval: str, days: int = 30):
         logger.warning(f"Found {len(gaps)} gap(s) in {interval}:")
         for gap in gaps:
             logger.warning(f"  - {gap}")
-            # Record gap in metrics
-            record_data_gap(interval)
+            # Record gap in metrics with error handling - don't let metric failures interrupt gap checking
+            try:
+                record_data_gap(interval)
+            except (ValueError, Exception) as metric_error:
+                logger.warning(
+                    f"Failed to record data gap metric for {interval}: {metric_error}",
+                    extra={"interval": interval, "error_type": type(metric_error).__name__, "error": str(metric_error)},
+                    exc_info=False,
+                )
     else:
         logger.info(f"✓ No gaps found in {interval}")
 

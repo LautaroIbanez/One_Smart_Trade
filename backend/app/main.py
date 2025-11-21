@@ -672,11 +672,26 @@ async def _run_initial_pipeline_if_needed() -> None:
 
 @app.on_event("startup")
 async def on_startup():
+    from app.core.logging import logger
+    
     # Jobs are already scheduled via decorators
     scheduler.start()
     if settings.PRESTART_MAINTENANCE:
         global _preflight_task
-        _preflight_task = asyncio.create_task(run_preflight())
+        # Run preflight as background task with error handling to prevent startup failures
+        async def run_preflight_safe():
+            try:
+                await run_preflight()
+            except Exception as exc:
+                logger.error(
+                    f"Preflight maintenance failed during startup: {exc}",
+                    exc_info=True,
+                    extra={"error_type": type(exc).__name__, "error": str(exc)},
+                )
+                # Don't raise - allow server to start even if preflight fails
+                # Preflight is maintenance, not critical for server operation
+        
+        _preflight_task = asyncio.create_task(run_preflight_safe())
     
     # Run initial pipeline if needed (empty DB or AUTO_RUN_PIPELINE_ON_START enabled)
     await _run_initial_pipeline_if_needed()

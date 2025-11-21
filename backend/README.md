@@ -42,6 +42,39 @@ El servidor estará disponible en `http://localhost:8000`. El frontend (Vite) es
 poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
+## Poblar Base de Datos
+
+Si la base de datos está vacía, ejecuta el pipeline para poblar datos iniciales:
+
+```bash
+# Opción 1: Script directo
+python scripts/populate_database.py
+
+# Opción 2: Como módulo
+poetry run python -m app.scripts.populate_database
+
+# Opción 3: Via API (requiere ADMIN_API_KEY si está configurada)
+curl -X POST "http://localhost:8000/api/v1/operational/trigger-pipeline" \
+  -H "X-Admin-API-Key: your-key-here"
+```
+
+**Nota:** El pipeline se ejecuta automáticamente al iniciar el backend si:
+- La base de datos está vacía, o
+- `AUTO_RUN_PIPELINE_ON_START=true` está configurado
+
+## Verificar Endpoints
+
+Para verificar que los endpoints devuelven datos:
+
+```bash
+# Script de verificación
+python scripts/verify_endpoints.py
+
+# O manualmente:
+curl http://localhost:8000/api/v1/recommendation/today
+curl http://localhost:8000/api/v1/market/1h
+```
+
 ## Testing
 
 ```bash

@@ -4,6 +4,8 @@
 
 El **backend debe estar corriendo** antes de iniciar el frontend, de lo contrario verás errores `ECONNREFUSED` y paneles vacíos en la UI.
 
+**Si ves errores ECONNREFUSED:** El backend no está corriendo. Ver `START_BACKEND.md` para instrucciones detalladas.
+
 ## Pasos para Iniciar
 
 ### 1. Iniciar el Backend (Terminal 1)
