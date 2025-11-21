@@ -50,7 +50,17 @@ async def run_preflight(
             for gap in gaps:
                 if gap.get("status") != "gap":
                     continue
-                record_data_gap(interval)
+                # Record metric with error handling - don't let metric failures interrupt ingestion
+                try:
+                    record_data_gap(interval)
+                except (ValueError, Exception) as metric_error:
+                    # Log warning but continue - metrics are optional observability, not critical path
+                    logger.warning(
+                        f"Failed to record data gap metric for {interval}: {metric_error}",
+                        extra={"interval": interval, "error_type": type(metric_error).__name__, "error": str(metric_error)},
+                        exc_info=False,
+                    )
+                
                 gap_start = _parse_dt(gap.get("start"))
                 gap_end = _parse_dt(gap.get("end"))
                 if gap_start is None or gap_end is None:

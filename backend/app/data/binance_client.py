@@ -86,8 +86,22 @@ class BinanceClient:
             except Exception:  # pragma: no cover - ignore metadata errors
                 latency_ms = latency_seconds * 1000
         
-        # Record metrics
-        BINANCE_REQUEST_LATENCY.observe(latency_seconds)
+        # Record metrics with required labels - wrap in try/except to prevent metric failures from interrupting ingestion
+        try:
+            BINANCE_REQUEST_LATENCY.labels(symbol=symbol, interval=interval).observe(latency_seconds)
+        except (ValueError, Exception) as metric_error:
+            # Log warning but continue - metrics are optional observability, not critical path
+            logger.warning(
+                f"Failed to record Binance request latency metric: {metric_error}",
+                extra={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "latency_seconds": latency_seconds,
+                    "error_type": type(metric_error).__name__,
+                    "error": str(metric_error),
+                },
+                exc_info=False,
+            )
         
         # Log warning if request took longer than 10 seconds
         if latency_seconds > 10.0:

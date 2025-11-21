@@ -97,6 +97,7 @@ def record_signal_generation(latency_s: float, success: bool, error: str | None 
 
 
 def record_data_gap(timeframe: str) -> None:
+    """Record data gap metric. Raises ValueError if labels are missing."""
     DATA_GAPS.labels(timeframe=timeframe).inc()
 
 
