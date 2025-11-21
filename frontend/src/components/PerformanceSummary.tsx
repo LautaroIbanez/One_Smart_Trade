@@ -6,22 +6,42 @@ function PerformanceSummary() {
   const { data, isLoading, error } = usePerformanceSummary()
 
   // Extract data from main payload or fallback_summary
+  // Always attempt to extract partial/fallback data
   const effectiveData = useMemo(() => {
     if (!data) return null
     
+    const dataAny = data as any
+    
+    // Check for fallback_summary in various places
+    const fallbackSummary = dataAny.fallback_summary || dataAny.summary_fallback || null
+    
     // If status is error but we have fallback_summary, use it
-    if (data.status === 'error' && (data as any).fallback_summary) {
-      const fallback = (data as any).fallback_summary
+    if (data.status === 'error' && fallbackSummary) {
       return {
         ...data,
-        metrics: data.metrics || fallback.metrics || {},
-        period: data.period || fallback.period || null,
-        report_path: data.report_path || fallback.report_path || null,
+        metrics: data.metrics || fallbackSummary.metrics || {},
+        period: data.period || fallbackSummary.period || null,
+        report_path: data.report_path || fallbackSummary.report_path || null,
         _isDegraded: true,
         _degradedMessage: data.message || 'Datos en modo degradado',
       }
     }
     
+    // If status is error but we have partial metrics, use them
+    if (data.status === 'error' && data.metrics && Object.keys(data.metrics).length > 0) {
+      return {
+        ...data,
+        _isDegraded: true,
+        _degradedMessage: data.message || 'Mostrando métricas parciales',
+      }
+    }
+    
+    // If we have any metrics at all, show them
+    if (data.metrics && Object.keys(data.metrics).length > 0) {
+      return data
+    }
+    
+    // Return data anyway to show placeholder message
     return data
   }, [data])
 
@@ -36,7 +56,7 @@ function PerformanceSummary() {
     )
   }
 
-  if (error) {
+  if (error && !data) {
     const isTimeout = isTimeoutError(error)
     const errorMessage = getErrorMessage(error)
     return (
@@ -59,17 +79,10 @@ function PerformanceSummary() {
     )
   }
 
-  if (!effectiveData && !data) {
-    return null
-  }
-
-  // Show component even in degraded mode if we have metrics
-  const metrics = effectiveData?.metrics || {}
+  // NEVER return null - always show the component with a message
+  // Show component even if no effectiveData - we'll show a placeholder
+  const metrics = effectiveData?.metrics || (data as any)?.metrics || {}
   const hasMetrics = Object.keys(metrics).length > 0
-
-  if (!hasMetrics && !isDegraded) {
-    return null
-  }
 
   return (
     <div className="performance-summary">
@@ -125,8 +138,14 @@ function PerformanceSummary() {
         </>
       ) : (
         <div className="no-metrics-placeholder">
-          <p>⚠️ Métricas no disponibles</p>
-          <p>No se encontraron métricas para mostrar.</p>
+          <p>⚠️ <strong>Sin métricas disponibles aún</strong></p>
+          {isDegraded ? (
+            <p>Los datos frescos no están disponibles y no hay métricas almacenadas en caché para mostrar.</p>
+          ) : data?.status === 'error' ? (
+            <p>Error al generar métricas. Los datos pueden estar procesándose en segundo plano.</p>
+          ) : (
+            <p>Las métricas se están calculando. Por favor, espera unos momentos o intenta refrescar.</p>
+          )}
         </div>
       )}
     </div>

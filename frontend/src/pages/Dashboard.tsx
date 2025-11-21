@@ -18,6 +18,7 @@ import { useTodayRecommendation, useMarketData, isTimeoutError, getErrorMessage 
 import { ErrorState } from '../components/shared/ErrorState'
 import { LoadingState } from '../components/shared/LoadingState'
 import { DegradedDataBanner } from '../components/shared/DegradedDataBanner'
+import { isTradableRecommendation, getNonTradableMessage } from '../utils/recommendation'
 import type { MarketPoint } from '@/types'
 import './Dashboard.css'
 
@@ -97,7 +98,14 @@ function Dashboard() {
         )
       })
 
-      await Promise.all(refetchPromises)
+      // Also refetch explicit queries from hooks that we know are active
+      const explicitRefetches = [
+        refetchRecommendation().catch(err => console.error('Error refetching recommendation:', err)),
+        refetchMarket().catch(err => console.error('Error refetching market:', err)),
+      ]
+      
+      // Wait for both explicit refetches and query key refetches
+      await Promise.all([...refetchPromises, ...explicitRefetches])
       
       setRefreshProgress(100)
       setToast({
@@ -232,7 +240,7 @@ function Dashboard() {
                   if (marketError) refetchMarket()
                 }}
               />
-            ) : data && chartData.length > 0 ? (
+            ) : data && isTradableRecommendation(data) && chartData.length > 0 ? (
               <>
                 {data.metadata?.served_from_cache && (
                   <DegradedDataBanner 
@@ -254,6 +262,16 @@ function Dashboard() {
                   }
                 />
               </>
+            ) : data && !isTradableRecommendation(data) ? (
+              <div className="empty-state">
+                <p>⚠️ <strong>Señal no disponible</strong></p>
+                <p>{getNonTradableMessage(data as Record<string, unknown>)}</p>
+                {data.status === 'cooldown' && (data as any).cooldown_remaining_seconds && (
+                  <p className="cooldown-info">
+                    Tiempo restante: {Math.floor((data as any).cooldown_remaining_seconds / 60)} minutos
+                  </p>
+                )}
+              </div>
             ) : (
               <div className="empty-state">
                 <p>⚠️ No hay datos suficientes para renderizar el gráfico.</p>
