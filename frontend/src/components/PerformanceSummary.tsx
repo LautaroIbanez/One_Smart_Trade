@@ -53,46 +53,57 @@ function PerformanceSummary() {
       <h2>Resumen de Performance (Backtesting)</h2>
       {isDegraded && (
         <div className="degraded-mode-banner" role="status" aria-live="polite">
-          <p>⚠️ <strong>Modo degradado:</strong> {(effectiveData as any)?._degradedMessage || 'Mostrando métricas almacenadas.'}</p>
+          <p>
+            ⚠️ <strong>Modo degradado:</strong>{' '}
+            {(effectiveData as any)?._degradedMessage || 'Mostrando métricas almacenadas.'}
+          </p>
         </div>
       )}
       {hasMetrics ? (
-        <div className="metrics-grid">
-        <div className="metric-item">
-          <span className="metric-label">CAGR</span>
-          <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>
-        </div>
-        <div className="metric-item">
-          <span className="metric-label">Sharpe</span>
-          <span className="metric-value">{metrics.sharpe?.toFixed(2)}</span>
-        </div>
-        <div className="metric-item">
-          <span className="metric-label">Max DD</span>
-          <span className="metric-value">{metrics.max_drawdown?.toFixed(2)}%</span>
-        </div>
-        <div className="metric-item">
-          <span className="metric-label">Win Rate</span>
-          <span className="metric-value">{metrics.win_rate?.toFixed(1)}%</span>
-        </div>
-        <div className="metric-item">
-          <span className="metric-label">Profit Factor</span>
-          <span className="metric-value">{metrics.profit_factor?.toFixed(2)}</span>
-        </div>
-        <div className="metric-item">
-          <span className="metric-label">Total Trades</span>
-          <span className="metric-value">{metrics.total_trades || 0}</span>
-        </div>
-      </div>
-      {data.report_path && (
-        <div className="report-link">
-          <a href={data.report_path} target="_blank" rel="noreferrer">
-            Ver reporte completo
-          </a>
-        </div>
+        <>
+          <div className="metrics-grid">
+            <div className="metric-item">
+              <span className="metric-label">CAGR</span>
+              <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>
+            </div>
+            <div className="metric-item">
+              <span className="metric-label">Sharpe</span>
+              <span className="metric-value">{metrics.sharpe?.toFixed(2)}</span>
+            </div>
+            <div className="metric-item">
+              <span className="metric-label">Max DD</span>
+              <span className="metric-value">{metrics.max_drawdown?.toFixed(2)}%</span>
+            </div>
+            <div className="metric-item">
+              <span className="metric-label">Win Rate</span>
+              <span className="metric-value">{metrics.win_rate?.toFixed(1)}%</span>
+            </div>
+            <div className="metric-item">
+              <span className="metric-label">Profit Factor</span>
+              <span className="metric-value">{metrics.profit_factor?.toFixed(2)}</span>
+            </div>
+            <div className="metric-item">
+              <span className="metric-label">Total Trades</span>
+              <span className="metric-value">{metrics.total_trades || 0}</span>
+            </div>
+          </div>
+          {effectiveData?.report_path ? (
+            <div className="report-link">
+              <a href={effectiveData.report_path} target="_blank" rel="noreferrer">
+                Ver reporte completo
+              </a>
+            </div>
+          ) : (
+            <div className="no-metrics-placeholder">
+              <p>⚠️ Métricas no disponibles en modo degradado</p>
+              <p>Los datos frescos no están disponibles y no hay métricas almacenadas para mostrar.</p>
+            </div>
+          )}
+        </>
       ) : (
         <div className="no-metrics-placeholder">
-          <p>⚠️ Métricas no disponibles en modo degradado</p>
-          <p>Los datos frescos no están disponibles y no hay métricas almacenadas para mostrar.</p>
+          <p>⚠️ Métricas no disponibles</p>
+          <p>No se encontraron métricas para mostrar.</p>
         </div>
       )}
     </div>
