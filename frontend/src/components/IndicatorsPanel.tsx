@@ -1,23 +1,30 @@
 import { useTodayRecommendation } from '../api/hooks'
+import { ErrorState } from './shared/ErrorState'
+import { LoadingState } from './shared/LoadingState'
+import { DegradedDataBanner } from './shared/DegradedDataBanner'
 import './IndicatorsPanel.css'
 
 function IndicatorsPanel() {
-  const { data, isLoading, error } = useTodayRecommendation()
+  const { data, isLoading, error, refetch } = useTodayRecommendation()
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="indicators-panel" role="status" aria-live="polite">
         <h2>Indicadores Clave</h2>
-        <div className="loading">Cargando indicadores...</div>
+        <LoadingState message="Cargando indicadores..." compact />
       </div>
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="indicators-panel" role="alert">
         <h2>Indicadores Clave</h2>
-        <div className="error">Error al cargar indicadores</div>
+        <ErrorState 
+          error={error} 
+          title="Error al cargar indicadores"
+          onRetry={() => refetch()}
+        />
       </div>
     )
   }
@@ -54,10 +61,21 @@ function IndicatorsPanel() {
     return String(value)
   }
 
+  const hasIndicators = Object.keys(indicators).length > 0
+  const hasRiskMetrics = Object.keys(riskMetrics).length > 0
+  const showDegradedBanner = error && data && (data as any).metadata?.served_from_cache
+
   return (
     <div className="indicators-panel">
       <h2>Indicadores Clave</h2>
-      {Object.keys(indicators).length > 0 ? (
+      {showDegradedBanner && (
+        <DegradedDataBanner 
+          message="Mostrando indicadores desde caché."
+          source={(data as any).metadata?.source}
+          cachedAt={(data as any).metadata?.generated_at}
+        />
+      )}
+      {hasIndicators ? (
         <div className="indicators-grid">
           {Object.entries(indicators).map(([key, value]) => (
             <div key={key} className="indicator-item">
@@ -69,7 +87,7 @@ function IndicatorsPanel() {
       ) : (
         <div className="empty">No hay indicadores disponibles</div>
       )}
-      {Object.keys(riskMetrics).length > 0 && (
+      {hasRiskMetrics && (
         <div className="risk-metrics">
           <h3>Métricas de Riesgo</h3>
           <div className="indicators-grid">
@@ -81,6 +99,13 @@ function IndicatorsPanel() {
             ))}
           </div>
         </div>
+      )}
+      {error && !hasIndicators && !hasRiskMetrics && (
+        <ErrorState 
+          error={error} 
+          title="Error al cargar indicadores"
+          onRetry={() => refetch()}
+        />
       )}
     </div>
   )

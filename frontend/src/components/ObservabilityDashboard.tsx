@@ -1,10 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
+import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './ObservabilityDashboard.css'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-const api = axios.create({ baseURL: API_BASE_URL, headers: { 'Content-Type': 'application/json' } })
 
 interface MetricValue {
   value: number
@@ -53,9 +50,9 @@ interface DashboardResponse {
 const useObservabilityDashboard = (isPrivate: boolean = false) => {
   return useQuery({
     queryKey: ['observability', 'dashboard', isPrivate],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const endpoint = isPrivate ? '/api/v1/observability/private/dashboard' : '/api/v1/observability/public/dashboard'
-      const { data } = await api.get<DashboardResponse>(endpoint)
+      const { data } = await api.get<DashboardResponse>(endpoint, { signal })
       return data
     },
     refetchInterval: 30000, // Poll every 30 seconds

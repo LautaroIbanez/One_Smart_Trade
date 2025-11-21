@@ -2,11 +2,16 @@ import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
+// Global request timeout: 25 seconds
+// This ensures requests fail fast rather than hanging indefinitely
+const REQUEST_TIMEOUT_MS = 25000
+
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: REQUEST_TIMEOUT_MS,
 })
 
 export interface Recommendation {

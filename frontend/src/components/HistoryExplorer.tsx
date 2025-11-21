@@ -1,6 +1,9 @@
 import { useState, useMemo, useCallback } from 'react'
 import { format, subDays, startOfDay, endOfDay, isWithinInterval, parseISO } from 'date-fns'
-import { useRecommendationHistory } from '../api/hooks'
+import { useRecommendationHistory, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { ErrorState } from './shared/ErrorState'
+import { LoadingState } from './shared/LoadingState'
+import { DegradedDataBanner } from './shared/DegradedDataBanner'
 import { WeeklyHeatmap } from './charts/WeeklyHeatmap'
 import { ReturnsHistogram } from './charts/ReturnsHistogram'
 import HistoryRow from './HistoryRow'
@@ -42,7 +45,7 @@ function HistoryExplorer({
     ...initialFilters,
   })
 
-  const { data, isLoading, error } = useRecommendationHistory({ limit: 1000 })
+  const { data, isLoading, error, refetch } = useRecommendationHistory({ limit: 1000 })
 
   const recommendations = data?.items || []
 
@@ -141,21 +144,33 @@ function HistoryExplorer({
     ).filter(Boolean)
   }, [recommendations])
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="history-explorer">
-        <div className="loading">Cargando historial...</div>
+        <div className="history-explorer-header">
+          <h2>Explorador de Historial</h2>
+        </div>
+        <LoadingState message="Cargando historial de recomendaciones..." />
       </div>
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="history-explorer">
-        <div className="error">Error al cargar historial</div>
+        <div className="history-explorer-header">
+          <h2>Explorador de Historial</h2>
+        </div>
+        <ErrorState 
+          error={error} 
+          title="Error al cargar historial"
+          onRetry={() => refetch()}
+        />
       </div>
     )
   }
+
+  const showDegradedBanner = error && data && (data as any).metadata?.served_from_cache
 
   return (
     <div className="history-explorer">
@@ -165,6 +180,13 @@ function HistoryExplorer({
           {filteredRecommendations.length} de {recommendations.length} registros
         </div>
       </div>
+      {showDegradedBanner && (
+        <DegradedDataBanner 
+          message="Mostrando historial desde caché."
+          source={(data as any).metadata?.source}
+          cachedAt={(data as any).metadata?.generated_at}
+        />
+      )}
 
       <div className="history-explorer-filters">
         <div className="filter-section">

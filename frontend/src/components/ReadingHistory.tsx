@@ -1,6 +1,6 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../services/api'
+import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './ReadingHistory.css'
 
 interface ReadingHistoryProps {
@@ -33,9 +33,10 @@ export function ReadingHistory({ userId }: ReadingHistoryProps) {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['reading-history', userId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await api.get('/api/v1/knowledge/readings/history', {
         params: { user_id: userId, limit: 50 },
+        signal,
       })
       return data.readings as Reading[]
     },
@@ -85,10 +86,24 @@ export function ReadingHistory({ userId }: ReadingHistoryProps) {
   }
 
   if (error) {
+    const isTimeout = isTimeoutError(error)
+    const errorMessage = getErrorMessage(error)
     return (
       <div className="reading-history">
         <h2>Historial de Lectura</h2>
-        <div className="error-message">Error al cargar el historial de lectura</div>
+        <div className="error-message">
+          {isTimeout ? (
+            <>
+              <p><strong>⏱️ Tiempo de espera excedido</strong></p>
+              <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+            </>
+          ) : (
+            <>
+              <p><strong>❌ Error al cargar el historial</strong></p>
+              <p>{errorMessage}</p>
+            </>
+          )}
+        </div>
       </div>
     )
   }

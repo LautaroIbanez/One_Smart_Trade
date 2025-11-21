@@ -160,37 +160,77 @@ class PerformanceService:
             details={"setting": "PERFORMANCE_STRATEGY_SOURCE"},
         )
 
-    async def get_summary(self, use_cache: bool = True, *, allow_stale_inputs: bool = False) -> dict[str, Any]:
-        """Get performance summary from latest backtest."""
-        # For transparency callers, serve cached success data first before strict validation
-        if allow_stale_inputs and use_cache:
+    async def get_summary(self, use_cache: bool = True, *, allow_stale_inputs: bool = False, trigger_backfill: bool = True) -> dict[str, Any]:
+        """Get performance summary from latest backtest.
+        
+        Args:
+            use_cache: Whether to use cached results if available
+            allow_stale_inputs: If True, always return cached data immediately (even if stale)
+                               and enqueue background backfill instead of blocking
+            trigger_backfill: If False, skip background backfill (used internally)
+        """
+        # CACHE-FIRST FAST PATH: When allow_stale_inputs=True, always return cached data immediately
+        # This prevents UI requests from blocking on full backtests
+        if allow_stale_inputs:
             cached_summary = self._get_db_cached_success_summary(max_age_seconds=None)
             if cached_summary:
-                # Add metadata indicating this is stale/cached data served to transparency callers
-                cached_summary["metadata"] = cached_summary.get("metadata", {})
-                cached_summary["metadata"]["served_with_stale_data"] = True
-                cached_summary["metadata"]["served_before_validation"] = True
-                cached_summary["metadata"]["reason"] = "Serving cached success data to transparency caller before strict validation"
+                # Enrich with cache metadata
+                cached_summary = self._enrich_with_cache_metadata(cached_summary, served_from_cache=True)
                 logger.info(
-                    "Serving cached success summary to transparency caller before validation",
+                    "Serving cached summary immediately (allow_stale_inputs=True)",
                     extra={
                         "cache_age_seconds": cached_summary.get("cache_age_seconds"),
                         "cached_at": cached_summary.get("cached_at"),
+                        "served_from_cache": True,
                     },
                 )
+                # Return immediately - background backfill will run asynchronously if needed
+                # (triggered via BackgroundTasks in the API endpoint)
                 return cached_summary
+            
+            # If no cache exists and allow_stale_inputs=True, check for cached errors with fallback
+            # but don't block on backtest execution
+            cached_error = self._get_cached_error(allow_stale_inputs=allow_stale_inputs)
+            if cached_error:
+                # If error has fallback summary, use it; otherwise return error
+                fallback_summary = cached_error.get("fallback_summary")
+                if fallback_summary and fallback_summary.get("metrics"):
+                    # Return fallback summary with metadata indicating degraded mode
+                    fallback_summary = self._enrich_with_cache_metadata(fallback_summary, served_from_cache=True)
+                    fallback_summary["metadata"]["degraded_mode"] = True
+                    fallback_summary["metadata"]["error_occurred"] = True
+                    fallback_summary["metadata"]["error_type"] = cached_error.get("error_type")
+                    return fallback_summary
+                return cached_error
+            
+            # No cache at all - return empty placeholder that indicates backfill is needed
+            # Background task will populate cache asynchronously
+            return {
+                "status": "success",
+                "metrics": {},
+                "period": None,
+                "report_path": None,
+                "metadata": {
+                    "served_from_cache": False,
+                    "cache_miss": True,
+                    "backfill_queued": trigger_backfill,
+                    "generated_at": datetime.utcnow().isoformat(),
+                },
+            }
 
-        # Check for cached result in DB (standard path for non-transparency callers)
+        # STANDARD PATH: Check for cached result (for non-transparency callers)
         if use_cache:
             cached_summary = self._get_db_cached_success_summary(max_age_seconds=86400)
             if cached_summary:
+                cached_summary = self._enrich_with_cache_metadata(cached_summary, served_from_cache=True)
                 return cached_summary
 
         cached_error = self._get_cached_error(allow_stale_inputs=allow_stale_inputs)
         if cached_error:
             return cached_error
 
-        # Run backtest for last 5 years if data available
+        # BLOCKING PATH: Run backtest synchronously (only for non-UI requests)
+        # This should only be reached when allow_stale_inputs=False
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=5 * 365)
 
@@ -292,7 +332,7 @@ class PerformanceService:
             tracking_error_series = result.get("tracking_error_series", [])
             tracking_error_cumulative = result.get("tracking_error_cumulative", [])
             
-            return {
+            summary = {
                 "status": "success",
                 "metrics": metrics,
                 "period": {
@@ -314,6 +354,9 @@ class PerformanceService:
                 "tracking_error_cumulative": tracking_error_cumulative,
                 "has_realistic_data": has_realistic_data,
             }
+            # Add metadata indicating this was freshly generated
+            summary = self._enrich_with_cache_metadata(summary, served_from_cache=False)
+            return summary
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
@@ -369,6 +412,130 @@ class PerformanceService:
         payload = self._error_cache.get("payload") or {}
         if payload.get("error_type") == "DATA_STALE":
             self._clear_error_cache()
+
+    def _enrich_with_cache_metadata(self, summary: dict[str, Any], *, served_from_cache: bool) -> dict[str, Any]:
+        """Enrich summary with cache metadata fields for frontend."""
+        metadata = summary.get("metadata", {})
+        if served_from_cache:
+            metadata["served_from_cache"] = True
+            if "cached_at" in summary:
+                metadata["generated_at"] = summary["cached_at"]
+            else:
+                metadata["generated_at"] = datetime.utcnow().isoformat()
+        else:
+            metadata["served_from_cache"] = False
+            metadata["generated_at"] = datetime.utcnow().isoformat()
+        summary["metadata"] = metadata
+        return summary
+
+    async def _run_backtest_and_cache(self, *, allow_stale_inputs: bool = False) -> dict[str, Any] | None:
+        """
+        Run backtest asynchronously and cache the result.
+        
+        This method is intended to be called from background tasks.
+        Returns the summary if successful, None if failed (errors are logged).
+        """
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=5 * 365)
+        
+        try:
+            strategy = self._resolve_strategy(allow_stale_data=allow_stale_inputs)
+        except (DataFreshnessError, StrategyConfigurationError) as exc:
+            logger.warning(
+                "Background backfill failed during strategy resolution",
+                extra={"error": str(exc), "error_type": type(exc).__name__},
+            )
+            return None
+        
+        try:
+            logger.info("Starting background backtest backfill")
+            result = await self.engine.run_backtest(start_date, end_date, strategy=strategy)
+            
+            if "error" in result:
+                logger.warning(
+                    "Background backtest failed with error",
+                    extra={"error": result.get("error"), "error_type": result.get("error_type", "UNKNOWN")},
+                )
+                return None
+            
+            metrics = calculate_metrics(result)
+            charts, chart_banners = self._generate_charts(result)
+            build_campaign_report()
+            self._clear_error_cache()
+            
+            # Persist to DB with versioning
+            with SessionLocal() as db:
+                save_backtest_result(
+                    db,
+                    version=__version__,
+                    start_date=result["start_date"],
+                    end_date=result["end_date"],
+                    metrics=metrics,
+                )
+            
+            logger.info(
+                "Background backtest backfill completed successfully",
+                extra={
+                    "start_date": result["start_date"],
+                    "end_date": result["end_date"],
+                    "total_trades": metrics.get("total_trades", 0),
+                },
+            )
+            
+            # Return summary for potential immediate use
+            start_ts = pd.to_datetime(result["start_date"])
+            end_ts = pd.to_datetime(result["end_date"])
+            total_days = (end_ts - start_ts).days
+            oos_days = max(120, int(total_days * 0.2))
+            
+            from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
+            checker = GuardrailChecker(GuardrailConfig())
+            tracking_error_summary = result.get("tracking_error") or {}
+            annualized_te = tracking_error_summary.get("annualized_tracking_error")
+            initial_capital = result.get("initial_capital") or 0.0
+            tracking_error_annualized_pct = None
+            if annualized_te is not None and initial_capital:
+                tracking_error_annualized_pct = annualized_te / initial_capital
+            
+            guardrail_result = checker.check_all(
+                max_drawdown_pct=metrics.get("max_drawdown"),
+                risk_of_ruin=metrics.get("risk_of_ruin"),
+                trade_count=metrics.get("total_trades", 0),
+                duration_days=total_days,
+                tracking_error_annualized_pct=tracking_error_annualized_pct,
+            )
+            metrics_status = "PASS" if guardrail_result.passed else "FAIL"
+            
+            summary = {
+                "status": "success",
+                "metrics": metrics,
+                "period": {
+                    "start": result["start_date"],
+                    "end": result["end_date"],
+                },
+                "report_path": str((self.project_root / "docs" / "backtest-report.md").resolve()),
+                "charts": charts,
+                "chart_banners": chart_banners,
+                "version": __version__,
+                "oos_days": oos_days,
+                "metrics_status": metrics_status,
+                "equity_theoretical": result.get("equity_theoretical", []),
+                "equity_realistic": result.get("equity_realistic", []),
+                "equity_curve": result.get("equity_curve", []),
+                "tracking_error": tracking_error_summary,
+                "tracking_error_metrics": result.get("tracking_error_metrics") or {},
+                "tracking_error_series": result.get("tracking_error_series", []),
+                "tracking_error_cumulative": result.get("tracking_error_cumulative", []),
+                "has_realistic_data": bool(result.get("equity_curve_realistic") or result.get("equity_realistic")),
+            }
+            return self._enrich_with_cache_metadata(summary, served_from_cache=False)
+            
+        except Exception as e:
+            logger.exception(
+                "Background backtest backfill failed with exception",
+                extra={"error": str(e), "error_type": type(e).__name__},
+            )
+            return None
 
     def _get_db_cached_success_summary(self, *, max_age_seconds: int | None) -> dict[str, Any] | None:
         """Fetch the latest successful backtest summary stored in the DB."""

@@ -1,9 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import axios from 'axios'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-const api = axios.create({ baseURL: API_BASE_URL, headers: { 'Content-Type': 'application/json' } })
+import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './ContextualArticle.css'
 
 interface ContextualArticle {
@@ -27,11 +24,12 @@ export function ContextualArticle({ article, userId, onDismiss }: ContextualArti
   const [isReading, setIsReading] = useState(false)
   const queryClient = useQueryClient()
 
-  const { data: articleData, isLoading } = useQuery({
+  const { data: articleData, isLoading, error } = useQuery({
     queryKey: ['knowledge-article', article.slug],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await api.get(`/api/v1/knowledge/articles/${article.slug}`, {
         params: { user_id: userId, mark_as_read: true },
+        signal,
       })
       return data.article
     },

@@ -1,11 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import axios from 'axios'
+import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
 import { ContextualArticles } from './ContextualArticle'
 import './UserRiskPanel.css'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-const api = axios.create({ baseURL: API_BASE_URL, headers: { 'Content-Type': 'application/json' } })
 
 interface Warning {
   type: string
@@ -53,8 +50,8 @@ interface UserRiskPanelProps {
 export function UserRiskPanel({ userId = '00000000-0000-0000-0000-000000000001', pollingInterval = 30000 }: UserRiskPanelProps) {
   const { data, isLoading, error } = useQuery<UserRiskState>({
     queryKey: ['user-risk-state', userId],
-    queryFn: async () => {
-      const { data } = await api.get(`/api/v1/user-risk/state?user_id=${userId}`)
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get(`/api/v1/user-risk/state?user_id=${userId}`, { signal })
       return data
     },
     refetchInterval: pollingInterval,
@@ -78,9 +75,21 @@ export function UserRiskPanel({ userId = '00000000-0000-0000-0000-000000000001',
   }
 
   if (error) {
+    const isTimeout = isTimeoutError(error)
+    const errorMessage = getErrorMessage(error)
     return (
       <div className="user-risk-panel error">
-        <p>Error al cargar estado de riesgo</p>
+        {isTimeout ? (
+          <>
+            <p><strong>⏱️ Tiempo de espera excedido</strong></p>
+            <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+          </>
+        ) : (
+          <>
+            <p><strong>❌ Error al cargar estado de riesgo</strong></p>
+            <p>{errorMessage}</p>
+          </>
+        )}
       </div>
     )
   }

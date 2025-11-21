@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useInvalidateAll, useTodayRecommendation } from '../api/hooks'
+import { useInvalidateAll, useTodayRecommendation, isTimeoutError, getErrorMessage } from '../api/hooks'
 import RiskBadge from './RiskBadge'
 import { ContextualArticles } from './ContextualArticle'
 import './RecommendationCard.css'
@@ -36,9 +36,21 @@ function RecommendationCard() {
   }
 
   if (error) {
+    const isTimeout = isTimeoutError(error)
+    const errorMessage = getErrorMessage(error)
     return (
       <div className="recommendation-card error" role="alert" aria-live="assertive">
-        <p>Error al cargar recomendación</p>
+        {isTimeout ? (
+          <>
+            <p><strong>⏱️ Tiempo de espera excedido</strong></p>
+            <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+          </>
+        ) : (
+          <>
+            <p><strong>❌ Error al cargar recomendación</strong></p>
+            <p>{errorMessage}</p>
+          </>
+        )}
         <button 
           onClick={handleRetry} 
           type="button" 

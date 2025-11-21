@@ -1,5 +1,5 @@
 """Performance endpoints."""
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 
 from app.backtesting.guardrails import GuardrailChecker, GuardrailConfig
 from app.models.performance import (
@@ -20,8 +20,30 @@ monitoring_service = ContinuousMonitoringService(asset="BTCUSDT", venue="binance
 kpis_service = KPIsReportingService()
 
 
+async def _background_backfill_summary(*, allow_stale_inputs: bool = False) -> None:
+    """
+    Background task to refresh performance summary cache.
+    
+    This runs asynchronously after the HTTP response is sent, ensuring
+    UI requests never block on full backtest execution.
+    """
+    try:
+        service = get_performance_service()
+        summary = await service._run_backtest_and_cache(allow_stale_inputs=allow_stale_inputs)
+        if summary:
+            logger.info("Background backfill completed and cached new summary")
+        else:
+            logger.warning("Background backfill completed but no summary was generated")
+    except Exception as exc:
+        logger.exception(
+            "Background backfill failed",
+            extra={"error": str(exc), "error_type": type(exc).__name__},
+        )
+
+
 @router.get("/summary", response_model=PerformanceSummaryResponse)
 async def get_performance_summary(
+    background_tasks: BackgroundTasks,
     allow_stale_inputs: bool = Query(False, description="Allow stale data inputs to return degraded results with fallback summary")
 ):
     """
@@ -30,12 +52,42 @@ async def get_performance_summary(
     Returns comprehensive metrics including CAGR, Sharpe, Sortino, Max Drawdown,
     Win Rate, Profit Factor, Expectancy, Calmar, and rolling KPIs (monthly/quarterly).
     
-    When allow_stale_inputs=True, the endpoint will return degraded results with
-    fallback_summary containing the most recent available metrics even if data
-    freshness validation fails.
+    When allow_stale_inputs=True:
+    - Returns cached data immediately (cache-first fast path)
+    - Enqueues background backfill to refresh cache asynchronously
+    - Never blocks UI requests on full backtest execution
+    - Response includes metadata: served_from_cache, generated_at
     """
     try:
-        result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs)
+        result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs, trigger_backfill=True)
+        
+        # Server-side guardrail: When allow_stale_inputs=True, enqueue background backfill if needed
+        # This ensures cache stays fresh without blocking the response
+        if allow_stale_inputs:
+            # Check if we should trigger a background backfill
+            # Only trigger if cache is missing or very old (> 1 hour for UI requests)
+            metadata = result.get("metadata", {})
+            cache_age = result.get("cache_age_seconds") or metadata.get("cache_age_seconds")
+            cache_miss = metadata.get("cache_miss", False)
+            served_from_cache = metadata.get("served_from_cache", False)
+            
+            # Enqueue background backfill if:
+            # 1. Cache miss (no data available)
+            # 2. Cache is old (> 1 hour)
+            # This runs after response is sent, never blocking the UI
+            if cache_miss or not served_from_cache or (cache_age is not None and cache_age > 3600):
+                background_tasks.add_task(
+                    _background_backfill_summary,
+                    allow_stale_inputs=allow_stale_inputs
+                )
+                logger.info(
+                    "Enqueued background backfill for performance summary",
+                    extra={
+                        "cache_miss": cache_miss,
+                        "served_from_cache": served_from_cache,
+                        "cache_age_seconds": cache_age,
+                    },
+                )
 
         if result.get("status") == "error":
             error_type = result.get("error_type")

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { usePerformanceSummary } from '../api/hooks'
+import { usePerformanceSummary, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
@@ -36,7 +36,30 @@ function PerformanceSummary() {
     )
   }
 
-  if (error || (!effectiveData && !data)) {
+  if (error) {
+    const isTimeout = isTimeoutError(error)
+    const errorMessage = getErrorMessage(error)
+    return (
+      <div className="performance-summary error" role="alert" aria-live="assertive">
+        <h2>Resumen de Performance</h2>
+        <div className="error-message">
+          {isTimeout ? (
+            <div className="timeout-error">
+              <p><strong>⏱️ Tiempo de espera excedido</strong></p>
+              <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+            </div>
+          ) : (
+            <div className="error-details">
+              <p><strong>❌ Error al cargar métricas</strong></p>
+              <p>{errorMessage}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (!effectiveData && !data) {
     return null
   }
 

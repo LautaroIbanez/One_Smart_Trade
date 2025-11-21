@@ -1,0 +1,42 @@
+.loading-state {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary, #cbd5e1);
+}
+
+.loading-state.compact {
+  padding: 1rem;
+}
+
+.loading-spinner {
+  display: inline-block;
+  margin-bottom: 1rem;
+}
+
+.spinner-circle {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color, #334155);
+  border-top-color: var(--accent-primary, #3b82f6);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-state.compact .spinner-circle {
+  width: 24px;
+  height: 24px;
+  border-width: 2px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-message {
+  font-size: 0.875rem;
+  margin: 0;
+  color: var(--text-secondary, #cbd5e1);
+}
+
