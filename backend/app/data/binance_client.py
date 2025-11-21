@@ -64,20 +64,51 @@ class BinanceClient:
             params["endTime"] = int(end.timestamp() * 1000)
 
         await _rate_limiter.acquire()
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=30.0) as client:
+        import time
+        from app.core.logging import logger
+        from app.observability.metrics import BINANCE_REQUEST_LATENCY
+        
+        start_time = time.time()
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=20.0) as client:  # Reduced from 30s to 20s
             response = await client.get(KLINES_PATH, params=params)
             response.raise_for_status()
             data = response.json()
 
         latency_ms = 0.0
+        latency_seconds = time.time() - start_time
         try:
+            # Try to get latency from response first
             latency_ms = float(response.elapsed.total_seconds() * 1000)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 - best effort metadata
             try:
                 latency_value = float(getattr(response, "elapsed", 0.0))
                 latency_ms = latency_value * 1000
             except Exception:  # pragma: no cover - ignore metadata errors
-                latency_ms = 0.0
+                latency_ms = latency_seconds * 1000
+        
+        # Record metrics
+        BINANCE_REQUEST_LATENCY.observe(latency_seconds)
+        
+        # Log warning if request took longer than 10 seconds
+        if latency_seconds > 10.0:
+            logger.warning(
+                f"Binance request exceeded 10s threshold: {latency_seconds:.2f}s",
+                extra={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "latency_seconds": latency_seconds,
+                    "latency_ms": latency_ms,
+                },
+            )
+        elif latency_seconds > 5.0:
+            logger.info(
+                f"Binance request took {latency_seconds:.2f}s",
+                extra={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "latency_seconds": latency_seconds,
+                },
+            )
 
         meta = {
             "symbol": symbol,

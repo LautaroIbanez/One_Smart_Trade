@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import axios, { AxiosError } from 'axios'
+import { getApiBaseUrl } from '../utils/apiConfig'
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE_URL = getApiBaseUrl()
 
 // Global request timeout: 25 seconds
 // This ensures requests fail fast rather than hanging indefinitely
@@ -33,6 +34,20 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
+    // Handle 202 Accepted (processing) responses
+    if (error.response?.status === 202) {
+      const processingError = new Error('La operación está en proceso. Por favor, intenta nuevamente en unos momentos.')
+      // @ts-ignore - custom properties for error handling
+      processingError.isProcessing = true
+      // @ts-ignore
+      processingError.originalError = error
+      // @ts-ignore
+      processingError.code = 'PROCESSING'
+      // @ts-ignore
+      processingError.detail = error.response?.data
+      throw processingError
+    }
+    
     // Enhance timeout errors with distinct error information
     if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
       const timeoutError = new Error('La solicitud ha excedido el tiempo de espera. El backend está ocupado procesando la solicitud.')
@@ -92,6 +107,20 @@ export function isNetworkError(error: unknown): boolean {
   }
   if (axios.isAxiosError(error)) {
     return error.code === 'ERR_NETWORK' || !error.response
+  }
+  return false
+}
+
+/**
+ * Check if an error indicates the operation is still processing
+ */
+export function isProcessingError(error: unknown): boolean {
+  if (error instanceof Error) {
+    // @ts-ignore
+    return error.isProcessing === true || error.code === 'PROCESSING'
+  }
+  if (axios.isAxiosError(error)) {
+    return error.response?.status === 202
   }
   return false
 }
@@ -208,7 +237,7 @@ export const useMarketData = (interval: Interval) => {
   })
 }
 
-export const usePerformanceSummary = () => {
+export const usePerformanceSummary = (enabled: boolean = true) => {
   return useQuery({
     queryKey: ['performance', 'summary'],
     queryFn: async ({ signal }) => {
@@ -219,6 +248,7 @@ export const usePerformanceSummary = () => {
       return data
     },
     staleTime: 300_000, // 5 minutes
+    enabled, // Allow disabling to prevent automatic fetching
   })
 }
 
@@ -253,7 +283,8 @@ export const useLivelihoodFromSeries = (
   expensesTarget: number = 0,
   trials: number = 10000,
   horizonMonths: number = 36,
-  ruinThreshold: number = 0.7
+  ruinThreshold: number = 0.7,
+  enabled: boolean = true
 ) => {
   return useQuery({
     queryKey: ['analytics', 'livelihood', 'series', expensesTarget, trials, horizonMonths, ruinThreshold, monthlyReturns?.length || 0],
@@ -268,8 +299,8 @@ export const useLivelihoodFromSeries = (
       }, { signal })
       return data as { survival: any; scenarios: any[] }
     },
-    enabled: Array.isArray(monthlyReturns) && monthlyReturns.length >= 3,
-    staleTime: 60_000,
+    enabled: enabled && Array.isArray(monthlyReturns) && monthlyReturns.length >= 3,
+    staleTime: 300_000, // 5 minutes (increased from 60s since results are cached on backend)
   })
 }
 

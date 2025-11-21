@@ -2,7 +2,7 @@
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 
 from app.backtesting.execution_simulator import ExecutionSimulator
@@ -10,8 +10,17 @@ from app.backtesting.operational_flow import OperationalFlow, generate_operation
 from app.backtesting.order_types import LimitOrder, MarketOrder, OrderConfig, OrderSide
 from app.backtesting.position import Position, PositionConfig, PositionSide as PosSide
 from app.data.orderbook import OrderBookRepository
+from app.core.config import settings
+from app.core.logging import logger
 
 router = APIRouter()
+
+
+def _verify_admin_key(x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key")) -> None:
+    """Verify admin API key for protected endpoints."""
+    if settings.ADMIN_API_KEY:
+        if not x_admin_api_key or x_admin_api_key != settings.ADMIN_API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid or missing admin API key")
 
 
 class OrderExecutionRequest(BaseModel):
@@ -145,6 +154,80 @@ async def preprocess_orderbook(request: PreprocessingRequest) -> dict[str, Any]:
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/trigger-pipeline")
+async def trigger_daily_pipeline(
+    x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
+) -> dict[str, Any]:
+    """
+    Manually trigger the daily pipeline (ingestion → curation → signal generation).
+    
+    This endpoint is protected by ADMIN_API_KEY if configured.
+    Useful for:
+    - Initial data seeding in new environments
+    - Manual replays/testing
+    - Recovery after pipeline failures
+    
+    Returns:
+        Pipeline execution result with run_id and status
+    """
+    _verify_admin_key(x_admin_api_key)
+    
+    try:
+        # Import here to avoid circular dependencies
+        from app.main import job_daily_pipeline
+        
+        logger.info("Manual pipeline trigger requested via API")
+        await job_daily_pipeline()
+        
+        return {
+            "status": "ok",
+            "message": "Daily pipeline execution completed. Check logs for details.",
+        }
+    except Exception as e:
+        logger.error(f"Pipeline trigger failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {str(e)}")
+
+
+@router.post("/trigger-recommendation")
+async def trigger_recommendation_generation(
+    x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
+    user_id: str | None = Query(None, description="User ID for personalized sizing"),
+) -> dict[str, Any]:
+    """
+    Manually trigger recommendation generation with allow_replay=True.
+    
+    This endpoint is protected by ADMIN_API_KEY if configured.
+    Generates a recommendation on-demand without waiting for the scheduled pipeline.
+    
+    Returns:
+        Generated recommendation or error details
+    """
+    _verify_admin_key(x_admin_api_key)
+    
+    try:
+        from app.services.recommendation_service import RecommendationService
+        
+        logger.info("Manual recommendation generation requested via API")
+        service = RecommendationService()
+        recommendation = await service.get_today_recommendation(
+            user_id=user_id,
+            allow_replay=True,
+        )
+        
+        if not recommendation:
+            raise HTTPException(status_code=404, detail="Failed to generate recommendation")
+        
+        return {
+            "status": "ok",
+            "recommendation": recommendation,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Recommendation generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Recommendation generation failed: {str(e)}")
 
 
 @router.get("/report")

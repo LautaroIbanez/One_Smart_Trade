@@ -35,6 +35,24 @@ DATA_GAPS = Counter(
     "data_gaps_total", "Gaps detectados en datasets", ["timeframe"]
 )
 
+# Binance client metrics
+BINANCE_REQUEST_LATENCY = Histogram(
+    "binance_request_latency_seconds",
+    "Latency of Binance API requests",
+    ["symbol", "interval"],
+)
+
+# API endpoint response time metrics
+ENDPOINT_RESPONSE_TIME = Histogram(
+    "endpoint_response_time_seconds",
+    "Response time for API endpoints",
+    ["endpoint", "status"],
+)
+
+# Cache metrics
+CACHE_HITS = Counter("cache_hits_total", "Cache hits", ["cache_key"])
+CACHE_MISSES = Counter("cache_misses_total", "Cache misses", ["cache_key"])
+
 
 class RequestMetricsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:

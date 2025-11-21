@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import suppress
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -623,6 +624,52 @@ async def job_verify_transparency() -> None:
         logger.exception("Failed to verify transparency", extra={"error": str(exc)})
 
 
+def _is_database_empty() -> bool:
+    """Check if database has any recommendations (indicates if it's been seeded)."""
+    from sqlalchemy import func, select
+    from app.db.models import RecommendationORM
+    
+    db = SessionLocal()
+    try:
+        count_stmt = select(func.count(RecommendationORM.id))
+        count = db.execute(count_stmt).scalar() or 0
+        return count == 0
+    finally:
+        db.close()
+
+
+async def _run_initial_pipeline_if_needed() -> None:
+    """
+    Run initial pipeline if database is empty or AUTO_RUN_PIPELINE_ON_START is enabled.
+    
+    This ensures new environments have data available immediately without waiting
+    for the scheduled 12:00 UTC cron job.
+    """
+    from app.core.logging import logger
+    
+    should_run = False
+    reason = ""
+    
+    if settings.AUTO_RUN_PIPELINE_ON_START:
+        should_run = True
+        reason = "AUTO_RUN_PIPELINE_ON_START is enabled"
+    elif _is_database_empty():
+        should_run = True
+        reason = "Database is empty (no recommendations found)"
+    
+    if should_run:
+        logger.info(f"Running initial pipeline on startup: {reason}")
+        try:
+            await job_daily_pipeline()
+            logger.info("Initial pipeline completed successfully")
+        except Exception as exc:
+            logger.error(f"Initial pipeline failed: {exc}", exc_info=True)
+            # Don't raise - allow app to start even if initial pipeline fails
+            # The scheduled job will retry later
+    else:
+        logger.info("Skipping initial pipeline (database has data and AUTO_RUN_PIPELINE_ON_START is disabled)")
+
+
 @app.on_event("startup")
 async def on_startup():
     # Jobs are already scheduled via decorators
@@ -630,6 +677,9 @@ async def on_startup():
     if settings.PRESTART_MAINTENANCE:
         global _preflight_task
         _preflight_task = asyncio.create_task(run_preflight())
+    
+    # Run initial pipeline if needed (empty DB or AUTO_RUN_PIPELINE_ON_START enabled)
+    await _run_initial_pipeline_if_needed()
 
 
 @app.on_event("shutdown")

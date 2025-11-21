@@ -1,9 +1,10 @@
 import { useMemo, useState, useCallback } from 'react'
 import { useMonthlyPerformance } from '../../api/hooks'
 import axios from 'axios'
+import { getApiBaseUrl } from '../../utils/apiConfig'
 import './MonthlyPerformance.css'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE_URL = getApiBaseUrl()
 const api = axios.create({ baseURL: API_BASE_URL, headers: { 'Content-Type': 'application/json' } })
 
 const formatPercent = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`

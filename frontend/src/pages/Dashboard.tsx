@@ -1,18 +1,10 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, lazy, Suspense } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import RecommendationCard from '../components/RecommendationCard'
 import HistoryExplorer from '../components/HistoryExplorer'
 import IndicatorsPanel from '../components/IndicatorsPanel'
 import RiskPanel from '../components/RiskPanel'
 import { PriceLevelsChart } from '../components/PriceLevelsChart'
-import PerformanceSummary from '../components/PerformanceSummary'
-import SignalCompliance from '../features/performance/SignalCompliance'
-import MonthlyPerformance from '../features/performance/MonthlyPerformance'
-import { RealVsTheoretical } from '../features/performance/RealVsTheoretical'
-import ObservabilityDashboard from '../components/ObservabilityDashboard'
-import TransparencyDashboard from '../components/TransparencyDashboard'
-import LivelihoodDashboard from '../components/LivelihoodDashboard'
-import UserRiskPanel from '../components/UserRiskPanel'
 import AppLayout from '../components/AppLayout'
 import { useTodayRecommendation, useMarketData } from '../api/hooks'
 import { ErrorState } from '../components/shared/ErrorState'
@@ -21,6 +13,16 @@ import { DegradedDataBanner } from '../components/shared/DegradedDataBanner'
 import { isTradableRecommendation, getNonTradableMessage } from '../utils/recommendation'
 import type { MarketPoint } from '@/types'
 import './Dashboard.css'
+
+// Lazy load heavy components to reduce initial bundle size and parallel API calls
+const PerformanceSummary = lazy(() => import('../components/PerformanceSummary'))
+const SignalCompliance = lazy(() => import('../features/performance/SignalCompliance'))
+const MonthlyPerformance = lazy(() => import('../features/performance/MonthlyPerformance'))
+const RealVsTheoretical = lazy(() => import('../features/performance/RealVsTheoretical').then(m => ({ default: m.RealVsTheoretical })))
+const ObservabilityDashboard = lazy(() => import('../components/ObservabilityDashboard'))
+const TransparencyDashboard = lazy(() => import('../components/TransparencyDashboard'))
+const LivelihoodDashboard = lazy(() => import('../components/LivelihoodDashboard'))
+const UserRiskPanel = lazy(() => import('../components/UserRiskPanel'))
 
 interface RefreshToast {
   id: string
@@ -284,14 +286,30 @@ function Dashboard() {
             <RiskPanel risk={data?.risk_metrics} />
           </div>
           <HistoryExplorer defaultPageSize={25} />
-          <UserRiskPanel />
-          <PerformanceSummary />
-          <RealVsTheoretical />
-          <SignalCompliance />
-          <MonthlyPerformance />
-          <LivelihoodDashboard />
-          <ObservabilityDashboard isPrivate={false} />
-          <TransparencyDashboard />
+          <Suspense fallback={<LoadingState message="Cargando panel de riesgo de usuario..." />}>
+            <UserRiskPanel />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando resumen de rendimiento..." />}>
+            <PerformanceSummary />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando análisis de rendimiento..." />}>
+            <RealVsTheoretical />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando cumplimiento de señales..." />}>
+            <SignalCompliance />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando rendimiento mensual..." />}>
+            <MonthlyPerformance />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando análisis de subsistencia..." />}>
+            <LivelihoodDashboard />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando dashboard de observabilidad..." />}>
+            <ObservabilityDashboard isPrivate={false} />
+          </Suspense>
+          <Suspense fallback={<LoadingState message="Cargando dashboard de transparencia..." />}>
+            <TransparencyDashboard />
+          </Suspense>
         </main>
       </div>
     </AppLayout>

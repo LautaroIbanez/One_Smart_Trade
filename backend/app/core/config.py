@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     PRESTART_LOOKBACK_DAYS: int = 30
     PRESTART_BACKFILL_CHUNK: int = 900
     PRESTART_BACKFILL_PAUSE_SECONDS: float = 0.2
+    
+    # Auto-run pipeline on startup
+    AUTO_RUN_PIPELINE_ON_START: bool = False  # Set to True for demo/staging to ensure fresh data without waiting for 12:00 UTC cron
+    
+    # Admin API key for operational endpoints (set via ADMIN_API_KEY env var)
+    ADMIN_API_KEY: str | None = None  # If set, required for admin endpoints like triggering pipeline
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]

@@ -14,6 +14,9 @@ from app.core.database import SessionLocal
 from app.db.models import PerformancePeriodicORM, PeriodicHorizon
 from app.services.worm_storage import store_artifact
 from app.core.config import settings
+from app.utils.cache import get_cached, set_cached
+from app.utils.async_timeout import with_timeout, ProcessingResponse
+import time
 
 
 router = APIRouter()
@@ -78,15 +81,61 @@ class FeedbackRequest(BaseModel):
 
 @router.post("/livelihood", response_model=LivelihoodResponse)
 async def compute_livelihood(payload: LivelihoodRequest) -> LivelihoodResponse:
-    """Compute survival analysis and account scenarios from provided monthly return series."""
-    series = pd.Series(payload.monthly_returns)
-    sim = SurvivalSimulator(trials=payload.trials, horizon_months=payload.horizon_months, ruin_threshold=payload.ruin_threshold)
-    survival = sim.monte_carlo(series)
-    scenarios = LivelihoodReport().build(series, expenses_target=payload.expenses_target)
-    return LivelihoodResponse(
-        survival=survival,
-        scenarios=[s.__dict__ for s in scenarios],
+    """
+    Compute survival analysis and account scenarios from provided monthly return series.
+    
+    Results are cached for 5 minutes to avoid recomputing expensive Monte Carlo simulations.
+    """
+    from app.core.logging import logger
+    from app.observability.metrics import ENDPOINT_RESPONSE_TIME
+    
+    start_time = time.time()
+    
+    # Check cache (cache key based on input parameters)
+    cache_key_args = (
+        tuple(payload.monthly_returns),
+        payload.expenses_target,
+        payload.trials,
+        payload.horizon_months,
+        payload.ruin_threshold,
     )
+    cached_result = get_cached("analytics_livelihood", ttl_seconds=300.0, *cache_key_args)
+    if cached_result:
+        duration = time.time() - start_time
+        ENDPOINT_RESPONSE_TIME.labels(endpoint="/analytics/livelihood", status="cached").observe(duration)
+        return LivelihoodResponse(**cached_result)
+    
+    # Execute with timeout (20 seconds max)
+    async def compute():
+        series = pd.Series(payload.monthly_returns)
+        sim = SurvivalSimulator(trials=payload.trials, horizon_months=payload.horizon_months, ruin_threshold=payload.ruin_threshold)
+        survival = sim.monte_carlo(series)
+        scenarios = LivelihoodReport().build(series, expenses_target=payload.expenses_target)
+        return {
+            "survival": survival,
+            "scenarios": [s.__dict__ for s in scenarios],
+        }
+    
+    result = await with_timeout(compute, timeout_seconds=20.0, timeout_message="Livelihood computation timed out")
+    if result is None:
+        # Return processing response if timeout
+        processing = ProcessingResponse(
+            operation_id=f"livelihood_{int(time.time())}",
+            message="Computation is taking longer than expected. Please retry in a few moments.",
+            estimated_seconds=30.0,
+        )
+        raise HTTPException(status_code=202, detail=processing.to_dict())
+    
+    # Cache result
+    set_cached("analytics_livelihood", result, ttl_seconds=300.0, *cache_key_args)
+    
+    duration = time.time() - start_time
+    ENDPOINT_RESPONSE_TIME.labels(endpoint="/analytics/livelihood", status="success").observe(duration)
+    
+    if duration > 10.0:
+        logger.warning(f"Livelihood computation took {duration:.2f}s", extra={"duration": duration})
+    
+    return LivelihoodResponse(**result)
 
 
 @router.get("/livelihood/{run_id}", response_model=LivelihoodResponse)
