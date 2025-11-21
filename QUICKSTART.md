@@ -80,9 +80,36 @@ curl -sSL https://install.python-poetry.org | python3 -
 
 ## Verificación Final
 
+### Verificar Backend
+
+```powershell
+# Health check
+Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing
+
+# Endpoint de recomendación
+Invoke-WebRequest -Uri "http://localhost:8000/api/v1/recommendation/today" -UseBasicParsing
+
+# O en el navegador:
+# http://localhost:8000/docs (API docs)
+```
+
+### Verificar Frontend (con Backend Corriendo)
+
+```powershell
+# A través del proxy de Vite
+Invoke-WebRequest -Uri "http://localhost:5173/api/v1/recommendation/today" -UseBasicParsing
+
+# O en el navegador:
+# http://localhost:5173
+```
+
+### Checklist
+
 1. ✅ Backend corriendo en http://localhost:8000
-2. ✅ Frontend corriendo en http://localhost:5173
-3. ✅ Puedes acceder a http://localhost:8000/docs (API docs del backend)
-4. ✅ Puedes acceder a http://localhost:5173 (UI del frontend)
-5. ✅ Los paneles del dashboard se cargan correctamente
+2. ✅ Backend responde a `/health` y `/api/v1/recommendation/today`
+3. ✅ Frontend corriendo en http://localhost:5173
+4. ✅ Puedes acceder a http://localhost:8000/docs (API docs del backend)
+5. ✅ Puedes acceder a http://localhost:5173 (UI del frontend)
+6. ✅ Los paneles del dashboard se cargan correctamente (no errores ECONNREFUSED)
+7. ✅ Los endpoints devuelven datos (200 o 400/503, no ECONNREFUSED)
 

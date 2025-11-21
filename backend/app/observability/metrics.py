@@ -97,7 +97,23 @@ def record_signal_generation(latency_s: float, success: bool, error: str | None 
 
 
 def record_data_gap(timeframe: str) -> None:
-    """Record data gap metric. Raises ValueError if labels are missing."""
-    DATA_GAPS.labels(timeframe=timeframe).inc()
+    """
+    Record data gap metric.
+    
+    This function is designed to be called from code that handles errors gracefully.
+    If you need defensive error handling, wrap the call in try-except.
+    """
+    try:
+        DATA_GAPS.labels(timeframe=timeframe).inc()
+    except (ValueError, Exception) as e:
+        # Log warning but don't raise - metrics are optional observability
+        # This allows callers to continue even if metrics fail
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"Failed to record data gap metric for {timeframe}: {e}",
+            extra={"timeframe": timeframe, "error_type": type(e).__name__, "error": str(e)},
+            exc_info=False,
+        )
 
 

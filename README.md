@@ -36,8 +36,10 @@ pnpm install
 
 ### Ejecución (2 min)
 
+⚠️ **IMPORTANTE:** El backend DEBE estar corriendo antes del frontend, de lo contrario verás errores `ECONNREFUSED`.
+
 ```bash
-# Terminal 1: Backend
+# Terminal 1: Backend (INICIAR PRIMERO)
 cd backend
 # Opción 1: Usar script (recomendado)
 .\start-dev.ps1        # Windows PowerShell
@@ -47,22 +49,39 @@ cd backend
 # Opción 2: Comando directo
 poetry run uvicorn app.main:app --reload --port 8000
 
-# Terminal 2: Frontend
+# Verificar que el backend está corriendo:
+# Deberías ver: "Uvicorn running on http://127.0.0.1:8000"
+# O prueba: curl http://localhost:8000/health
+
+# Terminal 2: Frontend (INICIAR DESPUÉS)
 cd frontend
 pnpm run dev
 ```
 
-**Importante:** El backend debe estar corriendo en `http://localhost:8000` para que el frontend funcione correctamente. El proxy de Vite redirige las peticiones `/api/*` al backend.
+**Configuración:**
+- El proxy de Vite redirige las peticiones `/api/*` a `http://localhost:8000`
+- Si el backend corre en otro host/puerto, crea `frontend/.env` con `VITE_API_BASE_URL=http://TU_BACKEND_URL`
+- Ver [START_BOTH.md](START_BOTH.md) para guía detallada
 
 ### Verificar (1 min)
 
+**Opción 1: Script de verificación (Windows PowerShell)**
+```powershell
+.\check-backend.ps1
+```
+
+**Opción 2: Verificación manual**
 ```bash
 # Health check
 curl http://localhost:8000/health
+# O en PowerShell:
+Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing
 
 # Obtener recomendación
 curl http://localhost:8000/api/v1/recommendation/today
 ```
+
+**Si ves errores `ECONNREFUSED`:** El backend no está corriendo. Ver [START_BOTH.md](START_BOTH.md) para instrucciones detalladas.
 
 **📖 Para onboarding completo**: Ver [docs/ONBOARDING.md](docs/ONBOARDING.md) (≤30 min)
 
