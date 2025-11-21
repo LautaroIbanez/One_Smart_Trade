@@ -39,12 +39,20 @@ pnpm install
 ```bash
 # Terminal 1: Backend
 cd backend
+# Opción 1: Usar script (recomendado)
+.\start-dev.ps1        # Windows PowerShell
+# o
+./start-dev.sh         # Linux/Mac
+
+# Opción 2: Comando directo
 poetry run uvicorn app.main:app --reload --port 8000
 
-# Terminal 2: Frontend (opcional)
+# Terminal 2: Frontend
 cd frontend
 pnpm run dev
 ```
+
+**Importante:** El backend debe estar corriendo en `http://localhost:8000` para que el frontend funcione correctamente. El proxy de Vite redirige las peticiones `/api/*` al backend.
 
 ### Verificar (1 min)
 

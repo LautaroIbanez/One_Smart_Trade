@@ -18,9 +18,24 @@ poetry shell
 ## Ejecución
 
 ### Desarrollo
+
+**Opción 1: Usar script (recomendado)**
+```bash
+# Windows PowerShell
+.\start-dev.ps1
+
+# Linux/Mac
+./start-dev.sh
+```
+
+**Opción 2: Comando directo**
 ```bash
 poetry run uvicorn app.main:app --reload --port 8000
 ```
+
+El servidor estará disponible en `http://localhost:8000`. El frontend (Vite) está configurado para proxificar las peticiones `/api/*` a este puerto.
+
+**Nota:** Asegúrate de que el backend esté corriendo antes de iniciar el frontend, de lo contrario verás errores `ECONNREFUSED` en la consola del navegador.
 
 ### Producción
 ```bash
