@@ -95,7 +95,9 @@ export const usePerformanceSummary = () => {
   return useQuery({
     queryKey: ['performance', 'summary'],
     queryFn: async () => {
-      const { data } = await api.get('/api/v1/performance/summary')
+      const { data } = await api.get('/api/v1/performance/summary', {
+        params: { allow_stale_inputs: true },
+      })
       return data
     },
     staleTime: 300_000, // 5 minutes

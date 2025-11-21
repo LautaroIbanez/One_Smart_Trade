@@ -97,13 +97,33 @@ export function SignalCompliance() {
     )
   }
 
-  if (isError || !data || data.timeline.length === 0) {
+  // Guard against empty or missing timeline
+  const hasTimeline = data?.timeline && Array.isArray(data.timeline) && data.timeline.length > 0
+  const hasEquityData = 
+    (data?.equity_theoretical && Array.isArray(data.equity_theoretical) && data.equity_theoretical.length > 0) ||
+    (data?.equity_realistic && Array.isArray(data.equity_realistic) && data.equity_realistic.length > 0)
+
+  if (isError || !data) {
     return (
       <section className="signal-compliance" aria-live="polite">
         <header>
           <h2>Seguimiento de Señales</h2>
         </header>
-        <p>No hay suficiente histórico para evaluar cumplimiento.</p>
+        <p>Error al cargar datos de seguimiento de señales.</p>
+      </section>
+    )
+  }
+
+  if (!hasTimeline) {
+    return (
+      <section className="signal-compliance" aria-live="polite">
+        <header>
+          <h2>Seguimiento de Señales</h2>
+        </header>
+        <div className="no-data-placeholder">
+          <p>⚠️ No hay suficiente histórico para evaluar cumplimiento</p>
+          <p>Se requieren señales cerradas con resultados para mostrar el seguimiento.</p>
+        </div>
       </section>
     )
   }
@@ -148,7 +168,7 @@ export function SignalCompliance() {
         </div>
       </header>
 
-      {trackingSeries.length > 0 && (
+      {hasEquityData && trackingSeries.length > 0 ? (
         <div className="signal-compliance-chart">
           <h3>Curvas de Equity: Teórico vs Realista</h3>
           <ResponsiveContainer width="100%" height={300}>
@@ -215,6 +235,11 @@ export function SignalCompliance() {
               <span className="summary-value">{formatPercent(metrics.drawdownDivergence)}</span>
             </div>
           </div>
+        </div>
+      ) : (
+        <div className="no-equity-placeholder">
+          <p>⚠️ Datos de equity no disponibles</p>
+          <p>Las curvas de equity teórico vs realista no están disponibles para este período.</p>
         </div>
       )}
 

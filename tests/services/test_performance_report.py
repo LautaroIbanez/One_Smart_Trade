@@ -240,3 +240,220 @@ class TestPerformanceReportEndpoints:
                 assert te_metrics.get("rmse") == 95.5
                 assert te_metrics.get("correlation") == 0.98
 
+    @pytest.mark.asyncio
+    async def test_stale_data_error_with_fallback_summary(self):
+        """Test that DATA_STALE error returns 200 with status:error and fallback_summary."""
+        from datetime import datetime
+        
+        mock_stale_error_result = {
+            "status": "error",
+            "error_type": "DATA_STALE",
+            "message": "Data freshness validation failed",
+            "http_status": 503,
+            "details": {
+                "interval": "1h",
+                "latest_timestamp": "2024-01-01T12:00:00",
+                "threshold_minutes": 60,
+            },
+            "fallback_summary": {
+                "status": "success",
+                "source": "db_cache",
+                "metrics": {
+                    "cagr": 15.5,
+                    "sharpe": 1.2,
+                    "sortino": 1.5,
+                    "max_drawdown": 12.3,
+                    "win_rate": 58.5,
+                    "profit_factor": 1.8,
+                    "expectancy": 125.0,
+                    "calmar": 1.26,
+                    "total_return": 75.5,
+                    "total_trades": 150,
+                    "winning_trades": 88,
+                    "losing_trades": 62,
+                },
+                "period": {
+                    "start": "2023-01-01T00:00:00",
+                    "end": "2024-01-01T00:00:00",
+                },
+                "equity_theoretical": [10000.0, 10100.0, 10200.0],
+                "equity_realistic": [10000.0, 10080.0, 10160.0],
+                "equity_curve": [
+                    {"timestamp": "2023-01-01", "equity_theoretical": 10000.0, "equity_realistic": 10000.0},
+                ],
+                "tracking_error_metrics": {
+                    "rmse": 95.5,
+                    "mean_deviation": -50.0,
+                    "max_divergence": -150.0,
+                    "correlation": 0.98,
+                },
+                "tracking_error": {
+                    "rmse": 95.5,
+                    "max_divergence_bps": 180.0,
+                },
+            },
+            "period": {
+                "start": "2023-01-01T00:00:00",
+                "end": "2024-01-01T00:00:00",
+            },
+            "equity_theoretical": [10000.0, 10100.0, 10200.0],
+            "equity_realistic": [10000.0, 10080.0, 10160.0],
+            "equity_curve": [
+                {"timestamp": "2023-01-01", "equity_theoretical": 10000.0, "equity_realistic": 10000.0},
+            ],
+            "tracking_error_metrics": {
+                "rmse": 95.5,
+                "mean_deviation": -50.0,
+                "max_divergence": -150.0,
+                "correlation": 0.98,
+            },
+            "tracking_error": {
+                "rmse": 95.5,
+                "max_divergence_bps": 180.0,
+            },
+        }
+        
+        with patch("app.api.v1.performance.performance_service") as mock_service:
+            mock_service.get_summary = AsyncMock(return_value=mock_stale_error_result)
+            
+            response = await get_performance_summary(allow_stale_inputs=True)
+            
+            # Should return 200 with status:error
+            assert response["status"] == "error"
+            assert response["message"] == "Data freshness validation failed"
+            
+            # Should include optional fields from fallback_summary
+            assert "equity_theoretical" in response
+            assert "equity_realistic" in response
+            assert "equity_curve" in response
+            assert "tracking_error_metrics" in response
+            assert "tracking_error" in response
+            assert "period" in response
+            
+            # Verify fallback data is present
+            assert len(response["equity_theoretical"]) > 0
+            assert len(response["equity_realistic"]) > 0
+            assert response["tracking_error_metrics"]["rmse"] == 95.5
+            
+            # Verify period is populated
+            if response.get("period"):
+                assert response["period"]["start"] == "2023-01-01T00:00:00"
+                assert response["period"]["end"] == "2024-01-01T00:00:00"
+            
+            # Verify metrics are populated from fallback_summary
+            if response.get("metrics"):
+                assert response["metrics"].cagr == 15.5
+                assert response["metrics"].sharpe == 1.2
+
+    @pytest.mark.asyncio
+    async def test_stale_data_with_fresh_cache_success(self):
+        """Test that allow_stale_inputs=True returns status:success when fresh cache is available."""
+        mock_cached_success = {
+            "status": "success",
+            "source": "db_cache",
+            "cached_at": "2024-01-01T12:00:00",
+            "cache_age_seconds": 300,
+            "metrics": {
+                "cagr": 15.5,
+                "sharpe": 1.2,
+                "sortino": 1.5,
+                "max_drawdown": 12.3,
+                "win_rate": 58.5,
+                "profit_factor": 1.8,
+                "expectancy": 125.0,
+                "calmar": 1.26,
+                "total_return": 75.5,
+                "total_trades": 150,
+                "winning_trades": 88,
+                "losing_trades": 62,
+            },
+            "period": {
+                "start": "2023-01-01T00:00:00",
+                "end": "2024-01-01T00:00:00",
+            },
+            "equity_theoretical": [10000.0, 10100.0, 10200.0],
+            "equity_realistic": [10000.0, 10080.0, 10160.0],
+            "equity_curve": [
+                {"timestamp": "2023-01-01", "equity_theoretical": 10000.0, "equity_realistic": 10000.0},
+            ],
+            "tracking_error_metrics": {
+                "rmse": 95.5,
+                "mean_deviation": -50.0,
+                "max_divergence": -150.0,
+            },
+            "tracking_error": {
+                "rmse": 95.5,
+                "max_divergence_bps": 180.0,
+            },
+            "metrics_status": "PASS",
+            "oos_days": 120,
+        }
+        
+        with patch("app.api.v1.performance.performance_service") as mock_service:
+            mock_service.get_summary = AsyncMock(return_value=mock_cached_success)
+            
+            response = await get_performance_summary(allow_stale_inputs=True)
+            
+            # Should return status:success when cache is available
+            assert response["status"] == "success"
+            
+            # Should include all required fields
+            assert "equity_theoretical" in response
+            assert "equity_realistic" in response
+            assert "equity_curve" in response
+            assert "tracking_error_metrics" in response
+            assert "period" in response
+            
+            # Verify data is present
+            assert len(response["equity_theoretical"]) > 0
+            assert response["tracking_error_metrics"]["rmse"] == 95.5
+
+    @pytest.mark.asyncio
+    async def test_stale_data_error_without_fallback_graceful_degradation(self):
+        """Test that DATA_STALE error without fallback_summary still includes optional fields."""
+        mock_stale_error_no_fallback = {
+            "status": "error",
+            "error_type": "DATA_STALE",
+            "message": "Data freshness validation failed",
+            "http_status": 503,
+            "details": {
+                "interval": "1h",
+                "latest_timestamp": "2024-01-01T12:00:00",
+                "threshold_minutes": 60,
+            },
+            "fallback_summary": {
+                "status": "success",
+                "source": "placeholder",
+                "metrics": {},
+                "period": None,
+                "equity_theoretical": [],
+                "equity_realistic": [],
+                "equity_curve": [],
+                "tracking_error_metrics": None,
+                "tracking_error": None,
+            },
+            "period": None,
+            "equity_theoretical": [],
+            "equity_realistic": [],
+            "equity_curve": [],
+        }
+        
+        with patch("app.api.v1.performance.performance_service") as mock_service:
+            mock_service.get_summary = AsyncMock(return_value=mock_stale_error_no_fallback)
+            
+            response = await get_performance_summary(allow_stale_inputs=True)
+            
+            # Should return status:error
+            assert response["status"] == "error"
+            
+            # Should still include optional fields even if empty/None
+            assert "equity_theoretical" in response
+            assert "equity_realistic" in response
+            assert "equity_curve" in response
+            assert "period" in response  # May be None but should be present
+            
+            # Verify fields are empty lists/None (graceful degradation)
+            assert response["equity_theoretical"] == []
+            assert response["equity_realistic"] == []
+            assert response["equity_curve"] == []
+

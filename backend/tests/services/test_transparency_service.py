@@ -215,6 +215,85 @@ class TestDrawdownDivergence:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_get_drawdown_divergence_error_with_fallback_stale(
+        self,
+        transparency_service,
+    ):
+        """Test drawdown divergence returns stale object when error status with fallback but no tracking_error_metrics."""
+        mock_service = MagicMock()
+        mock_service.get_summary = AsyncMock(
+            return_value={
+                "status": "error",
+                "error_type": "DATA_STALE",
+                "message": "Data freshness validation failed",
+                "fallback_summary": {
+                    "status": "success",
+                    "source": "db_cache",
+                    "metrics": {
+                        "cagr": 15.5,
+                        "sharpe": 1.2,
+                    },
+                    "period": {
+                        "start": "2023-01-01T00:00:00",
+                        "end": "2024-01-01T00:00:00",
+                    },
+                    # No tracking_error_metrics in fallback
+                },
+            }
+        )
+        transparency_service.performance_service = mock_service
+
+        result = await transparency_service.get_drawdown_divergence()
+
+        # Should return a stale object instead of None
+        assert result is not None
+        assert isinstance(result, DrawdownDivergence)
+        assert result.metadata is not None
+        assert result.metadata.get("is_stale") is True
+        assert result.metadata.get("reason") == "tracking_error_metrics_missing"
+        assert result.metadata.get("summary_status") == "error"
+        assert result.metadata.get("has_fallback") is True
+        # Values should be neutral (0.0)
+        assert result.theoretical_max_dd == 0.0
+        assert result.realistic_max_dd == 0.0
+        assert result.divergence_pct == 0.0
+
+    @pytest.mark.asyncio
+    async def test_get_drawdown_divergence_error_with_fallback_has_metrics(
+        self,
+        transparency_service,
+    ):
+        """Test drawdown divergence uses fallback tracking_error_metrics when available."""
+        mock_service = MagicMock()
+        mock_service.get_summary = AsyncMock(
+            return_value={
+                "status": "error",
+                "error_type": "DATA_STALE",
+                "message": "Data freshness validation failed",
+                "fallback_summary": {
+                    "status": "success",
+                    "source": "db_cache",
+                    "tracking_error_metrics": {
+                        "theoretical_max_drawdown": -0.10,
+                        "realistic_max_drawdown": -0.12,
+                    },
+                },
+            }
+        )
+        transparency_service.performance_service = mock_service
+
+        result = await transparency_service.get_drawdown_divergence()
+
+        # Should calculate divergence from fallback metrics
+        assert result is not None
+        assert isinstance(result, DrawdownDivergence)
+        assert result.theoretical_max_dd == -0.10
+        assert result.realistic_max_dd == -0.12
+        assert result.divergence_pct > 0
+        # Should not be marked as stale if metrics are available
+        assert result.metadata is None or result.metadata.get("is_stale") is not True
+
 
 class TestSemaphore:
     """Test semaphore status calculation."""
@@ -394,4 +473,177 @@ class TestDashboardData:
         assert "drawdown_divergence" in data
         assert "audit_status" in data
         assert "timestamp" in data
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_semaphore",
+        new_callable=AsyncMock,
+    )
+    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling", new_callable=AsyncMock)
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_drawdown_divergence",
+        new_callable=AsyncMock,
+    )
+    @patch("app.services.transparency_service.TransparencyService.get_audit_status")
+    @patch("app.services.transparency_service.TransparencyService.verify_hashes")
+    @patch("app.services.transparency_service.get_git_commit_hash")
+    @patch("app.services.transparency_service.get_dataset_version_hash")
+    @patch("app.services.transparency_service.get_params_digest")
+    async def test_get_dashboard_data_error_with_fallback(
+        self,
+        mock_params,
+        mock_dataset,
+        mock_commit,
+        mock_hashes,
+        mock_audit,
+        mock_drawdown,
+        mock_tracking,
+        mock_semaphore,
+        transparency_service,
+    ):
+        """Test dashboard data maps fields from fallback_summary when summary_status is error."""
+        # Mock performance service to return error with fallback
+        mock_perf_service = MagicMock()
+        mock_perf_service.get_summary = AsyncMock(
+            return_value={
+                "status": "error",
+                "error_type": "DATA_STALE",
+                "message": "Data freshness validation failed",
+                "fallback_summary": {
+                    "status": "success",
+                    "source": "db_cache",
+                    "metrics": {
+                        "cagr": 15.5,
+                        "sharpe": 1.2,
+                        "max_drawdown": 12.3,
+                    },
+                    "period": {
+                        "start": "2023-01-01T00:00:00",
+                        "end": "2024-01-01T00:00:00",
+                    },
+                    "tracking_error_metrics": {
+                        "theoretical_max_drawdown": -0.10,
+                        "realistic_max_drawdown": -0.12,
+                        "rmse": 95.5,
+                    },
+                },
+            }
+        )
+        transparency_service.performance_service = mock_perf_service
+
+        # Mock other services
+        mock_semaphore.return_value = TransparencySemaphore(
+            overall_status=VerificationStatus.WARN,  # Should be WARN due to stale data
+            hash_verification=VerificationStatus.PASS,
+            dataset_verification=VerificationStatus.PASS,
+            params_verification=VerificationStatus.PASS,
+            tracking_error_status=VerificationStatus.PASS,
+            drawdown_divergence_status=VerificationStatus.WARN,  # WARN due to stale
+            audit_status=VerificationStatus.PASS,
+            last_verification=datetime.utcnow().isoformat(),
+            details={},
+        )
+        mock_tracking.return_value = None
+        # Mock drawdown to return stale object
+        mock_drawdown.return_value = DrawdownDivergence(
+            theoretical_max_dd=0.0,
+            realistic_max_dd=0.0,
+            divergence_pct=0.0,
+            timestamp=datetime.utcnow().isoformat(),
+            metadata={
+                "is_stale": True,
+                "reason": "tracking_error_metrics_missing",
+                "summary_status": "error",
+                "has_fallback": True,
+            },
+        )
+        mock_audit.return_value = {}
+        mock_hashes.return_value = []
+        mock_commit.return_value = "abc123"
+        mock_dataset.return_value = "sha256:dataset"
+        mock_params.return_value = "sha256:params"
+
+        data = await transparency_service.get_dashboard_data()
+
+        # Verify dashboard includes all required fields
+        assert "semaphore" in data
+        assert "drawdown_divergence" in data
+        assert "summary_status" in data
+        assert data["summary_status"] == "error"
+        
+        # Verify fallback_summary is included
+        assert "summary_fallback" in data
+        assert data["summary_fallback"] is not None
+        
+        # Verify fields are mapped from fallback
+        assert "summary_metrics" in data
+        assert data["summary_metrics"] is not None
+        assert data["summary_metrics"].get("cagr") == 15.5
+        
+        assert "summary_period" in data
+        assert data["summary_period"] is not None
+        assert data["summary_period"].get("start") == "2023-01-01T00:00:00"
+        
+        # Verify drawdown_divergence is populated (even if stale)
+        assert data["drawdown_divergence"] is not None
+        assert data["drawdown_divergence"].get("metadata", {}).get("is_stale") is True
+        
+        # Verify semaphore is populated
+        assert data["semaphore"] is not None
+        assert data["semaphore"]["drawdown_divergence_status"] == "warn"  # Should be WARN due to stale
+
+    @pytest.mark.asyncio
+    @patch("app.services.transparency_service.TransparencyService.verify_hashes")
+    @patch("app.services.transparency_service.TransparencyService.get_tracking_error_rolling", new_callable=AsyncMock)
+    @patch(
+        "app.services.transparency_service.TransparencyService.get_drawdown_divergence",
+        new_callable=AsyncMock,
+    )
+    @patch("app.services.transparency_service.TransparencyService.get_audit_status")
+    async def test_get_semaphore_with_stale_drawdown(
+        self,
+        mock_audit,
+        mock_drawdown,
+        mock_tracking,
+        mock_hashes,
+        transparency_service,
+    ):
+        """Test semaphore handles stale drawdown_divergence correctly."""
+        mock_hashes.return_value = [
+            HashVerification(
+                hash_type="code_commit",
+                current_hash="abc123",
+                stored_hash="abc123",
+                status=VerificationStatus.PASS,
+                message="OK",
+                timestamp=datetime.utcnow().isoformat(),
+            )
+        ]
+        mock_tracking.return_value = TrackingErrorRolling(
+            period_days=30,
+            mean_deviation=0.01,
+            max_divergence=0.02,
+            correlation=0.95,
+            rmse=0.01,
+            annualized_tracking_error=2.0,
+            timestamp=datetime.utcnow().isoformat(),
+        )
+        # Mock stale drawdown_divergence
+        mock_drawdown.return_value = DrawdownDivergence(
+            theoretical_max_dd=0.0,
+            realistic_max_dd=0.0,
+            divergence_pct=0.0,
+            timestamp=datetime.utcnow().isoformat(),
+            metadata={
+                "is_stale": True,
+                "reason": "tracking_error_metrics_missing",
+            },
+        )
+        mock_audit.return_value = {"total_exports": 10}
+
+        semaphore = await transparency_service.get_semaphore()
+
+        # Should be WARN due to stale data, not PASS
+        assert semaphore.drawdown_divergence_status == VerificationStatus.WARN
+        assert semaphore.overall_status == VerificationStatus.WARN
 

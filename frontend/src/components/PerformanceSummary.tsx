@@ -1,8 +1,31 @@
+import { useMemo } from 'react'
 import { usePerformanceSummary } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
   const { data, isLoading, error } = usePerformanceSummary()
+
+  // Extract data from main payload or fallback_summary
+  const effectiveData = useMemo(() => {
+    if (!data) return null
+    
+    // If status is error but we have fallback_summary, use it
+    if (data.status === 'error' && (data as any).fallback_summary) {
+      const fallback = (data as any).fallback_summary
+      return {
+        ...data,
+        metrics: data.metrics || fallback.metrics || {},
+        period: data.period || fallback.period || null,
+        report_path: data.report_path || fallback.report_path || null,
+        _isDegraded: true,
+        _degradedMessage: data.message || 'Datos en modo degradado',
+      }
+    }
+    
+    return data
+  }, [data])
+
+  const isDegraded = (effectiveData as any)?._isDegraded === true
 
   if (isLoading) {
     return (
@@ -13,16 +36,28 @@ function PerformanceSummary() {
     )
   }
 
-  if (error || !data || data.status !== 'success') {
+  if (error || (!effectiveData && !data)) {
     return null
   }
 
-  const metrics = data.metrics || {}
+  // Show component even in degraded mode if we have metrics
+  const metrics = effectiveData?.metrics || {}
+  const hasMetrics = Object.keys(metrics).length > 0
+
+  if (!hasMetrics && !isDegraded) {
+    return null
+  }
 
   return (
     <div className="performance-summary">
       <h2>Resumen de Performance (Backtesting)</h2>
-      <div className="metrics-grid">
+      {isDegraded && (
+        <div className="degraded-mode-banner" role="status" aria-live="polite">
+          <p>⚠️ <strong>Modo degradado:</strong> {(effectiveData as any)?._degradedMessage || 'Mostrando métricas almacenadas.'}</p>
+        </div>
+      )}
+      {hasMetrics ? (
+        <div className="metrics-grid">
         <div className="metric-item">
           <span className="metric-label">CAGR</span>
           <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>
@@ -53,6 +88,11 @@ function PerformanceSummary() {
           <a href={data.report_path} target="_blank" rel="noreferrer">
             Ver reporte completo
           </a>
+        </div>
+      ) : (
+        <div className="no-metrics-placeholder">
+          <p>⚠️ Métricas no disponibles en modo degradado</p>
+          <p>Los datos frescos no están disponibles y no hay métricas almacenadas para mostrar.</p>
         </div>
       )}
     </div>

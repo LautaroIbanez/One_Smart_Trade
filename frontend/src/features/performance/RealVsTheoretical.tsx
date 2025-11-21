@@ -51,23 +51,59 @@ function buildEquitySeries(
 export function RealVsTheoretical() {
   const { data, isLoading, isError } = usePerformanceSummary()
 
-  const equitySeries = useMemo(() => {
-    if (!data || data.status !== 'success') return []
+  // Extract data from main payload or fallback_summary
+  const effectiveData = useMemo(() => {
+    if (!data) return null
     
-    // Access equity data from API response
-    const equity_curve = (data as any).equity_curve
-    const equity_theoretical = (data as any).equity_theoretical
-    const equity_realistic = (data as any).equity_realistic
+    // If status is error but we have fallback_summary, use it
+    if (data.status === 'error' && (data as any).fallback_summary) {
+      const fallback = (data as any).fallback_summary
+      return {
+        ...data,
+        // Merge fallback data into main payload for easier access
+        equity_curve: (data as any).equity_curve || fallback.equity_curve || [],
+        equity_theoretical: (data as any).equity_theoretical || fallback.equity_theoretical || [],
+        equity_realistic: (data as any).equity_realistic || fallback.equity_realistic || [],
+        tracking_error_rmse: (data as any).tracking_error_rmse || fallback.tracking_error_metrics?.rmse || null,
+        tracking_error_max: (data as any).tracking_error_max || fallback.tracking_error?.max_divergence_bps || null,
+        has_realistic_data: (data as any).has_realistic_data || Boolean(fallback.equity_realistic?.length),
+        orderbook_fallback_events: (data as any).orderbook_fallback_events || null,
+        _isDegraded: true,
+        _degradedMessage: data.message || 'Datos en modo degradado',
+      }
+    }
+    
+    return data
+  }, [data])
+
+  const isDegraded = (effectiveData as any)?._isDegraded === true
+
+  const equitySeries = useMemo(() => {
+    if (!effectiveData) return []
+    
+    // Access equity data from API response (may come from fallback)
+    const equity_curve = (effectiveData as any).equity_curve
+    const equity_theoretical = (effectiveData as any).equity_theoretical
+    const equity_realistic = (effectiveData as any).equity_realistic
+    
+    // Guard against empty arrays
+    if (
+      (!equity_curve || !Array.isArray(equity_curve) || equity_curve.length === 0) &&
+      (!equity_theoretical || !Array.isArray(equity_theoretical) || equity_theoretical.length === 0) &&
+      (!equity_realistic || !Array.isArray(equity_realistic) || equity_realistic.length === 0)
+    ) {
+      return []
+    }
     
     return buildEquitySeries(
       equity_curve, // equity_curve DataFrame format
       equity_theoretical, // equity_theoretical array
       equity_realistic  // equity_realistic array
     )
-  }, [data])
+  }, [effectiveData])
 
   const trackingErrorMetrics = useMemo(() => {
-    if (!data || data.status !== 'success') {
+    if (!effectiveData) {
       return {
         rmse: null,
         max: null,
@@ -76,12 +112,12 @@ export function RealVsTheoretical() {
     }
     
     return {
-      rmse: data.tracking_error_rmse ?? null,
-      max: data.tracking_error_max ?? null,
-      hasRealisticData: data.has_realistic_data ?? false,
-      orderbookFallbackEvents: data.orderbook_fallback_events ?? null,
+      rmse: (effectiveData as any).tracking_error_rmse ?? null,
+      max: (effectiveData as any).tracking_error_max ?? null,
+      hasRealisticData: (effectiveData as any).has_realistic_data ?? false,
+      orderbookFallbackEvents: (effectiveData as any).orderbook_fallback_events ?? null,
     }
-  }, [data])
+  }, [effectiveData])
 
   if (isLoading) {
     return (
@@ -94,13 +130,44 @@ export function RealVsTheoretical() {
     )
   }
 
-  if (isError || !data || data.status !== 'success') {
+  // Show degraded mode banner if using fallback data
+  const degradedBanner = isDegraded ? (
+    <div className="degraded-mode-banner" role="status" aria-live="polite">
+      <p>⚠️ <strong>Modo degradado:</strong> {(effectiveData as any)?._degradedMessage || 'Mostrando datos almacenados en lugar de datos frescos.'}</p>
+    </div>
+  ) : null
+
+  if (isError || (!effectiveData && !data)) {
     return (
       <section className="real-vs-theoretical" role="alert">
         <header>
           <h2>Ejecución Real vs. Teórica</h2>
         </header>
         <p>Error al cargar datos de ejecución.</p>
+      </section>
+    )
+  }
+
+  // If we have degraded data but no equity series, show placeholder
+  if (isDegraded && equitySeries.length === 0) {
+    return (
+      <section className="real-vs-theoretical">
+        <header>
+          <h2>Ejecución Real vs. Teórica</h2>
+        </header>
+        {degradedBanner}
+        <div className="no-data-placeholder">
+          <p>⚠️ Datos de equity no disponibles en modo degradado</p>
+          <p>Los datos frescos no están disponibles y no hay datos de equity almacenados para mostrar.</p>
+          {trackingErrorMetrics.rmse !== null && (
+            <div className="tracking-error-metrics">
+              <div className="metric-item">
+                <span className="metric-label">Tracking Error RMSE (degradado):</span>
+                <span className="metric-value">{trackingErrorMetrics.rmse.toFixed(4)}</span>
+              </div>
+            </div>
+          )}
+        </div>
       </section>
     )
   }
@@ -156,6 +223,7 @@ export function RealVsTheoretical() {
       <header>
         <h2>Ejecución Real vs. Teórica</h2>
       </header>
+      {degradedBanner}
 
       <div className="tracking-error-metrics">
         {trackingErrorMetrics.rmse !== null && (

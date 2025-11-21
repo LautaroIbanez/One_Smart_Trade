@@ -207,10 +207,14 @@ export function TransparencyDashboard() {
           : null
       const isErrorPayload = result.status === 'error'
 
+      // If summary_status is error but we have fallback_summary, use it to populate minimal data
+      const shouldUseFallback = result.summary_status === 'error' && Boolean(fallbackSummary)
+      
+      // Only show alert if we don't have fallback data to work with
       const alertPayload =
         summaryErrorPayload && hasFallbackMetrics
           ? null
-          : summaryErrorPayload ?? (isErrorPayload || missingMetrics ? result : null)
+          : summaryErrorPayload ?? (isErrorPayload || (missingMetrics && !shouldUseFallback) ? result : null)
 
       if (alertPayload) {
         setStatusAlert(buildStatusAlert(alertPayload))
@@ -218,12 +222,19 @@ export function TransparencyDashboard() {
         setStatusAlert(null)
       }
 
-      if (missingMetrics) {
+      // If missing metrics but we have fallback, still populate data with what we have
+      if (missingMetrics && !shouldUseFallback) {
         setData(null)
         return
       }
 
-      setData(result as TransparencyDashboardData)
+      // Always set data if we have semaphore OR if we have fallback data
+      // This ensures the dashboard renders even with degraded data
+      if (result.semaphore || shouldUseFallback) {
+        setData(result as TransparencyDashboardData)
+      } else {
+        setData(null)
+      }
     } catch (err) {
       setData(null)
       setStatusAlert({
@@ -316,7 +327,7 @@ export function TransparencyDashboard() {
       </header>
 
       {statusAlert && <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />}
-      {showingFallbackData && (
+      {(showingFallbackData || (summary_status === 'error' && summary_fallback)) && (
         <FallbackDataBanner
           message={summary_message}
           metadata={summary_metadata}
@@ -559,8 +570,8 @@ interface FallbackDataBannerProps {
 
 function FallbackDataBanner({ message, metadata, fallbackSummary }: FallbackDataBannerProps) {
   const warningMessage =
-    message || 'Los datos frescos no están disponibles; mostrando métricas almacenadas.'
-  const fallbackSource = fallbackSummary?.source || 'Histórico'
+    message || metadata?.user_message || 'Los datos frescos no están disponibles; mostrando métricas almacenadas.'
+  const fallbackSource = fallbackSummary?.source || metadata?.fallback_summary_source || 'Histórico'
   const period = (fallbackSummary?.period || metadata?.period) as
     | { start?: string; end?: string }
     | undefined
@@ -571,11 +582,12 @@ function FallbackDataBanner({ message, metadata, fallbackSummary }: FallbackData
   const staleInterval = metadata?.stale_interval || metadata?.interval
   const latestTimestamp = metadata?.latest_timestamp || metadata?.latestTimestamp
   const ageMinutes = metadata?.age_minutes ?? metadata?.latest_candle_age_minutes
+  const remediation = metadata?.remediation || metadata?.recovery_hints?.[0]
 
   return (
-    <div className="transparency-stale-banner" role="status">
+    <div className="transparency-stale-banner" role="alert" aria-live="polite">
       <div className="stale-banner-header">
-        <span className="stale-indicator">⚠ Datos en modo lectura</span>
+        <span className="stale-indicator">⚠ Datos en modo degradado (stale)</span>
         <strong>{warningMessage}</strong>
       </div>
       <div className="stale-banner-body">
@@ -598,6 +610,11 @@ function FallbackDataBanner({ message, metadata, fallbackSummary }: FallbackData
         {typeof ageMinutes === 'number' && (
           <div>
             <span className="stale-label">Antigüedad aprox.:</span> {ageMinutes.toFixed(2)} minutos
+          </div>
+        )}
+        {remediation && (
+          <div>
+            <span className="stale-label">Acción sugerida:</span> {remediation}
           </div>
         )}
       </div>

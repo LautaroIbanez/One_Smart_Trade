@@ -21,15 +21,21 @@ kpis_service = KPIsReportingService()
 
 
 @router.get("/summary", response_model=PerformanceSummaryResponse)
-async def get_performance_summary():
+async def get_performance_summary(
+    allow_stale_inputs: bool = Query(False, description="Allow stale data inputs to return degraded results with fallback summary")
+):
     """
     Get backtesting performance summary with metrics and disclaimer.
 
     Returns comprehensive metrics including CAGR, Sharpe, Sortino, Max Drawdown,
     Win Rate, Profit Factor, Expectancy, Calmar, and rolling KPIs (monthly/quarterly).
+    
+    When allow_stale_inputs=True, the endpoint will return degraded results with
+    fallback_summary containing the most recent available metrics even if data
+    freshness validation fails.
     """
     try:
-        result = await performance_service.get_summary()
+        result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs)
 
         if result.get("status") == "error":
             error_type = result.get("error_type")
@@ -42,6 +48,83 @@ async def get_performance_summary():
                         "details": result.get("details", {}),
                     },
                 )
+            
+            # For DATA_STALE errors with fallback_summary, include optional fields
+            fallback_summary = result.get("fallback_summary")
+            if error_type == "DATA_STALE" and fallback_summary:
+                # Extract metrics from fallback_summary if available
+                fallback_metrics = fallback_summary.get("metrics", {})
+                fallback_period = fallback_summary.get("period")
+                
+                # Build response with fallback data for degraded mode
+                response_dict = {
+                    "status": "error",
+                    "message": result.get("message", "Unknown error"),
+                    "metrics": None,
+                    "period": None,
+                    "report_path": None,
+                    # Include optional fields from fallback_summary for frontend compatibility
+                    "equity_theoretical": fallback_summary.get("equity_theoretical", []),
+                    "equity_realistic": fallback_summary.get("equity_realistic", []),
+                    "equity_curve": fallback_summary.get("equity_curve", []),
+                    "tracking_error_metrics": fallback_summary.get("tracking_error_metrics"),
+                    "tracking_error": fallback_summary.get("tracking_error"),
+                }
+                
+                # Try to build period if available
+                if fallback_period:
+                    try:
+                        response_dict["period"] = PerformancePeriod(
+                            start=fallback_period.get("start", ""),
+                            end=fallback_period.get("end", ""),
+                        )
+                    except Exception:
+                        pass
+                
+                # Try to build metrics if available (may fail if incomplete)
+                if fallback_metrics:
+                    try:
+                        rolling_monthly = fallback_metrics.get("rolling_monthly")
+                        rolling_quarterly = fallback_metrics.get("rolling_quarterly")
+                        risk_profile_dict = fallback_metrics.get("risk_profile")
+                        risk_profile = RiskProfile(**risk_profile_dict) if risk_profile_dict else None
+                        
+                        response_dict["metrics"] = PerformanceMetrics(
+                            cagr=fallback_metrics.get("cagr", 0.0),
+                            sharpe=fallback_metrics.get("sharpe", 0.0),
+                            sortino=fallback_metrics.get("sortino", 0.0),
+                            max_drawdown=fallback_metrics.get("max_drawdown", 0.0),
+                            win_rate=fallback_metrics.get("win_rate", 0.0),
+                            profit_factor=fallback_metrics.get("profit_factor", 0.0),
+                            expectancy=fallback_metrics.get("expectancy", 0.0),
+                            calmar=fallback_metrics.get("calmar", 0.0),
+                            total_return=fallback_metrics.get("total_return", 0.0),
+                            total_trades=fallback_metrics.get("total_trades", 0),
+                            winning_trades=fallback_metrics.get("winning_trades", 0),
+                            losing_trades=fallback_metrics.get("losing_trades", 0),
+                            rolling_monthly=RollingMetrics(**rolling_monthly) if rolling_monthly else None,
+                            rolling_quarterly=RollingMetrics(**rolling_quarterly) if rolling_quarterly else None,
+                            risk_profile=risk_profile,
+                            tracking_error_rmse=fallback_metrics.get("tracking_error_rmse"),
+                            tracking_error_max=fallback_metrics.get("tracking_error_max"),
+                            orderbook_fallback_events=fallback_metrics.get("orderbook_fallback_events"),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to build PerformanceMetrics from fallback_summary",
+                            extra={"error": str(e), "fallback_metrics_keys": list(fallback_metrics.keys())},
+                        )
+                
+                # Build response model and return as dict with additional fields
+                response = PerformanceSummaryResponse(**response_dict)
+                response_dict = response.model_dump()
+                # Preserve equity fields that aren't in the model
+                response_dict["equity_theoretical"] = fallback_summary.get("equity_theoretical", [])
+                response_dict["equity_realistic"] = fallback_summary.get("equity_realistic", [])
+                response_dict["equity_curve"] = fallback_summary.get("equity_curve", [])
+                return response_dict
+            
+            # For other error types, return standard error response
             return PerformanceSummaryResponse(
                 status="error",
                 message=result.get("message", "Unknown error"),

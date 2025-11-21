@@ -57,3 +57,41 @@
   color: var(--text-secondary);
 }
 
+.degraded-mode-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-left: 4px solid #ffc107;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.degraded-mode-banner p {
+  margin: 0;
+  color: #856404;
+  font-size: 0.9rem;
+}
+
+.degraded-mode-banner strong {
+  color: #856404;
+}
+
+.no-metrics-placeholder {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.no-metrics-placeholder p {
+  margin: 0.5rem 0;
+  color: var(--text-secondary);
+}
+
+.no-metrics-placeholder p:first-child {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+

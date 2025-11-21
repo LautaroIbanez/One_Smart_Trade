@@ -64,6 +64,7 @@ class DrawdownDivergence:
     realistic_max_dd: float
     divergence_pct: float
     timestamp: str
+    metadata: dict[str, Any] | None = None  # Optional metadata (e.g., {"is_stale": True})
 
 
 @dataclass
@@ -334,7 +335,21 @@ class TransparencyService:
             if summary_key not in self._missing_metrics_warned:
                 logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
                 self._missing_metrics_warned[summary_key] = now
-            return None
+            
+            # Return a neutral/stale object instead of None to maintain semaphore consistency
+            is_stale = is_error_payload and fallback_summary is not None
+            return DrawdownDivergence(
+                theoretical_max_dd=0.0,
+                realistic_max_dd=0.0,
+                divergence_pct=0.0,
+                timestamp=datetime.utcnow().isoformat(),
+                metadata={
+                    "is_stale": is_stale,
+                    "reason": "tracking_error_metrics_missing",
+                    "summary_status": summary_payload.get("status", "unknown"),
+                    "has_fallback": fallback_summary is not None,
+                },
+            )
 
         theoretical_max_dd = tracking_error_metrics.get("theoretical_max_drawdown")
         realistic_max_dd = tracking_error_metrics.get("realistic_max_drawdown")
@@ -463,9 +478,12 @@ class TransparencyService:
         )
         drawdown_status = VerificationStatus.PASS
         if drawdown_div:
-            if drawdown_div.divergence_pct > 10.0:  # 10% divergence
+            # Check if drawdown_divergence is stale (has metadata indicating stale data)
+            if drawdown_div.metadata and drawdown_div.metadata.get("is_stale"):
+                drawdown_status = VerificationStatus.WARN  # Warn when using stale data
+            elif drawdown_div.divergence_pct > 10.0:  # 10% divergence
                 drawdown_status = VerificationStatus.WARN
-            if drawdown_div.divergence_pct > 20.0:  # 20% divergence
+            elif drawdown_div.divergence_pct > 20.0:  # 20% divergence
                 drawdown_status = VerificationStatus.FAIL
         
         # Audit status
@@ -528,6 +546,23 @@ class TransparencyService:
             summary_period = summary_payload.get("period")
             fallback = summary_payload.get("fallback_summary")
             summary_fallback = fallback if isinstance(fallback, dict) else None
+            
+            # If status is error but fallback_summary exists, map explicit fields from fallback
+            if summary_status == "error" and summary_fallback:
+                logger.info(
+                    "Summary status is error but fallback_summary available; mapping fields from fallback",
+                    extra={"summary_message": summary_message},
+                )
+                # Map tracking_error_metrics from fallback if not in main payload
+                if not summary_payload.get("tracking_error_metrics") and summary_fallback.get("tracking_error_metrics"):
+                    # Store in summary_payload for downstream use (e.g., get_drawdown_divergence)
+                    summary_payload["tracking_error_metrics"] = summary_fallback.get("tracking_error_metrics")
+                
+                # Map basic fields from fallback if missing in main payload
+                if not summary_metrics and summary_fallback.get("metrics"):
+                    summary_metrics = summary_fallback.get("metrics")
+                if not summary_period and summary_fallback.get("period"):
+                    summary_period = summary_fallback.get("period")
         else:
             summary_status = "error"
             summary_message = "Performance summary unavailable."

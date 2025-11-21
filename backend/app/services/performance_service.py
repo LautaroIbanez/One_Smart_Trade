@@ -384,6 +384,11 @@ class PerformanceService:
             metrics = cached.metrics or {}
             tracking_error_metrics = metrics.get("tracking_error_metrics")
             
+            # Try to extract equity data from metrics if available
+            equity_theoretical = metrics.get("equity_theoretical", [])
+            equity_realistic = metrics.get("equity_realistic", [])
+            equity_curve = metrics.get("equity_curve", [])
+            
             # Build response with tracking error fields
             response = {
                 "status": "success",
@@ -396,6 +401,10 @@ class PerformanceService:
                 "source": "db_cache",
                 "cached_at": cached.created_at.isoformat(),
                 "cache_age_seconds": age_seconds,
+                # Include equity fields even if empty for frontend compatibility
+                "equity_theoretical": equity_theoretical,
+                "equity_realistic": equity_realistic,
+                "equity_curve": equity_curve,
             }
             
             # Include tracking error metrics if available in cached data
@@ -501,8 +510,11 @@ class PerformanceService:
             dataset_snapshot=dataset_snapshot,
         )
 
+        # Get fallback summary with rich metrics
         fallback_summary = self._get_db_cached_success_summary(max_age_seconds=None)
         historical_fallback = fallback_summary is not None
+        
+        # Ensure fallback_summary always has required fields, even if empty
         if not fallback_summary:
             fallback_summary = {
                 "status": "success",
@@ -510,9 +522,20 @@ class PerformanceService:
                 "period": None,
                 "report_path": None,
                 "source": "placeholder",
+                "equity_theoretical": [],
+                "equity_realistic": [],
+                "equity_curve": [],
+                "tracking_error_metrics": None,
+                "tracking_error": None,
             }
         else:
             fallback_summary["source"] = "db_cache"
+            # Ensure optional fields are present even if None/empty
+            fallback_summary.setdefault("equity_theoretical", [])
+            fallback_summary.setdefault("equity_realistic", [])
+            fallback_summary.setdefault("equity_curve", [])
+            fallback_summary.setdefault("tracking_error_metrics", None)
+            fallback_summary.setdefault("tracking_error", None)
 
         metadata["fallback_summary_available"] = historical_fallback
         metadata["fallback_summary_source"] = fallback_summary.get("source")
@@ -521,7 +544,7 @@ class PerformanceService:
         tracking_error_metrics = fallback_summary.get("tracking_error_metrics")
         tracking_error = fallback_summary.get("tracking_error")
         
-        # Build response with tracking error fields populated
+        # Build response with all optional fields populated to prevent frontend breakage
         response = {
             "status": "error",
             "message": exc.reason,
@@ -531,7 +554,11 @@ class PerformanceService:
             "http_status": 503,
             "metadata": metadata,
             "fallback_summary": fallback_summary,
+            # Include optional fields at top level for frontend compatibility
             "period": fallback_summary.get("period"),
+            "equity_theoretical": fallback_summary.get("equity_theoretical", []),
+            "equity_realistic": fallback_summary.get("equity_realistic", []),
+            "equity_curve": fallback_summary.get("equity_curve", []),
         }
         
         # Include tracking error metrics if available in fallback summary

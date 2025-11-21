@@ -96,3 +96,41 @@
   border-radius: 4px;
 }
 
+.degraded-mode-banner {
+  background: rgba(255, 193, 7, 0.15);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  border-left: 4px solid #ffc107;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.degraded-mode-banner p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.9rem;
+}
+
+.degraded-mode-banner strong {
+  color: #ffc107;
+}
+
+.no-data-placeholder {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.no-data-placeholder p {
+  margin: 0.5rem 0;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.no-data-placeholder p:first-child {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
