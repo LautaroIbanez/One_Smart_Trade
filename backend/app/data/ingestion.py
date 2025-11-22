@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from typing import Any, Iterable
 
 import pandas as pd
+
+# Filter FutureWarnings about deprecated fillna(method=...) to reduce noise
+warnings.filterwarnings("ignore", message=".*fillna with 'method' is deprecated.*", category=FutureWarning)
 
 from .binance_client import BinanceClient
 from .storage import RAW_ROOT, ensure_partition_dirs, get_raw_path, write_parquet
@@ -253,7 +257,7 @@ class DataIngestion:
         for col in numeric:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["number_of_trades"] = pd.to_numeric(df["number_of_trades"], errors="coerce").fillna(0).astype("int64")
-        df[numeric] = df[numeric].fillna(method="ffill").fillna(method="bfill")
+        df[numeric] = df[numeric].ffill().bfill()
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
         df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
         df = df.sort_values("open_time").reset_index(drop=True)

@@ -1,8 +1,13 @@
 """Indicator calculations using pandas over parquet-backed dataframes."""
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
+
+# Filter FutureWarnings about deprecated fillna(method=...) to reduce noise
+warnings.filterwarnings("ignore", message=".*fillna with 'method' is deprecated.*", category=FutureWarning)
 
 
 def ema(df: pd.DataFrame, period: int, column: str = "close") -> pd.Series:
@@ -28,7 +33,7 @@ def rsi(df: pd.DataFrame, period: int = 14, column: str = "close") -> pd.Series:
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, np.nan)
     out = 100 - (100 / (1 + rs))
-    return out.fillna(method="bfill").fillna(50)
+    return out.bfill().fillna(50)
 
 
 def stoch_rsi(df: pd.DataFrame, rsi_period: int = 14, stoch_period: int = 14) -> pd.Series:
@@ -64,7 +69,7 @@ def vwap(df: pd.DataFrame) -> pd.Series:
         return df["vwap"]
     pv = (df["close"] * df["volume"]).cumsum()
     vv = df["volume"].cumsum().replace(0, np.nan)
-    return (pv / vv).fillna(method="ffill")
+    return (pv / vv).ffill()
 
 
 def realized_volatility(df: pd.DataFrame, window: int = 20) -> pd.Series:

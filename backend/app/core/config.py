@@ -22,10 +22,13 @@ class Settings(BaseSettings):
     RECOMMENDATION_UPDATE_TIME: str = "12:00"
 
     # Preflight maintenance
-    PRESTART_MAINTENANCE: bool = True
+    # Set to True to run preflight maintenance on startup (default False to avoid startup overload)
+    # When enabled, preflight runs after a delay to allow app to reach ready state first
+    PRESTART_MAINTENANCE: bool = False
     PRESTART_LOOKBACK_DAYS: int = 30
     PRESTART_BACKFILL_CHUNK: int = 900
     PRESTART_BACKFILL_PAUSE_SECONDS: float = 0.2
+    PRESTART_MAINTENANCE_DELAY_SECONDS: int = 120  # Delay before running preflight (allows app to reach ready state)
     
     # Auto-run pipeline on startup
     # Set to True for dev/demo to ensure fresh data without waiting for 12:00 UTC cron
@@ -87,6 +90,7 @@ class Settings(BaseSettings):
     LIQUIDITY_MIN_NOTIONAL_USD: float = 1000.0  # Minimum notional value required at SL/TP levels
     LIQUIDITY_TOLERANCE_PCT: float = 0.5  # Price tolerance percentage for depth check (0.5%)
     RR_FLOOR: float = 1.2  # Minimum risk/reward ratio required (configurable per strategy)
+    ENABLE_ORDERBOOK_CHECKS: bool = False  # Enable orderbook-based liquidity checks (default False for dev to avoid startup warnings)
     
     # Backtest validation (mandatory before signal publication)
     BACKTEST_ENABLED: bool = True  # Enable mandatory backtesting

@@ -694,13 +694,19 @@ async def on_startup():
     scheduler.start()
     if settings.PRESTART_MAINTENANCE:
         global _preflight_task
-        # Run preflight as background task with error handling to prevent startup failures
+        delay_seconds = settings.PRESTART_MAINTENANCE_DELAY_SECONDS
+        # Run preflight as background task with delay and error handling to prevent startup failures
+        # The delay allows the app to reach ready state before heavy maintenance work begins
         async def run_preflight_safe():
             try:
+                logger.info(f"Preflight maintenance scheduled to run in {delay_seconds} seconds (deferred to avoid startup overload)")
+                await asyncio.sleep(delay_seconds)
+                logger.info("Starting deferred preflight maintenance")
                 await run_preflight()
+                logger.info("Deferred preflight maintenance completed")
             except Exception as exc:
                 logger.error(
-                    f"Preflight maintenance failed during startup: {exc}",
+                    f"Preflight maintenance failed: {exc}",
                     exc_info=True,
                     extra=sanitize_log_extra({"error_type": type(exc).__name__, "error": str(exc)}),
                 )
@@ -708,9 +714,14 @@ async def on_startup():
                 # Preflight is maintenance, not critical for server operation
         
         _preflight_task = asyncio.create_task(run_preflight_safe())
+    else:
+        logger.info("Preflight maintenance disabled (PRESTART_MAINTENANCE=False)")
     
-    # Run initial pipeline if needed (empty DB or AUTO_RUN_PIPELINE_ON_START enabled)
-    await _run_initial_pipeline_if_needed()
+    # Schedule initial pipeline as background task instead of awaiting it
+    # This allows the app to signal readiness immediately while the pipeline runs in the background
+    # The function itself will decide whether to run based on AUTO_RUN_PIPELINE_ON_START and existing recommendations
+    asyncio.create_task(_run_initial_pipeline_if_needed())
+    logger.info("Startup tasks scheduled; application ready")
 
 
 @app.on_event("shutdown")

@@ -93,16 +93,21 @@ class ExecutionSimulator:
         tolerance_seconds = 30
         book_snapshot = await self.orderbook_repo.get_snapshot(symbol, timestamp, tolerance_seconds=tolerance_seconds)
         
-        # Emit warning if orderbook not available before falling back
+        # Track fallback if orderbook not available, but only warn for unexpected conditions
         if book_snapshot is None:
             reason = "not_found"  # Default reason
+            should_warn = False  # Only warn for unexpected conditions (file exists but no snapshot)
             # Check if file exists to provide more specific reason
             try:
                 from pathlib import Path
                 orderbook_path = self.orderbook_repo._get_orderbook_path(symbol)
                 if not orderbook_path.exists():
                     reason = "file_not_found"
+                    # Don't warn for missing files (expected in fresh environments)
+                    should_warn = False
                 else:
+                    # File exists but no snapshot found - this is unexpected, so warn
+                    should_warn = True
                     # Try to load snapshots to see if within tolerance
                     start = timestamp - pd.Timedelta(seconds=tolerance_seconds)
                     end = timestamp + pd.Timedelta(seconds=tolerance_seconds)
@@ -117,6 +122,7 @@ class ExecutionSimulator:
                             reason = "out_of_tolerance"
             except Exception:
                 reason = "not_found"
+                should_warn = False  # Don't warn on exceptions
             
             warning = OrderBookWarning(
                 symbol=symbol,
@@ -126,8 +132,10 @@ class ExecutionSimulator:
             )
             self.orderbook_warnings.append(warning)
             self.orderbook_fallback_count += 1
-            # Warning payloads come from dataclasses—sanitize before logging.
-            logger.warning(str(warning), extra=sanitize_log_extra(warning.to_dict()))
+            # Only log warning for unexpected conditions (file exists but snapshot missing)
+            # Skip warnings for missing files (expected in fresh environments)
+            if should_warn:
+                logger.warning(str(warning), extra=sanitize_log_extra(warning.to_dict()))
         
         # Try to fill order
         result = order.try_fill(bar, book_snapshot)

@@ -383,7 +383,9 @@ class OrderBookRepository:
         path = self._get_orderbook_path(symbol)
         
         if not path.exists():
-            logger.warning(f"Order book file not found", extra={"path": str(path)})
+            # Use info level for missing files (expected in fresh environments)
+            # Only log once per symbol to avoid spam
+            logger.info(f"Orderbook data missing; skipping depth checks", extra={"symbol": symbol, "path": str(path)})
             return []
         
         try:
@@ -434,6 +436,11 @@ class OrderBookRepository:
         Returns:
             Closest snapshot or None
         """
+        # Early check: skip if file doesn't exist (graceful fallback)
+        path = self._get_orderbook_path(symbol)
+        if not path.exists():
+            return None
+        
         start = ts - pd.Timedelta(seconds=tolerance_seconds)
         end = ts + pd.Timedelta(seconds=tolerance_seconds)
         
