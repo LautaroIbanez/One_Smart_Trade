@@ -55,37 +55,90 @@ export interface Recommendation {
   disclaimer: string
 }
 
-export interface RecommendationHistory {
-  recommendations: Recommendation[]
-  count: number
+export interface HistorySparklinePoint {
+  timestamp: string
+  theoretical: number
+  realistic: number
+}
+
+export interface HistoryInsights {
+  sparkline_series: Record<string, HistorySparklinePoint[]>
+  stats: Record<string, number>
+}
+
+export interface RecommendationHistoryItem {
+  id: number
+  timestamp: string
+  date: string
+  signal: 'BUY' | 'HOLD' | 'SELL'
+  status: string
+  execution_status: string
+  exit_reason: string | null
+  entry_price: number | null
+  exit_price: number | null
+  return_pct: number | null
+  theoretical_return_pct: number | null
+  realistic_return_pct: number | null
+  tracking_error_pct: number | null
+  tracking_error_bps: number | null
+  divergence_flag: boolean
+  code_commit: string | null
+  dataset_version: string | null
+  ingestion_timestamp: string | null
+  seed: number | null
+  params_digest: string | null
+  config_version: string | null
+  snapshot_url: string | null
+  risk_metrics: Record<string, unknown> | null
+  backtest_run_id: string | null
+  backtest_cagr: number | null
+  backtest_win_rate: number | null
+  backtest_risk_reward_ratio: number | null
+  backtest_max_drawdown: number | null
+  backtest_slippage_bps: number | null
+}
+
+export interface RecommendationHistoryResponse {
+  items: RecommendationHistoryItem[]
+  next_cursor: string | null
+  has_more: boolean
+  filters: Record<string, unknown>
+  insights: HistoryInsights | null
+  download_url: string | null
 }
 
 export interface SignalPerformancePoint {
   date: string
   signal: 'BUY' | 'HOLD' | 'SELL'
   entry_price: number
+  entry_price_realistic: number | null
   stop_loss: number
   take_profit: number
   exit_price: number
+  exit_price_realistic: number | null
   level_hit: string
   holding_days: number
   return_pct: number
+  return_pct_realistic: number | null
   tracking_error: number
-  hit_date?: string
-  signal_breakdown?: {
-    narrative?: string[]
-    vectors?: Record<string, number>
-  }
+  deviation_pct: number | null
+  entry_slippage_pct: number | null
+  exit_slippage_pct: number | null
+  hit_date: string | null
+  signal_breakdown: Record<string, unknown>
 }
 
 export interface SignalPerformanceResponse {
   status: string
   timeline: SignalPerformancePoint[]
   equity_curve: number[]
+  equity_theoretical: number[] | null
+  equity_realistic: number[] | null
   drawdown_curve: number[]
   win_rate: number
   average_tracking_error: number
   trades_evaluated: number
+  tracking_error_metrics: Record<string, unknown>
 }
 
 export const getTodayRecommendation = async (): Promise<Recommendation> => {
@@ -93,8 +146,8 @@ export const getTodayRecommendation = async (): Promise<Recommendation> => {
   return response.data
 }
 
-export const getRecommendationHistory = async (limit: number = 10): Promise<RecommendationHistory> => {
-  const response = await apiClient.get<RecommendationHistory>('/api/v1/recommendation/history', {
+export const getRecommendationHistory = async (limit: number = 10): Promise<RecommendationHistoryResponse> => {
+  const response = await apiClient.get<RecommendationHistoryResponse>('/api/v1/recommendation/history', {
     params: { limit },
   })
   return response.data

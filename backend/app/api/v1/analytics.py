@@ -133,7 +133,8 @@ async def compute_livelihood(payload: LivelihoodRequest) -> LivelihoodResponse:
     ENDPOINT_RESPONSE_TIME.labels(endpoint="/analytics/livelihood", status="success").observe(duration)
     
     if duration > 10.0:
-        logger.warning(f"Livelihood computation took {duration:.2f}s", extra={"duration": duration})
+        from app.core.logging import sanitize_log_extra
+        logger.warning(f"Livelihood computation took {duration:.2f}s", extra=sanitize_log_extra({"duration": duration}))
     
     return LivelihoodResponse(**result)
 

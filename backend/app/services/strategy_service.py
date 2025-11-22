@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 
 try:  # pragma: no cover - optional dependency
     from app.data.orderbook import OrderBookRepository, OrderBookSnapshot
@@ -155,7 +155,7 @@ class StrategyService:
             self._last_regime_probs = latest.to_dict()
             return str(latest.idxmax())
         except Exception as exc:
-            logger.warning("Failed to classify regime: %s", exc, extra={"component": "StrategyService"})
+            logger.warning("Failed to classify regime: %s", exc, extra=sanitize_log_extra({"component": "StrategyService"}))
             return "unknown"
 
     def _apply_config(self, signal: dict[str, Any], market_df: pd.DataFrame, config: dict[str, Any]) -> None:

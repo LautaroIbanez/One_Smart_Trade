@@ -59,8 +59,10 @@ curl -X POST "http://localhost:8000/api/v1/operational/trigger-pipeline" \
 ```
 
 **Nota:** El pipeline se ejecuta automáticamente al iniciar el backend si:
-- La base de datos está vacía, o
-- `AUTO_RUN_PIPELINE_ON_START=true` está configurado
+- `AUTO_RUN_PIPELINE_ON_START=true` (habilitado por defecto en dev/demo) y no existe una recomendación para hoy, o
+- No existe una recomendación para la fecha actual
+
+Esto garantiza que `/api/v1/recommendation/today` devuelva datos inmediatamente después del inicio en entornos de desarrollo/demo, sin esperar al job programado de las 12:00 UTC. El job programado seguirá ejecutándose normalmente a las 12:00 UTC.
 
 ## Verificar Endpoints
 

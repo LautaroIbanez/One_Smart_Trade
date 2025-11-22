@@ -3,7 +3,7 @@ import os
 from typing import Any
 import httpx
 
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 
 
 class RiskBlockAlertService:
@@ -53,9 +53,9 @@ class RiskBlockAlertService:
             async with httpx.AsyncClient() as client:
                 response = await client.post(self.webhook_url, json=payload, timeout=10.0)
                 response.raise_for_status()
-                logger.info("Capital block alert sent", extra={"user_id": user_id})
+                logger.info("Capital block alert sent", extra=sanitize_log_extra({"user_id": user_id}))
         except Exception as exc:
-            logger.warning("Failed to send capital block alert", extra={"user_id": user_id, "error": str(exc)}, exc_info=True)
+            logger.warning("Failed to send capital block alert", extra=sanitize_log_extra({"user_id": user_id, "error": str(exc)}), exc_info=True)
     
     async def send_daily_risk_limit_alert(
         self,
@@ -103,9 +103,9 @@ class RiskBlockAlertService:
             async with httpx.AsyncClient() as client:
                 response = await client.post(self.webhook_url, json=payload, timeout=10.0)
                 response.raise_for_status()
-                logger.info("Daily risk limit alert sent", extra={"user_id": user_id, "risk_pct": daily_risk_pct})
+                logger.info("Daily risk limit alert sent", extra=sanitize_log_extra({"user_id": user_id, "risk_pct": daily_risk_pct}))
         except Exception as exc:
-            logger.warning("Failed to send daily risk limit alert", extra={"user_id": user_id, "error": str(exc)}, exc_info=True)
+            logger.warning("Failed to send daily risk limit alert", extra=sanitize_log_extra({"user_id": user_id, "error": str(exc)}), exc_info=True)
     
     async def send_trade_limit_preventive_alert(
         self,
@@ -153,9 +153,9 @@ class RiskBlockAlertService:
             async with httpx.AsyncClient() as client:
                 response = await client.post(self.webhook_url, json=payload, timeout=10.0)
                 response.raise_for_status()
-                logger.info("Trade limit preventive alert sent", extra={"user_id": user_id, "trades_count": trades_count})
+                logger.info("Trade limit preventive alert sent", extra=sanitize_log_extra({"user_id": user_id, "trades_count": trades_count}))
         except Exception as exc:
-            logger.warning("Failed to send trade limit preventive alert", extra={"user_id": user_id, "error": str(exc)}, exc_info=True)
+            logger.warning("Failed to send trade limit preventive alert", extra=sanitize_log_extra({"user_id": user_id, "error": str(exc)}), exc_info=True)
 
 
 # Global instance

@@ -15,7 +15,7 @@ from app.backtesting.tracking_error import TrackingErrorCalculator
 from app.backtesting.monitoring import RecalibrationEvent
 from app.backtesting.unified_risk_manager import UnifiedRiskManager
 from app.core.database import SessionLocal
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.data.curation import DataCuration
 from app.data.universe import AssetSpec
 from app.db import crud
@@ -102,7 +102,7 @@ class ContinuousMonitoringService:
                 },
             }
         except Exception as exc:
-            logger.warning("Failed to load performance config, using defaults", extra={"error": str(exc)})
+            logger.warning("Failed to load performance config, using defaults", extra=sanitize_log_extra({"error": str(exc)}))
             return {
                 "tracking_error": {
                     "max_rmse_pct": 0.03,
@@ -134,7 +134,7 @@ class ContinuousMonitoringService:
                 regime_classifier=self.regime_classifier,
             )
         except Exception as exc:
-            logger.debug(f"Failed to monitor performance for {asset.symbol}", extra={"error": str(exc)})
+            logger.debug(f"Failed to monitor performance for {asset.symbol}", extra=sanitize_log_extra({"error": str(exc)}))
 
     async def monitor_regime_health(self, asset: AssetSpec, interval: str) -> None:
         """Monitor regime health and update Prometheus."""
@@ -154,7 +154,7 @@ class ContinuousMonitoringService:
                 alert_sessions=self.stress_alert_sessions,
             )
         except Exception as exc:
-            logger.debug(f"Failed to monitor regime health for {asset.symbol}", extra={"error": str(exc)})
+            logger.debug(f"Failed to monitor regime health for {asset.symbol}", extra=sanitize_log_extra({"error": str(exc)}))
 
     async def update_metrics(
         self,
@@ -213,7 +213,7 @@ class ContinuousMonitoringService:
                 "timestamp": datetime.utcnow().isoformat(),
             }
         except Exception as exc:
-            logger.exception("Failed to update monitoring metrics", extra={"asset": self.asset, "error": str(exc)})
+            logger.exception("Failed to update monitoring metrics", extra=sanitize_log_extra({"asset": self.asset, "error": str(exc)}))
             return {"status": "error", "error": str(exc)}
 
     def check_alerts(
@@ -297,7 +297,7 @@ class ContinuousMonitoringService:
                 "shutdown_alert": alerts.get("shutdown_alert", False),
             }
         except Exception as exc:
-            logger.warning("Failed to update risk metrics", extra={"asset": self.asset, "error": str(exc)})
+            logger.warning("Failed to update risk metrics", extra=sanitize_log_extra({"asset": self.asset, "error": str(exc)}))
             return {"status": "error", "error": str(exc)}
 
     async def _calculate_tracking_error_rolling(
@@ -448,7 +448,7 @@ class ContinuousMonitoringService:
                 "should_recalibrate": should_recalibrate,
             }
         except Exception as exc:
-            logger.exception("Failed to calculate tracking error rolling", extra={"asset": self.asset, "error": str(exc)})
+            logger.exception("Failed to calculate tracking error rolling", extra=sanitize_log_extra({"asset": self.asset, "error": str(exc)}))
             return {"status": "error", "error": str(exc)}
 
     async def _trigger_recalibration(
@@ -491,11 +491,11 @@ class ContinuousMonitoringService:
                 trigger_event=event,
             )
             
-            logger.info("Recalibration job created", extra={"asset": self.asset, "trigger_reason": trigger_reason})
+            logger.info("Recalibration job created", extra=sanitize_log_extra({"asset": self.asset, "trigger_reason": trigger_reason}))
             self.last_recalibration_date = datetime.utcnow()
             return True
         except Exception as exc:
-            logger.exception("Failed to trigger recalibration", extra={"asset": self.asset, "error": str(exc)})
+            logger.exception("Failed to trigger recalibration", extra=sanitize_log_extra({"asset": self.asset, "error": str(exc)}))
             return False
 
     async def _send_tracking_error_alerts(self, alerts: list[dict[str, Any]]) -> None:
@@ -526,7 +526,7 @@ class ContinuousMonitoringService:
                         }
                         httpx.post(webhook_url, json=payload, timeout=10.0)
                     except Exception as exc:
-                        logger.warning("Failed to send Slack alert", extra={"error": str(exc)})
+                        logger.warning("Failed to send Slack alert", extra=sanitize_log_extra({"error": str(exc)}))
                 
                 smtp_host = os.getenv("SMTP_HOST")
                 if smtp_host:
@@ -550,7 +550,7 @@ class ContinuousMonitoringService:
                                 server.login(user, password)
                                 server.sendmail(msg["From"], [to_addr], msg.as_string())
                     except Exception as exc:
-                        logger.warning("Failed to send email alert", extra={"error": str(exc)})
+                        logger.warning("Failed to send email alert", extra=sanitize_log_extra({"error": str(exc)}))
                 
                 self.alert_service.notify(
                     category="tracking_error",
@@ -559,7 +559,7 @@ class ContinuousMonitoringService:
                     level=alert.get("severity", "warning"),
                 )
         except Exception as exc:
-            logger.warning("Failed to send tracking error alerts", extra={"error": str(exc)})
+            logger.warning("Failed to send tracking error alerts", extra=sanitize_log_extra({"error": str(exc)}))
 
 
 async def monitor_execution_metrics(

@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import axios, { AxiosError } from 'axios'
 import { getApiBaseUrl } from '../utils/apiConfig'
+import type { RecommendationHistoryResponse, SignalPerformanceResponse } from '../services/api'
 
 export const API_BASE_URL = getApiBaseUrl()
 
@@ -198,10 +199,10 @@ const sanitizeHistoryParams = (params?: RecommendationHistoryParams) => {
 
 export const useRecommendationHistory = (params?: RecommendationHistoryParams) => {
   const finalParams = sanitizeHistoryParams(params)
-  return useQuery({
+  return useQuery<RecommendationHistoryResponse>({
     queryKey: ['recommendation', 'history', finalParams],
     queryFn: async ({ signal }) => {
-      const { data } = await api.get('/api/v1/recommendation/history', { 
+      const { data } = await api.get<RecommendationHistoryResponse>('/api/v1/recommendation/history', { 
         params: finalParams,
         signal,
       })
@@ -213,10 +214,10 @@ export const useRecommendationHistory = (params?: RecommendationHistoryParams) =
 }
 
 export const useSignalPerformance = (lookaheadDays: number = 5, limit: number = 90) => {
-  return useQuery({
+  return useQuery<SignalPerformanceResponse>({
     queryKey: ['recommendation', 'performance', lookaheadDays, limit],
     queryFn: async ({ signal }) => {
-      const { data } = await api.get('/api/v1/recommendation/performance', {
+      const { data } = await api.get<SignalPerformanceResponse>('/api/v1/recommendation/performance', {
         params: { lookahead_days: lookaheadDays, limit },
         signal,
       })

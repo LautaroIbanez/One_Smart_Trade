@@ -117,7 +117,11 @@ Esto ejecutará:
 2. Curación de datos
 3. Generación de señal/recomendación
 
-**Nota:** El pipeline se ejecuta automáticamente al iniciar si la base está vacía o si `AUTO_RUN_PIPELINE_ON_START=true`.
+**Nota:** El pipeline se ejecuta automáticamente al iniciar si:
+- `AUTO_RUN_PIPELINE_ON_START=true` (habilitado por defecto en dev/demo) y no existe una recomendación para hoy, o
+- No existe una recomendación para la fecha actual
+
+Esto garantiza que `/api/v1/recommendation/today` devuelva datos inmediatamente después del inicio en entornos de desarrollo/demo, sin esperar al job programado de las 12:00 UTC.
 
 ## Verificar que Todo Funciona
 

@@ -17,7 +17,7 @@ from app.backtesting.metrics import calculate_metrics
 from app.backtesting.report import build_campaign_report
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.logging import logger
+from app.core.logging import logger, sanitize_log_extra
 from app.db.crud import get_latest_backtest_result, save_backtest_result
 from app.data.signal_data_provider import SignalDataProvider
 from app.core.exceptions import DataFreshnessError
@@ -72,7 +72,7 @@ class PerformanceService:
                         raw = yaml.safe_load(f) or {}
                         return raw
                 except Exception as exc:
-                    logger.warning("Failed to load performance config", extra={"path": str(path), "error": str(exc)})
+                    logger.warning("Failed to load performance config", extra=sanitize_log_extra({"path": str(path), "error": str(exc)}))
         return defaults
 
     def _resolve_strategy(self, *, allow_stale_data: bool = False) -> DailyStrategyAdapter:

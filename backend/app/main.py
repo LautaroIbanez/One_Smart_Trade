@@ -128,7 +128,7 @@ async def job_ingest_all() -> None:
 @scheduler.scheduled_job("cron", hour="*", minute=0, id="transparency_checks")
 async def job_transparency_checks() -> None:
     """Scheduled job to run transparency checks hourly."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.core.exceptions import RecommendationGenerationError
     
     try:
@@ -138,23 +138,23 @@ async def job_transparency_checks() -> None:
         # Log semaphore status
         logger.info(
             "Transparency checks completed",
-            extra={
+            extra=sanitize_log_extra({
                 "overall_status": semaphore.overall_status.value,
                 "hash_verification": semaphore.hash_verification.value,
                 "tracking_error_status": semaphore.tracking_error_status.value,
                 "drawdown_divergence_status": semaphore.drawdown_divergence_status.value,
                 "last_verification": semaphore.last_verification,
-            },
+            }),
         )
         
         # Alert if status is FAIL
         if semaphore.overall_status.value == "fail":
             logger.warning(
                 "Transparency checks failed",
-                extra={
+                extra=sanitize_log_extra({
                     "details": semaphore.details,
                     "overall_status": semaphore.overall_status.value,
-                },
+                }),
             )
     except Exception as exc:
         logger.error(f"Error running transparency checks: {exc}", exc_info=True)
@@ -172,7 +172,7 @@ async def job_daily_pipeline() -> None:
     import uuid
     from datetime import datetime
 
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.data.ingestion import INTERVALS, DataIngestion
     from app.observability.metrics import record_signal_generation
     from app.services.recommendation_service import RecommendationService
@@ -360,7 +360,7 @@ async def job_daily_pipeline() -> None:
 @scheduler.scheduled_job("cron", hour="*/1", minute=0, id="monitor_performance")
 async def job_monitor_performance() -> None:
     """Scheduled job to update performance metrics and check alerts."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.services.monitoring_service import ContinuousMonitoringService
     
     try:
@@ -371,18 +371,18 @@ async def job_monitor_performance() -> None:
             if alerts:
                 logger.warning(
                     "Performance alerts detected",
-                    extra={"asset": "BTCUSDT", "alerts_count": len(alerts), "alerts": alerts},
+                    extra=sanitize_log_extra({"asset": "BTCUSDT", "alerts_count": len(alerts), "alerts": alerts}),
                 )
         else:
-            logger.debug("Performance monitoring skipped", extra={"reason": result.get("error", "unknown")})
+            logger.debug("Performance monitoring skipped", extra=sanitize_log_extra({"reason": result.get("error", "unknown")}))
     except Exception as exc:
-        logger.exception("Performance monitoring failed", extra={"error": str(exc)})
+        logger.exception("Performance monitoring failed", extra=sanitize_log_extra({"error": str(exc)}))
 
 
 @scheduler.scheduled_job("cron", hour=1, minute=15, id="analytics_alerts")
 async def job_analytics_alerts() -> None:
     """Check survival metrics for recent runs and send alerts if thresholds are breached."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     try:
         with SessionLocal() as db:
             q = (
@@ -453,7 +453,7 @@ async def job_analytics_alerts() -> None:
                     except Exception:
                         logger.exception("Failed to send email alert")
     except Exception as exc:
-        logger.exception("Analytics alerts job failed", extra={"error": str(exc)})
+        logger.exception("Analytics alerts job failed", extra=sanitize_log_extra({"error": str(exc)}))
 
 @scheduler.scheduled_job("cron", minute="*/5", id="auto_close_trades")
 async def job_auto_close_trades() -> None:
@@ -467,7 +467,7 @@ async def job_auto_close_trades() -> None:
 @scheduler.scheduled_job("cron", hour="*/1", minute=30, id="monitor_tracking_errors")
 async def job_monitor_tracking_errors() -> None:
     """Scheduled job to monitor and calculate tracking errors for closed recommendations."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.services.tracking_error_service import TrackingErrorService
     
     try:
@@ -481,7 +481,7 @@ async def job_monitor_tracking_errors() -> None:
             if alerts:
                 logger.warning(
                     f"Tracking error monitoring: {len(alerts)} recommendations exceeded threshold",
-                    extra={"alerts_count": len(alerts), "alerts": alerts},
+                    extra=sanitize_log_extra({"alerts_count": len(alerts), "alerts": alerts}),
                 )
     except Exception as exc:
         logger.error(f"Tracking error monitoring job failed: {exc}", exc_info=True)
@@ -490,7 +490,7 @@ async def job_monitor_tracking_errors() -> None:
 @scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_daily_kpis_report")
 async def job_generate_daily_kpis_report() -> None:
     """Scheduled job to generate and archive daily KPI reports."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.services.kpis_reporting_service import KPIsReportingService
     import os
     
@@ -502,7 +502,7 @@ async def job_generate_daily_kpis_report() -> None:
         if result.get("status") == "success":
             logger.info(
                 f"Daily KPI report archived successfully",
-                extra={"results": result.get("results")},
+                extra=sanitize_log_extra({"results": result.get("results")}),
             )
         else:
             logger.warning(f"Daily KPI report archiving completed with errors: {result}")
@@ -524,21 +524,21 @@ async def job_generate_daily_kpis_report() -> None:
 @scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_risk_reports")
 async def job_generate_risk_reports() -> None:
     """Scheduled job to generate daily risk reports for all users."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.services.risk_reporting_service import RiskReportingService
     
     try:
         service = RiskReportingService()
         results = service.generate_all_user_reports()
-        logger.info(f"Generated {len(results)} risk reports", extra={"reports": results})
+        logger.info(f"Generated {len(results)} risk reports", extra=sanitize_log_extra({"reports": results}))
     except Exception as exc:
-        logger.exception("Failed to generate risk reports", extra={"error": str(exc)})
+        logger.exception("Failed to generate risk reports", extra=sanitize_log_extra({"error": str(exc)}))
 
 
 @scheduler.scheduled_job("cron", minute="*/15", id="check_exposure_alerts")
 async def job_check_exposure_alerts() -> None:
     """Scheduled job to check exposure alerts for all users."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     from app.core.config import settings
     from app.services.exposure_alert_service import ExposureAlertService
     
@@ -554,16 +554,16 @@ async def job_check_exposure_alerts() -> None:
         if result.get("alert_active"):
             logger.warning(
                 "Exposure alert active",
-                extra={"user_id": user_id, "result": result}
+                extra=sanitize_log_extra({"user_id": user_id, "result": result})
             )
     except Exception as exc:
-        logger.exception("Failed to check exposure alerts", extra={"error": str(exc)})
+        logger.exception("Failed to check exposure alerts", extra=sanitize_log_extra({"error": str(exc)}))
 
 
 @scheduler.scheduled_job("cron", hour="*/1", minute=0, id="verify_transparency")
 async def job_verify_transparency() -> None:
     """Scheduled job to verify transparency checks and send alerts if needed."""
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     import os
     
     try:
@@ -573,7 +573,7 @@ async def job_verify_transparency() -> None:
         # Log semaphore status
         logger.info(
             "Transparency verification completed",
-            extra={
+            extra=sanitize_log_extra({
                 "overall_status": status.overall_status.value,
                 "hash_status": status.hash_verification.value,
                 "dataset_status": status.dataset_verification.value,
@@ -581,7 +581,7 @@ async def job_verify_transparency() -> None:
                 "tracking_error_status": status.tracking_error_status.value,
                 "drawdown_status": status.drawdown_divergence_status.value,
                 "audit_status": status.audit_status.value,
-            }
+            })
         )
         
         # Send alerts if status is not PASS
@@ -601,7 +601,7 @@ async def job_verify_transparency() -> None:
                 alerts.append(f"Audit status: {status.audit_status.value}")
             
             message = f"Transparency verification failed: {', '.join(alerts)}"
-            logger.warning(message, extra={"semaphore": status.overall_status.value})
+            logger.warning(message, extra=sanitize_log_extra({"semaphore": status.overall_status.value}))
             
             # Send webhook if configured
             webhook_url = os.getenv("ALERT_WEBHOOK_URL")
@@ -621,41 +621,57 @@ async def job_verify_transparency() -> None:
                 except Exception:
                     logger.exception("Failed to send transparency webhook alert")
     except Exception as exc:
-        logger.exception("Failed to verify transparency", extra={"error": str(exc)})
+        logger.exception("Failed to verify transparency", extra=sanitize_log_extra({"error": str(exc)}))
 
 
-def _is_database_empty() -> bool:
-    """Check if database has any recommendations (indicates if it's been seeded)."""
-    from sqlalchemy import func, select
+def _has_recent_recommendation() -> bool:
+    """
+    Check if there's a recommendation for today.
+    
+    Returns True if a recommendation exists with today's date, False otherwise.
+    """
+    from datetime import date
+    from sqlalchemy import select
     from app.db.models import RecommendationORM
     
     db = SessionLocal()
     try:
-        count_stmt = select(func.count(RecommendationORM.id))
-        count = db.execute(count_stmt).scalar() or 0
-        return count == 0
+        today = date.today().isoformat()
+        stmt = select(RecommendationORM).where(RecommendationORM.date == today).limit(1)
+        rec = db.execute(stmt).scalars().first()
+        return rec is not None
     finally:
         db.close()
 
 
 async def _run_initial_pipeline_if_needed() -> None:
     """
-    Run initial pipeline if database is empty or AUTO_RUN_PIPELINE_ON_START is enabled.
+    Run initial pipeline if AUTO_RUN_PIPELINE_ON_START is enabled or no recent recommendation exists.
     
-    This ensures new environments have data available immediately without waiting
-    for the scheduled 12:00 UTC cron job.
+    This ensures dev/demo environments have data available immediately without waiting
+    for the scheduled 12:00 UTC cron job. The pipeline will run if:
+    - AUTO_RUN_PIPELINE_ON_START is True (default for dev/demo), OR
+    - No recommendation exists for today's date
+    
+    The scheduled 12:00 UTC job will still run normally regardless of this startup trigger.
     """
-    from app.core.logging import logger
+    from datetime import date
+    from app.core.logging import logger, sanitize_log_extra
     
     should_run = False
     reason = ""
+    today = date.today().isoformat()
     
     if settings.AUTO_RUN_PIPELINE_ON_START:
+        # Check if we already have today's recommendation
+        if _has_recent_recommendation():
+            logger.info(f"Skipping initial pipeline: recommendation for {today} already exists")
+            return
         should_run = True
-        reason = "AUTO_RUN_PIPELINE_ON_START is enabled"
-    elif _is_database_empty():
+        reason = f"AUTO_RUN_PIPELINE_ON_START is enabled and no recommendation for {today} exists"
+    elif not _has_recent_recommendation():
         should_run = True
-        reason = "Database is empty (no recommendations found)"
+        reason = f"No recommendation exists for today ({today})"
     
     if should_run:
         logger.info(f"Running initial pipeline on startup: {reason}")
@@ -667,12 +683,12 @@ async def _run_initial_pipeline_if_needed() -> None:
             # Don't raise - allow app to start even if initial pipeline fails
             # The scheduled job will retry later
     else:
-        logger.info("Skipping initial pipeline (database has data and AUTO_RUN_PIPELINE_ON_START is disabled)")
+        logger.info(f"Skipping initial pipeline: recommendation for {today} exists and AUTO_RUN_PIPELINE_ON_START is disabled")
 
 
 @app.on_event("startup")
 async def on_startup():
-    from app.core.logging import logger
+    from app.core.logging import logger, sanitize_log_extra
     
     # Jobs are already scheduled via decorators
     scheduler.start()
@@ -686,7 +702,7 @@ async def on_startup():
                 logger.error(
                     f"Preflight maintenance failed during startup: {exc}",
                     exc_info=True,
-                    extra={"error_type": type(exc).__name__, "error": str(exc)},
+                    extra=sanitize_log_extra({"error_type": type(exc).__name__, "error": str(exc)}),
                 )
                 # Don't raise - allow server to start even if preflight fails
                 # Preflight is maintenance, not critical for server operation

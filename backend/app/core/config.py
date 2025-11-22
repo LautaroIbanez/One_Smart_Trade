@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     PRESTART_BACKFILL_PAUSE_SECONDS: float = 0.2
     
     # Auto-run pipeline on startup
-    AUTO_RUN_PIPELINE_ON_START: bool = False  # Set to True for demo/staging to ensure fresh data without waiting for 12:00 UTC cron
+    # Set to True for dev/demo to ensure fresh data without waiting for 12:00 UTC cron
+    # In production, this should be False to rely on scheduled jobs only
+    AUTO_RUN_PIPELINE_ON_START: bool = True  # Default True for dev/demo environments
     
     # Admin API key for operational endpoints (set via ADMIN_API_KEY env var)
     ADMIN_API_KEY: str | None = None  # If set, required for admin endpoints like triggering pipeline
