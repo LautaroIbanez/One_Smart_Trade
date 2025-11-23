@@ -260,6 +260,8 @@ async def job_daily_pipeline() -> None:
             normalized_status = status_value.lower() if isinstance(status_value, str) else None
             signal_value = recommendation.get("signal")
             
+            # HOLD signals are valid even when guardrails fail - they should be persisted
+            # Only abort on actual failure statuses, not on HOLD signals
             if normalized_status and normalized_status in failure_statuses:
                 raise RecommendationGenerationError(
                     status=status_value,
@@ -280,6 +282,13 @@ async def job_daily_pipeline() -> None:
             
             signal = signal_value.upper()
             confidence = recommendation.get("confidence", 0.0)
+            
+            # Log guardrail failures for HOLD signals (but don't abort - these are valid recommendations)
+            if signal == "HOLD" and recommendation.get("risk_metrics", {}).get("guardrail_reason"):
+                guardrail_reason = recommendation["risk_metrics"]["guardrail_reason"]
+                logger.info(
+                    f"Pipeline {run_id}: Signal is HOLD due to guardrail: {guardrail_reason} - recommendation will be persisted"
+                )
             
             outcome_details["steps"]["signal_generation"] = {
                 "status": "success",
@@ -353,6 +362,8 @@ async def job_daily_pipeline() -> None:
         )
         
         logger.error(f"Pipeline {run_id}: Failed after {total_duration:.2f}s - {exc}", exc_info=True)
+        # Re-raise the exception so callers (e.g., _run_initial_pipeline_if_needed) can detect failure
+        raise
     finally:
         db.close()
 
@@ -677,11 +688,13 @@ async def _run_initial_pipeline_if_needed() -> None:
         logger.info(f"Running initial pipeline on startup: {reason}")
         try:
             await job_daily_pipeline()
+            # Only log success if no exception was raised (pipeline completed successfully)
             logger.info("Initial pipeline completed successfully")
         except Exception as exc:
             logger.error(f"Initial pipeline failed: {exc}", exc_info=True)
             # Don't raise - allow app to start even if initial pipeline fails
             # The scheduled job will retry later
+            # Note: job_daily_pipeline now re-raises exceptions after logging, so we properly detect failures here
     else:
         logger.info(f"Skipping initial pipeline: recommendation for {today} exists and AUTO_RUN_PIPELINE_ON_START is disabled")
 

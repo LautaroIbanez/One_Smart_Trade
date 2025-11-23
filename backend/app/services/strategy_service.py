@@ -72,13 +72,19 @@ class StrategyService:
                 f"No SL/TP config for regime={regime}",
                 payload={"symbol": resolved_symbol},
             )
+            # Create fallback config with RR threshold for guardrails
+            fallback_config = {
+                "regime": regime,
+                "rr_threshold": self.rr_floor,
+                "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True},
+            }
             self._apply_conservative_defaults(signal, market_df, regime)
-            return signal
-
-        signal.setdefault("factors", {})["optimizer_regime"] = regime
-        self._apply_config(signal, market_df, config)
-
-        guardrail_reason = await self._apply_guardrails(signal, config, resolved_symbol)
+            # Still apply guardrails even with conservative defaults to check RR threshold
+            guardrail_reason = await self._apply_guardrails(signal, fallback_config, resolved_symbol)
+        else:
+            signal.setdefault("factors", {})["optimizer_regime"] = regime
+            self._apply_config(signal, market_df, config)
+            guardrail_reason = await self._apply_guardrails(signal, config, resolved_symbol)
         risk_metrics = signal.setdefault("risk_metrics", {})
         
         if guardrail_reason:
@@ -217,10 +223,19 @@ class StrategyService:
         )
 
     def _apply_conservative_defaults(self, signal: dict[str, Any], market_df: pd.DataFrame, regime: str) -> None:
+        """
+        Apply conservative SL/TP defaults that aim to meet minimum RR threshold.
+        
+        Uses parameters that should result in RR >= rr_floor (default 1.2-1.25):
+        - SL: 2.0x ATR (moderate stop loss)
+        - TP: 2.5x ATR (generous take profit)
+        - TP ratio: 1.3 (additional multiplier)
+        Expected RR: (2.5 * 1.3) / 2.0 = 3.25 / 2.0 = 1.625 (above threshold)
+        """
         params = {
-            "atr_multiplier_sl": 3.0,
-            "atr_multiplier_tp": 1.2,
-            "tp_ratio": 1.15,
+            "atr_multiplier_sl": 2.0,  # Reduced from 3.0 to improve RR
+            "atr_multiplier_tp": 2.5,  # Increased from 1.2 to improve RR
+            "tp_ratio": 1.3,  # Increased from 1.15 to improve RR
         }
         fallback_config = {
             "best_params": params,
@@ -230,6 +245,60 @@ class StrategyService:
         }
         self._apply_config(signal, market_df, fallback_config)
         signal.setdefault("risk_metrics", {})["fallback"] = "conservative_defaults"
+        
+        # After applying defaults, check if RR meets threshold and adjust if needed
+        risk_metrics = signal.get("risk_metrics", {})
+        rr_ratio = risk_metrics.get("risk_reward_ratio", 0.0)
+        if rr_ratio > 0 and rr_ratio < self.rr_floor:
+            # Adjust TP to meet minimum RR threshold
+            self._adjust_tp_for_min_rr(signal, self.rr_floor)
+    
+    def _adjust_tp_for_min_rr(self, signal: dict[str, Any], min_rr: float) -> None:
+        """
+        Adjust take profit to meet minimum RR threshold.
+        
+        Recalculates TP based on entry, stop loss, and minimum RR requirement.
+        """
+        entry_range = signal.get("entry_range") or {}
+        entry = float(entry_range.get("optimal") or signal.get("current_price") or 0.0)
+        sl_tp = signal.get("stop_loss_take_profit") or {}
+        stop_loss = float(sl_tp.get("stop_loss") or 0.0)
+        direction = signal.get("signal", "HOLD").upper()
+        
+        if entry <= 0 or stop_loss <= 0 or direction == "HOLD":
+            return
+        
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
+            return
+        
+        # Calculate required reward to meet minimum RR
+        required_reward = risk * min_rr
+        
+        # Adjust take profit based on direction
+        if direction == "BUY":
+            take_profit = entry + required_reward
+        elif direction == "SELL":
+            take_profit = entry - required_reward
+        else:
+            return
+        
+        # Update SL/TP with adjusted take profit
+        sl_tp["take_profit"] = round(take_profit, 2)
+        sl_tp["take_profit_pct"] = round((take_profit - entry) / entry * 100, 2)
+        signal["stop_loss_take_profit"] = sl_tp
+        
+        # Recalculate and update risk metrics
+        reward = abs(take_profit - entry)
+        rr_ratio = reward / risk if risk else 0.0
+        
+        risk_metrics = signal.setdefault("risk_metrics", {})
+        risk_metrics.update({
+            "risk": round(risk, 4),
+            "reward": round(reward, 4),
+            "risk_reward_ratio": round(rr_ratio, 3),
+            "tp_adjusted_for_rr": True,  # Flag indicating TP was adjusted
+        })
 
     async def _apply_guardrails(
         self,

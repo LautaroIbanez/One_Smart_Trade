@@ -234,35 +234,73 @@ async def get_performance_summary(
             end=period_dict.get("end", ""),
         ) if period_dict else None
 
-        # Deployment guardrails: prevent publishing if criteria not met
+        # Deployment guardrails: handle non-PASS statuses gracefully
         oos_days = result.get("oos_days")
         metrics_status = result.get("metrics_status", "UNKNOWN")
         
         if oos_days is not None and oos_days < 120:
             logger.warning(
-                "Summary blocked: insufficient OOS period",
+                "Summary degraded: insufficient OOS period",
                 extra={"oos_days": oos_days, "required": 120}
             )
-            return PerformanceSummaryResponse(
-                status="error",
-                message=f"Results cannot be published: OOS period ({oos_days} days) is less than required minimum (120 days)",
-                metrics=None,
+            # Return degraded response with available metrics instead of error
+            response = PerformanceSummaryResponse(
+                status="degraded",
+                message=f"Metrics available but not validated: OOS period ({oos_days} days) is less than required minimum (120 days). Metrics shown for informational purposes only.",
+                metrics=metrics,
                 period=period,
-                report_path=None,
+                report_path=result.get("report_path"),
+                tracking_error_rmse=tracking_error_rmse,
+                tracking_error_max=tracking_error_max,
+                orderbook_fallback_events=orderbook_fallback_events,
+                has_realistic_data=has_realistic_data,
+                tracking_error_metrics=result.get("tracking_error_metrics"),
+                tracking_error_series=result.get("tracking_error_series"),
+                tracking_error_cumulative=result.get("tracking_error_cumulative"),
+                chart_banners=result.get("chart_banners", []) + [f"OOS period ({oos_days} days) below minimum (120 days)"],
             )
+            response_dict = response.model_dump()
+            response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
+            response_dict["equity_realistic"] = result.get("equity_realistic", [])
+            response_dict["equity_curve"] = result.get("equity_curve", [])
+            response_dict["equity_curve_theoretical"] = result.get("equity_curve_theoretical", [])
+            response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
+            return response_dict
         
         if metrics_status != "PASS":
-            logger.warning(
-                "Summary blocked: metrics status not PASS",
-                extra={"metrics_status": metrics_status}
+            # For UNKNOWN or other non-PASS statuses, return degraded response with available metrics
+            # This allows dashboards to show data with appropriate warnings instead of error banners
+            logger.info(
+                "Summary returned in degraded mode: metrics status not PASS",
+                extra={"metrics_status": metrics_status, "has_metrics": metrics is not None}
             )
-            return PerformanceSummaryResponse(
-                status="error",
-                message=f"Results cannot be published: metrics status is '{metrics_status}' (required: 'PASS')",
-                metrics=None,
+            status_message = {
+                "UNKNOWN": "Metrics available but not yet validated. Backtest data may be incomplete or validation is in progress.",
+                "FAIL": "Metrics validation failed. Data shown for informational purposes only.",
+            }.get(metrics_status, f"Metrics status is '{metrics_status}'. Data shown for informational purposes only.")
+            
+            response = PerformanceSummaryResponse(
+                status="degraded",
+                message=status_message,
+                metrics=metrics,  # Include available metrics even if not validated
                 period=period,
-                report_path=None,
+                report_path=result.get("report_path"),
+                tracking_error_rmse=tracking_error_rmse,
+                tracking_error_max=tracking_error_max,
+                orderbook_fallback_events=orderbook_fallback_events,
+                has_realistic_data=has_realistic_data,
+                tracking_error_metrics=result.get("tracking_error_metrics"),
+                tracking_error_series=result.get("tracking_error_series"),
+                tracking_error_cumulative=result.get("tracking_error_cumulative"),
+                chart_banners=result.get("chart_banners", []) + [f"Metrics status: {metrics_status} (not validated)"],
             )
+            response_dict = response.model_dump()
+            response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
+            response_dict["equity_realistic"] = result.get("equity_realistic", [])
+            response_dict["equity_curve"] = result.get("equity_curve", [])
+            response_dict["equity_curve_theoretical"] = result.get("equity_curve_theoretical", [])
+            response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
+            return response_dict
 
         response = PerformanceSummaryResponse(
             status="success",

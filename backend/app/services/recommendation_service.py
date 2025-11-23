@@ -1396,19 +1396,35 @@ class RecommendationService:
                 allow_bypass = is_dev and is_missing_data and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
                 
                 if allow_bypass:
-                    logger.warning(
-                        "Auto-shutdown guardrail bypassed in dev due to missing performance history",
+                    # Even in dev, fail early with clear error when data is missing
+                    # This prevents confusing downstream failures and provides better feedback
+                    logger.error(
+                        "Cannot generate recommendation: insufficient performance history",
                         extra={
                             "environment": env,
                             "shutdown_reason": shutdown_status["shutdown_reason"],
                             "rolling_sharpe": shutdown_status.get("rolling_sharpe"),
                             "has_sharpe_data": shutdown_status.get("has_sharpe_data", False),
                             "lookback_trades": shutdown_status.get("lookback_trades"),
-                            "warning": "This bypass is dev-only. Production requires sufficient trade history.",
+                            "required_trades": settings.AUTO_SHUTDOWN_LOOKBACK_TRADES,
+                            "min_trades_for_sharpe": settings.AUTO_SHUTDOWN_MIN_TRADES_FOR_SHARPE,
+                            "note": "Recommendation generation requires sufficient trade history for risk assessment. "
+                                   "Generate recommendations and execute trades to build history.",
                         },
                     )
-                    # Continue with recommendation generation, but mark as experimental
-                    # The recommendation will be generated but may be flagged
+                    # Return early with clear error status instead of continuing and failing downstream
+                    return {
+                        "status": "insufficient_history",
+                        "reason": shutdown_status["shutdown_reason"],
+                        "signal": "HOLD",
+                        "risk_metrics": {
+                            "guardrail_reason": "insufficient_history",
+                            "shutdown_status": shutdown_status,
+                        },
+                        "message": "Cannot generate recommendation: insufficient performance history. "
+                                 "The system requires trade history to assess risk and performance. "
+                                 "Please execute trades to build the required history.",
+                    }
                 else:
                     # Production or real breach: block recommendation
                     logger.error(
@@ -1649,6 +1665,8 @@ class RecommendationService:
                 signal["signal"] = "HOLD"
                 risk_metrics["guardrail_reason"] = guardrail_reason
                 risk_metrics["liquidity_check_passed"] = False
+                # Ensure status is set to "ok" so recommendation is persisted (not aborted)
+                signal["status"] = "ok"
                 logger.warning(
                     f"Guardrails failed: {guardrail_reason} - signal degraded to HOLD",
                     extra={
@@ -2056,12 +2074,20 @@ class RecommendationService:
         if signal_log_id and isinstance(result, dict):
             result["signal_log_id"] = signal_log_id
         
+        # Ensure status is set to "ok" for successful recommendations (including HOLD from guardrails)
+        if isinstance(result, dict) and "status" not in result:
+            result["status"] = "ok"
+        elif isinstance(result, dict) and result.get("signal") == "HOLD" and result.get("status") not in ("ok", "invalid", "error"):
+            # Explicitly set status to "ok" for HOLD signals (even if guardrails failed)
+            result["status"] = "ok"
+        
         # Add shutdown status if applicable
         if self.shutdown_manager:
             shutdown_status = await self._check_shutdown_status()
-            result["shutdown_status"] = shutdown_status
-            if shutdown_status["size_reduction"]:
-                result["size_reduction_factor"] = shutdown_status["size_reduction_factor"]
+            if isinstance(result, dict):
+                result["shutdown_status"] = shutdown_status
+                if shutdown_status["size_reduction"]:
+                    result["size_reduction_factor"] = shutdown_status["size_reduction_factor"]
         
         return result
 
