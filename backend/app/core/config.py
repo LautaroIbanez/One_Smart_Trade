@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     # In production, this should be False to rely on scheduled jobs only
     AUTO_RUN_PIPELINE_ON_START: bool = True  # Default True for dev/demo environments
     
+    # Dev mode: Use fake/demo data when live ingestion fails
+    # When enabled, if no raw data exists locally, the pipeline will seed demo klines
+    # instead of failing. This allows dev environments to work without Binance access.
+    DEV_FAKE_DATA: bool = False  # Set to True to enable demo data fallback in dev
+    
+    # Dev mode: Relaxed data validation thresholds
+    # When DEV_FAKE_DATA is enabled, these thresholds are used instead of production values
+    DEV_DATA_FRESHNESS_THRESHOLD_MINUTES: int = 1440  # 24 hours (vs 90 minutes in prod)
+    DEV_DATA_GAP_TOLERANCE_CANDLES: int = 10  # 10 candles (vs 2 in prod)
+    
     # Admin API key for operational endpoints (set via ADMIN_API_KEY env var)
     ADMIN_API_KEY: str | None = None  # If set, required for admin endpoints like triggering pipeline
 

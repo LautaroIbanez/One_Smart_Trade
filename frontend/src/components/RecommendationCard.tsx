@@ -133,6 +133,74 @@ function RecommendationCard() {
     )
   }
 
+  // Handle data_stale status
+  if (data.status === 'data_stale') {
+    return (
+      <div className="recommendation-card guardrail-blocked">
+        <div className="guardrail-blocked-header">
+          <h2>⏰ Datos Desactualizados</h2>
+        </div>
+        <div className="guardrail-blocked-content">
+          <p className="guardrail-message">{data.reason || "Los datos de mercado están desactualizados"}</p>
+          <p className="guardrail-explanation">
+            {data.interval && data.latest_timestamp && data.threshold_minutes ? (
+              <>
+                El intervalo <strong>{data.interval}</strong> tiene datos más antiguos que el umbral permitido ({data.threshold_minutes} minutos).
+                <br />
+                Última actualización: {new Date(data.latest_timestamp).toLocaleString('es-ES')}
+              </>
+            ) : (
+              "Los datos de mercado necesitan ser actualizados antes de generar una recomendación. El backfill se está ejecutando en segundo plano."
+            )}
+          </p>
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar después del backfill"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar (después del backfill)'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle data_gaps status
+  if (data.status === 'data_gaps') {
+    return (
+      <div className="recommendation-card guardrail-blocked">
+        <div className="guardrail-blocked-header">
+          <h2>📊 Faltan Datos (Gaps Detectados)</h2>
+        </div>
+        <div className="guardrail-blocked-content">
+          <p className="guardrail-message">{data.reason || "Se detectaron gaps en los datos de mercado"}</p>
+          <p className="guardrail-explanation">
+            {data.interval && data.gaps ? (
+              <>
+                El intervalo <strong>{data.interval}</strong> tiene {data.gaps.length} gap(s) que exceden la tolerancia permitida ({data.tolerance_candles} velas).
+                <br />
+                Se requiere ejecutar la ingesta de datos para llenar los gaps antes de generar una recomendación.
+              </>
+            ) : (
+              "Faltan velas en los datos de mercado. Ejecuta la ingesta de datos para completar la información necesaria."
+            )}
+          </p>
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar después de la ingesta"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar (después de la ingesta)'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   // Handle leverage hard stop status
   if (data.status === 'leverage_hard_stop') {
     return (
@@ -204,6 +272,15 @@ function RecommendationCard() {
               <em>Una vez que valides tu capital, podrás recibir señales de trading personalizadas.</em>
             </p>
           )}
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar después de validar capital"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+          </button>
         </div>
       </div>
     )
@@ -237,6 +314,15 @@ function RecommendationCard() {
           <p className="risk-limit-note">
             <em>El límite se reinicia cada 24 horas. Revisa tus posiciones abiertas y considera cerrar algunas antes de mañana.</em>
           </p>
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar carga"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+          </button>
         </div>
       </div>
     )

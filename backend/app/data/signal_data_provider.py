@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.data.curation import DataCuration
 from app.core.exceptions import DataFreshnessError
@@ -102,8 +103,10 @@ class SignalDataProvider:
         # Validate data freshness if requested
         if validate_freshness:
             try:
-                self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol)
-                self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol)
+                # Use relaxed thresholds in dev mode
+                threshold_minutes = settings.DEV_DATA_FRESHNESS_THRESHOLD_MINUTES if settings.DEV_FAKE_DATA else None
+                self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol, threshold_minutes=threshold_minutes)
+                self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol, threshold_minutes=threshold_minutes)
                 logger.debug("Data freshness validation passed")
             except DataFreshnessError as exc:
                 self._record_data_freshness_failure(exc)
@@ -111,8 +114,10 @@ class SignalDataProvider:
         
         # Validate data gaps if requested
         if validate_gaps:
-            self.curation.validate_data_gaps("1d", venue=self.venue, symbol=self.symbol)
-            self.curation.validate_data_gaps("1h", venue=self.venue, symbol=self.symbol)
+            # Use relaxed thresholds in dev mode
+            tolerance_candles = settings.DEV_DATA_GAP_TOLERANCE_CANDLES if settings.DEV_FAKE_DATA else None
+            self.curation.validate_data_gaps("1d", venue=self.venue, symbol=self.symbol, tolerance_candles=tolerance_candles)
+            self.curation.validate_data_gaps("1h", venue=self.venue, symbol=self.symbol, tolerance_candles=tolerance_candles)
             logger.debug("Data gap validation passed")
         
         # Load curated datasets

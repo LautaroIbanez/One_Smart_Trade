@@ -208,13 +208,50 @@ async def job_daily_pipeline() -> None:
             logger.info(f"Pipeline {run_id}: Ingestion completed - {total_rows} rows in {ingestion_duration:.2f}s")
         except Exception as exc:
             ingestion_duration = time.time() - ingestion_start
-            outcome_details["steps"]["ingestion"] = {
-                "status": "failed",
-                "duration_seconds": round(ingestion_duration, 2),
-                "error": str(exc),
-            }
-            logger.error(f"Pipeline {run_id}: Ingestion failed - {exc}", exc_info=True)
-            raise
+            # Dev mode: If DEV_FAKE_DATA is enabled and no local data exists, seed demo data instead of failing
+            if settings.DEV_FAKE_DATA:
+                from app.data.dev_seeding import has_local_raw_data, seed_demo_klines
+                if not has_local_raw_data():
+                    logger.warning(f"Pipeline {run_id}: Ingestion failed, but DEV_FAKE_DATA is enabled. Seeding demo data instead.")
+                    try:
+                        demo_results = seed_demo_klines()
+                        demo_total_rows = sum(item.get("rows", 0) for item in demo_results.values() if item.get("status") == "success")
+                        outcome_details["steps"]["ingestion"] = {
+                            "status": "demo_data_seeded",
+                            "duration_seconds": round(ingestion_duration, 2),
+                            "total_rows": demo_total_rows,
+                            "original_error": str(exc),
+                            "results": demo_results,
+                            "demo_data": True,
+                        }
+                        logger.info(f"Pipeline {run_id}: Demo data seeded - {demo_total_rows} rows")
+                    except Exception as demo_exc:
+                        logger.error(f"Pipeline {run_id}: Failed to seed demo data: {demo_exc}", exc_info=True)
+                        outcome_details["steps"]["ingestion"] = {
+                            "status": "failed",
+                            "duration_seconds": round(ingestion_duration, 2),
+                            "error": str(exc),
+                            "demo_seed_error": str(demo_exc),
+                        }
+                        raise
+                else:
+                    # Local data exists, so ingestion failure is real
+                    outcome_details["steps"]["ingestion"] = {
+                        "status": "failed",
+                        "duration_seconds": round(ingestion_duration, 2),
+                        "error": str(exc),
+                    }
+                    logger.error(f"Pipeline {run_id}: Ingestion failed - {exc}", exc_info=True)
+                    raise
+            else:
+                # Not in dev mode, fail normally
+                outcome_details["steps"]["ingestion"] = {
+                    "status": "failed",
+                    "duration_seconds": round(ingestion_duration, 2),
+                    "error": str(exc),
+                }
+                logger.error(f"Pipeline {run_id}: Ingestion failed - {exc}", exc_info=True)
+                raise
         
         # Step 2: Data curation
         curation_start = time.time()
@@ -655,7 +692,7 @@ def _has_recent_recommendation() -> bool:
         db.close()
 
 
-async def _run_initial_pipeline_if_needed() -> None:
+async def _run_initial_pipeline_if_needed() -> dict[str, Any]:
     """
     Run initial pipeline if AUTO_RUN_PIPELINE_ON_START is enabled or no recent recommendation exists.
     
@@ -665,6 +702,9 @@ async def _run_initial_pipeline_if_needed() -> None:
     - No recommendation exists for today's date
     
     The scheduled 12:00 UTC job will still run normally regardless of this startup trigger.
+    
+    Returns:
+        Dictionary with pipeline execution result, including status and details
     """
     from datetime import date
     from app.core.logging import logger, sanitize_log_extra
@@ -677,7 +717,11 @@ async def _run_initial_pipeline_if_needed() -> None:
         # Check if we already have today's recommendation
         if _has_recent_recommendation():
             logger.info(f"Skipping initial pipeline: recommendation for {today} already exists")
-            return
+            return {
+                "status": "skipped",
+                "reason": f"Recommendation for {today} already exists",
+                "date": today,
+            }
         should_run = True
         reason = f"AUTO_RUN_PIPELINE_ON_START is enabled and no recommendation for {today} exists"
     elif not _has_recent_recommendation():
@@ -690,13 +734,33 @@ async def _run_initial_pipeline_if_needed() -> None:
             await job_daily_pipeline()
             # Only log success if no exception was raised (pipeline completed successfully)
             logger.info("Initial pipeline completed successfully")
+            return {
+                "status": "success",
+                "reason": reason,
+                "date": today,
+            }
         except Exception as exc:
             logger.error(f"Initial pipeline failed: {exc}", exc_info=True)
-            # Don't raise - allow app to start even if initial pipeline fails
-            # The scheduled job will retry later
-            # Note: job_daily_pipeline now re-raises exceptions after logging, so we properly detect failures here
+            # Return structured degraded payload instead of raising
+            # This allows the app to start and serve a friendly "demo data only" response
+            degraded_payload = {
+                "status": "degraded",
+                "reason": f"Pipeline failed: {str(exc)}",
+                "date": today,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "demo_data_available": settings.DEV_FAKE_DATA,
+            }
+            if settings.DEV_FAKE_DATA:
+                degraded_payload["message"] = "Demo data mode: Using seeded data instead of live ingestion"
+            return degraded_payload
     else:
         logger.info(f"Skipping initial pipeline: recommendation for {today} exists and AUTO_RUN_PIPELINE_ON_START is disabled")
+        return {
+            "status": "skipped",
+            "reason": f"Recommendation for {today} exists and AUTO_RUN_PIPELINE_ON_START is disabled",
+            "date": today,
+        }
 
 
 @app.on_event("startup")

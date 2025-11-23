@@ -20,6 +20,30 @@ monitoring_service = ContinuousMonitoringService(asset="BTCUSDT", venue="binance
 kpis_service = KPIsReportingService()
 
 
+def _create_demo_metrics() -> PerformanceMetrics:
+    """Create zero/demo metrics for degraded mode when cache is empty."""
+    return PerformanceMetrics(
+        cagr=0.0,
+        sharpe=0.0,
+        sortino=0.0,
+        max_drawdown=0.0,
+        win_rate=0.0,
+        profit_factor=0.0,
+        expectancy=0.0,
+        calmar=0.0,
+        total_return=0.0,
+        total_trades=0,
+        winning_trades=0,
+        losing_trades=0,
+        rolling_monthly=None,
+        rolling_quarterly=None,
+        risk_profile=None,
+        tracking_error_rmse=None,
+        tracking_error_max=None,
+        orderbook_fallback_events=None,
+    )
+
+
 async def _background_backfill_summary(*, allow_stale_inputs: bool = False) -> None:
     """
     Background task to refresh performance summary cache.
@@ -61,21 +85,57 @@ async def get_performance_summary(
     try:
         result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs, trigger_backfill=True)
         
+        # Check for cache miss with empty metrics - return degraded response immediately
+        metadata = result.get("metadata", {})
+        cache_miss = metadata.get("cache_miss", False)
+        metrics_dict = result.get("metrics", {})
+        has_metrics = bool(metrics_dict and len(metrics_dict) > 0)
+        
+        # If cache miss and no metrics, return degraded response with demo metrics
+        if cache_miss and not has_metrics:
+            logger.info(
+                "Cache miss detected with no metrics - returning degraded response with demo metrics",
+                extra={"cache_miss": cache_miss, "has_metrics": has_metrics},
+            )
+            # Trigger background backfill immediately (non-blocking)
+            background_tasks.add_task(
+                _background_backfill_summary,
+                allow_stale_inputs=allow_stale_inputs
+            )
+            logger.info("Enqueued background backfill for performance summary (cache miss)")
+            
+            # Return degraded response with demo metrics
+            demo_metrics = _create_demo_metrics()
+            response = PerformanceSummaryResponse(
+                status="degraded",
+                message="No backtest cache available; showing demo metrics. Real metrics will be available after background backfill completes.",
+                metrics=demo_metrics,
+                period=None,
+                report_path=None,
+                tracking_error_rmse=None,
+                tracking_error_max=None,
+                orderbook_fallback_events=None,
+                has_realistic_data=False,
+                tracking_error_metrics=None,
+                tracking_error_series=None,
+                tracking_error_cumulative=None,
+                chart_banners=["No backtest data available - showing demo metrics"],
+            )
+            return response.model_dump()
+        
         # Server-side guardrail: When allow_stale_inputs=True, enqueue background backfill if needed
         # This ensures cache stays fresh without blocking the response
         if allow_stale_inputs:
             # Check if we should trigger a background backfill
             # Only trigger if cache is missing or very old (> 1 hour for UI requests)
-            metadata = result.get("metadata", {})
             cache_age = result.get("cache_age_seconds") or metadata.get("cache_age_seconds")
-            cache_miss = metadata.get("cache_miss", False)
             served_from_cache = metadata.get("served_from_cache", False)
             
             # Enqueue background backfill if:
-            # 1. Cache miss (no data available)
+            # 1. Cache miss (no data available) - already handled above
             # 2. Cache is old (> 1 hour)
             # This runs after response is sent, never blocking the UI
-            if cache_miss or not served_from_cache or (cache_age is not None and cache_age > 3600):
+            if not served_from_cache or (cache_age is not None and cache_age > 3600):
                 background_tasks.add_task(
                     _background_backfill_summary,
                     allow_stale_inputs=allow_stale_inputs
@@ -176,42 +236,58 @@ async def get_performance_summary(
                 response_dict["equity_curve"] = fallback_summary.get("equity_curve", [])
                 return response_dict
             
-            # For other error types, return standard error response
+            # For other error types without fallback, return degraded response with demo metrics
+            # This ensures the frontend can render something instead of showing an error state
+            logger.warning(
+                "Error status without fallback_summary - returning degraded response with demo metrics",
+                extra={
+                    "error_type": error_type,
+                    "message": result.get("message"),
+                },
+            )
+            demo_metrics = _create_demo_metrics()
             return PerformanceSummaryResponse(
-                status="error",
-                message=result.get("message", "Unknown error"),
-                metrics=None,
+                status="degraded",
+                message=f"{result.get('message', 'Unknown error')}. Showing demo metrics until backtest completes.",
+                metrics=demo_metrics,
                 period=None,
                 report_path=None,
+                chart_banners=[f"Error: {result.get('message', 'Unknown error')} - showing demo metrics"],
             )
 
         metrics_dict = result.get("metrics", {})
-        rolling_monthly = metrics_dict.get("rolling_monthly")
-        rolling_quarterly = metrics_dict.get("rolling_quarterly")
+        
+        # If metrics dict is empty, use demo metrics instead of failing
+        if not metrics_dict or len(metrics_dict) == 0:
+            logger.warning("Empty metrics dict in result - using demo metrics for degraded response")
+            metrics = _create_demo_metrics()
+        else:
+            rolling_monthly = metrics_dict.get("rolling_monthly")
+            rolling_quarterly = metrics_dict.get("rolling_quarterly")
 
-        risk_profile_dict = metrics_dict.get("risk_profile")
-        risk_profile = RiskProfile(**risk_profile_dict) if risk_profile_dict else None
+            risk_profile_dict = metrics_dict.get("risk_profile")
+            risk_profile = RiskProfile(**risk_profile_dict) if risk_profile_dict else None
 
-        metrics = PerformanceMetrics(
-            cagr=metrics_dict.get("cagr", 0.0),
-            sharpe=metrics_dict.get("sharpe", 0.0),
-            sortino=metrics_dict.get("sortino", 0.0),
-            max_drawdown=metrics_dict.get("max_drawdown", 0.0),
-            win_rate=metrics_dict.get("win_rate", 0.0),
-            profit_factor=metrics_dict.get("profit_factor", 0.0),
-            expectancy=metrics_dict.get("expectancy", 0.0),
-            calmar=metrics_dict.get("calmar", 0.0),
-            total_return=metrics_dict.get("total_return", 0.0),
-            total_trades=metrics_dict.get("total_trades", 0),
-            winning_trades=metrics_dict.get("winning_trades", 0),
-            losing_trades=metrics_dict.get("losing_trades", 0),
-            rolling_monthly=RollingMetrics(**rolling_monthly) if rolling_monthly else None,
-            rolling_quarterly=RollingMetrics(**rolling_quarterly) if rolling_quarterly else None,
-            risk_profile=risk_profile,
-            tracking_error_rmse=metrics_dict.get("tracking_error_rmse"),
-            tracking_error_max=metrics_dict.get("tracking_error_max"),
-            orderbook_fallback_events=metrics_dict.get("orderbook_fallback_events"),
-        )
+            metrics = PerformanceMetrics(
+                cagr=metrics_dict.get("cagr", 0.0),
+                sharpe=metrics_dict.get("sharpe", 0.0),
+                sortino=metrics_dict.get("sortino", 0.0),
+                max_drawdown=metrics_dict.get("max_drawdown", 0.0),
+                win_rate=metrics_dict.get("win_rate", 0.0),
+                profit_factor=metrics_dict.get("profit_factor", 0.0),
+                expectancy=metrics_dict.get("expectancy", 0.0),
+                calmar=metrics_dict.get("calmar", 0.0),
+                total_return=metrics_dict.get("total_return", 0.0),
+                total_trades=metrics_dict.get("total_trades", 0),
+                winning_trades=metrics_dict.get("winning_trades", 0),
+                losing_trades=metrics_dict.get("losing_trades", 0),
+                rolling_monthly=RollingMetrics(**rolling_monthly) if rolling_monthly else None,
+                rolling_quarterly=RollingMetrics(**rolling_quarterly) if rolling_quarterly else None,
+                risk_profile=risk_profile,
+                tracking_error_rmse=metrics_dict.get("tracking_error_rmse"),
+                tracking_error_max=metrics_dict.get("tracking_error_max"),
+                orderbook_fallback_events=metrics_dict.get("orderbook_fallback_events"),
+            )
         
         # Extract tracking error data from backtest result
         tracking_error = result.get("tracking_error")
