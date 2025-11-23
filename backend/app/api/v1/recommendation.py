@@ -86,6 +86,27 @@ async def get_today_recommendation(
                     "tolerance_candles": data.get("tolerance_candles"),
                 },
             )
+        if data.get("status") == "insufficient_history":
+            # In dev/test the pipeline can return an insufficient history guardrail without
+            # the fields required by RecommendationResponse (entry_range, SL/TP, etc.).
+            # Return a structured error instead of falling through and triggering a 500/422.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "insufficient_history",
+                    "reason": data.get("reason", "Insufficient performance history for risk assessment"),
+                    "required_trades": data.get("risk_metrics", {})
+                    .get("shutdown_status", {})
+                    .get("required_trades"),
+                    "lookback_trades": data.get("risk_metrics", {})
+                    .get("shutdown_status", {})
+                    .get("lookback_trades"),
+                    "message": data.get(
+                        "message",
+                        "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
+                    ),
+                },
+            )
         if data.get("status") == "no_data":
             return RecommendationFallbackResponse(**data)
         if data.get("status") == "invalid":

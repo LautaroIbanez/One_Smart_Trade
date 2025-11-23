@@ -201,6 +201,45 @@ function RecommendationCard() {
     )
   }
 
+  // Handle insufficient history guardrail
+  if (data.status === 'insufficient_history') {
+    return (
+      <div className="recommendation-card guardrail-blocked">
+        <div className="guardrail-blocked-header">
+          <h2>📉 Historial insuficiente</h2>
+        </div>
+        <div className="guardrail-blocked-content">
+          <p className="guardrail-message">{data.reason || 'No hay trades suficientes para calcular riesgo y rendimiento.'}</p>
+          <p className="guardrail-explanation">
+            {data.message ||
+              'Ejecuta algunas operaciones o carga historial de trades para habilitar las métricas de riesgo necesarias.'}
+          </p>
+          <ul className="guardrail-details">
+            {data.required_trades && (
+              <li>
+                Trades requeridos: <strong>{data.required_trades}</strong>
+              </li>
+            )}
+            {data.lookback_trades && (
+              <li>
+                Ventana considerada: <strong>{data.lookback_trades}</strong> trades recientes
+              </li>
+            )}
+          </ul>
+          <button
+            onClick={handleRetry}
+            type="button"
+            aria-label="Reintentar después de cargar historial"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   // Handle leverage hard stop status
   if (data.status === 'leverage_hard_stop') {
     return (

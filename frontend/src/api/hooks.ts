@@ -167,11 +167,14 @@ export const useTodayRecommendation = () => {
             return detail
           }
         }
-        // Handle HTTP 503 with data_stale or data_gaps status
+        // Handle HTTP 503 with data_stale, data_gaps or insufficient_history status
         if (error?.response?.status === 503 && error?.response?.data?.detail) {
           const detail = error.response.data.detail
-          // If detail is an object with status data_stale or data_gaps, return it as data
-          if (typeof detail === 'object' && (detail.status === 'data_stale' || detail.status === 'data_gaps')) {
+          // If detail is an object with status data_stale, data_gaps, or insufficient_history return it as data
+          if (
+            typeof detail === 'object' &&
+            (detail.status === 'data_stale' || detail.status === 'data_gaps' || detail.status === 'insufficient_history')
+          ) {
             return detail
           }
         }

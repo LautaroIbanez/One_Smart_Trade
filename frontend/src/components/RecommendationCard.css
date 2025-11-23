@@ -734,6 +734,26 @@
   line-height: 1.6;
 }
 
+.guardrail-details {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.guardrail-details li {
+  font-size: 0.9375rem;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.8));
+  line-height: 1.5;
+}
+
+.guardrail-details li strong {
+  color: var(--text-primary, #ffffff);
+  font-weight: 600;
+}
+
 .guardrail-retry-button {
   margin-top: 0.5rem;
   padding: 0.75rem 1.5rem;
