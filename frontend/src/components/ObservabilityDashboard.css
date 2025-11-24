@@ -262,6 +262,32 @@
   margin-top: 0.25rem;
 }
 
+.observability-status-message {
+  padding: 2rem;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.observability-status-message p {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.observability-status-message p:first-child {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.status-hint {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-style: italic;
+}
+
 @media (max-width: 900px) {
   .observability-dashboard {
     padding: 1rem;

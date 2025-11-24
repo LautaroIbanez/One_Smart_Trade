@@ -64,17 +64,44 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
   const [showThresholds, setShowThresholds] = useState(true)
   const { data, isLoading, isError } = useObservabilityDashboard(isPrivate)
 
+  // Normalize response data to handle partial responses safely
+  const normalizedData = useMemo(() => {
+    if (!data) return null
+
+    // Check for processing status or incomplete data
+    if (data.status === 'processing' || data.status === 'pending') {
+      return { ...data, isProcessing: true }
+    }
+
+    // Normalize all potentially missing fields with safe defaults
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : []
+    const thresholds = data?.thresholds ?? {}
+    const metrics = data?.metrics ?? {}
+    const alertsCount = typeof data?.alerts_count === 'number' ? data.alerts_count : alerts.length
+    const timestamp = data?.timestamp ?? new Date().toISOString()
+
+    return {
+      ...data,
+      alerts,
+      thresholds,
+      metrics,
+      alerts_count: alertsCount,
+      timestamp,
+      isProcessing: false,
+    }
+  }, [data])
+
   const metricsDisplay = useMemo(() => {
-    if (!data) return {}
+    if (!normalizedData || normalizedData.isProcessing) return {}
 
     const display: Record<string, MetricValue> = {}
-    const metrics = data.metrics
-    const thresholds = data.thresholds
+    const metrics = normalizedData.metrics
+    const thresholds = normalizedData.thresholds
 
-    // Process each metric
+    // Process each metric - thresholds is guaranteed to be an object (empty if missing)
     for (const [metricName, threshold] of Object.entries(thresholds)) {
       const currentValue = metrics[metricName]
-      if (currentValue === undefined) continue
+      if (currentValue === undefined || typeof threshold !== 'number') continue
 
       const isHigherBetter = metricName.includes('sharpe') || metricName.includes('hit_rate') || 
                             metricName.includes('correlation') || metricName.includes('fill_rate') ||
@@ -104,7 +131,7 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
     }
 
     return display
-  }, [data])
+  }, [normalizedData])
 
   if (isLoading) {
     return (
@@ -117,7 +144,7 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
     )
   }
 
-  if (isError || !data) {
+  if (isError || !normalizedData) {
     return (
       <section className="observability-dashboard" aria-live="polite">
         <header>
@@ -128,8 +155,30 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
     )
   }
 
-  const criticalAlerts = data.alerts.filter(a => a.severity === 'critical')
-  const warningAlerts = data.alerts.filter(a => a.severity === 'warning')
+  // Early fallback for processing status or missing critical fields
+  if (normalizedData.isProcessing || (!normalizedData.metrics || Object.keys(normalizedData.metrics).length === 0)) {
+    return (
+      <section className="observability-dashboard" aria-live="polite">
+        <header>
+          <h2>Dashboard de Observabilidad {isPrivate && '(Privado)'}</h2>
+        </header>
+        <div className="observability-status-message">
+          <p>
+            {normalizedData.isProcessing 
+              ? 'El servicio de observabilidad está procesando datos. Por favor, espera unos momentos.'
+              : 'Los datos de métricas aún no están disponibles. El servicio puede estar inicializándose.'}
+          </p>
+          <p className="status-hint">
+            Los datos se actualizarán automáticamente en breve.
+          </p>
+        </div>
+      </section>
+    )
+  }
+
+  // Safe array filtering - alerts is guaranteed to be an array (empty if missing)
+  const criticalAlerts = normalizedData.alerts.filter(a => a?.severity === 'critical')
+  const warningAlerts = normalizedData.alerts.filter(a => a?.severity === 'warning')
 
   return (
     <section className="observability-dashboard">
@@ -146,12 +195,12 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
               <span>Mostrar umbrales</span>
             </label>
             <span className="last-update">
-              Última actualización: {new Date(data.timestamp).toLocaleTimeString()}
+              Última actualización: {new Date(normalizedData.timestamp).toLocaleTimeString()}
             </span>
           </div>
         </div>
 
-        {data.alerts_count > 0 && (
+        {normalizedData.alerts_count > 0 && (
           <div className={`alerts-summary ${criticalAlerts.length > 0 ? 'has-critical' : ''}`}>
             <div className="alert-count critical">
               🔴 {criticalAlerts.length} Críticas
@@ -163,24 +212,30 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
         )}
       </header>
 
-      {data.alerts_count > 0 && (
+      {normalizedData.alerts_count > 0 && (
         <div className="alerts-section">
           {criticalAlerts.length > 0 && (
             <div className="alerts-list critical">
               <h3>Alertas Críticas</h3>
               {criticalAlerts.map((alert, idx) => (
                 <div key={idx} className="alert-item">
-                  <div className="alert-metric">{alert.metric}</div>
+                  <div className="alert-metric">{alert?.metric ?? 'Métrica desconocida'}</div>
                   <div className="alert-details">
-                    <span className="alert-value">Valor: {alert.current_value.toFixed(2)}</span>
-                    <span className="alert-threshold">Umbral: {alert.threshold.toFixed(2)}</span>
-                    {alert.degradation_pct !== undefined && (
+                    {typeof alert?.current_value === 'number' && (
+                      <span className="alert-value">Valor: {alert.current_value.toFixed(2)}</span>
+                    )}
+                    {typeof alert?.threshold === 'number' && (
+                      <span className="alert-threshold">Umbral: {alert.threshold.toFixed(2)}</span>
+                    )}
+                    {typeof alert?.degradation_pct === 'number' && (
                       <span className="alert-degradation">
                         Degradación: {alert.degradation_pct.toFixed(1)}%
                       </span>
                     )}
                   </div>
-                  <div className="alert-message">{alert.message}</div>
+                  {alert?.message && (
+                    <div className="alert-message">{alert.message}</div>
+                  )}
                 </div>
               ))}
             </div>
@@ -191,17 +246,23 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
               <h3>Advertencias</h3>
               {warningAlerts.map((alert, idx) => (
                 <div key={idx} className="alert-item">
-                  <div className="alert-metric">{alert.metric}</div>
+                  <div className="alert-metric">{alert?.metric ?? 'Métrica desconocida'}</div>
                   <div className="alert-details">
-                    <span className="alert-value">Valor: {alert.current_value.toFixed(2)}</span>
-                    <span className="alert-threshold">Umbral: {alert.threshold.toFixed(2)}</span>
-                    {alert.degradation_pct !== undefined && (
+                    {typeof alert?.current_value === 'number' && (
+                      <span className="alert-value">Valor: {alert.current_value.toFixed(2)}</span>
+                    )}
+                    {typeof alert?.threshold === 'number' && (
+                      <span className="alert-threshold">Umbral: {alert.threshold.toFixed(2)}</span>
+                    )}
+                    {typeof alert?.degradation_pct === 'number' && (
                       <span className="alert-degradation">
                         Degradación: {alert.degradation_pct.toFixed(1)}%
                       </span>
                     )}
                   </div>
-                  <div className="alert-message">{alert.message}</div>
+                  {alert?.message && (
+                    <div className="alert-message">{alert.message}</div>
+                  )}
                 </div>
               ))}
             </div>

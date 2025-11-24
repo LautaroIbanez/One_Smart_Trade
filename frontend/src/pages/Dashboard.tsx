@@ -75,40 +75,81 @@ function Dashboard() {
         ['knowledge-article'],
       ]
 
-      // Count total queries to track progress
-      let totalQueries = 0
+      // Count total queries to track progress - initialize with explicit refetches
+      // We always have at least 2 explicit refetches (recommendation and market)
+      let totalQueries = 2 // Start with explicit refetches
       let completedQueries = 0
+
+      // Count queries before refetching
+      queryKeys.forEach((queryKey) => {
+        const queries = queryClient.getQueriesData({ queryKey })
+        totalQueries += queries.length
+      })
+
+      // Ensure totalQueries is never zero to avoid NaN
+      if (totalQueries === 0) {
+        totalQueries = 1 // Fallback to 1 to prevent division by zero
+      }
+
+      // Helper function to safely update progress
+      const updateProgress = (completed: number, total: number) => {
+        if (total > 0 && !isNaN(completed) && !isNaN(total)) {
+          const progress = Math.min(100, Math.round((completed / total) * 100))
+          if (!isNaN(progress) && progress >= 0 && progress <= 100) {
+            setRefreshProgress(progress)
+          }
+        }
+      }
 
       // Refetch all queries
       const refetchPromises = queryKeys.map(async (queryKey) => {
         const queries = queryClient.getQueriesData({ queryKey })
-        totalQueries += queries.length
         
         return Promise.all(
           queries.map(async ([key]) => {
             try {
               await queryClient.refetchQueries({ queryKey: key as any, type: 'active' })
               completedQueries++
-              setRefreshProgress(Math.min(100, Math.round((completedQueries / totalQueries) * 100)))
+              updateProgress(completedQueries, totalQueries)
             } catch (err) {
               console.error(`Error refetching query ${String(key)}:`, err)
               // Still count as completed to avoid blocking progress
               completedQueries++
-              setRefreshProgress(Math.min(100, Math.round((completedQueries / totalQueries) * 100)))
+              updateProgress(completedQueries, totalQueries)
             }
           })
         )
       })
 
       // Also refetch explicit queries from hooks that we know are active
+      // These are counted in totalQueries from the start
       const explicitRefetches = [
-        refetchRecommendation().catch(err => console.error('Error refetching recommendation:', err)),
-        refetchMarket().catch(err => console.error('Error refetching market:', err)),
+        refetchRecommendation()
+          .then(() => {
+            completedQueries++
+            updateProgress(completedQueries, totalQueries)
+          })
+          .catch(err => {
+            console.error('Error refetching recommendation:', err)
+            completedQueries++
+            updateProgress(completedQueries, totalQueries)
+          }),
+        refetchMarket()
+          .then(() => {
+            completedQueries++
+            updateProgress(completedQueries, totalQueries)
+          })
+          .catch(err => {
+            console.error('Error refetching market:', err)
+            completedQueries++
+            updateProgress(completedQueries, totalQueries)
+          }),
       ]
       
       // Wait for both explicit refetches and query key refetches
       await Promise.all([...refetchPromises, ...explicitRefetches])
       
+      // Ensure final progress is 100% and not NaN
       setRefreshProgress(100)
       setToast({
         id: Date.now().toString(),
@@ -122,6 +163,8 @@ function Dashboard() {
         type: 'error',
         message: 'Error al actualizar algunos datos. Algunos paneles pueden mostrar información desactualizada.',
       })
+      // Set progress to 100% even on error to allow UI to reset
+      setRefreshProgress(100)
     } finally {
       setIsRefreshing(false)
       // Reset progress after a short delay
@@ -188,13 +231,13 @@ function Dashboard() {
                 '🔄 Refrescar'
               )}
             </button>
-            {isRefreshing && refreshProgress > 0 && (
+            {isRefreshing && refreshProgress > 0 && !isNaN(refreshProgress) && (
               <div className="refresh-progress-bar">
                 <div 
                   className="refresh-progress-fill" 
-                  style={{ width: `${refreshProgress}%` }}
+                  style={{ width: `${Math.max(0, Math.min(100, refreshProgress))}%` }}
                   role="progressbar"
-                  aria-valuenow={refreshProgress}
+                  aria-valuenow={Math.max(0, Math.min(100, refreshProgress))}
                   aria-valuemin={0}
                   aria-valuemax={100}
                 />
