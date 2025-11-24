@@ -25,6 +25,166 @@ router = APIRouter()
 recommendation_service = RecommendationService()
 
 
+@router.post("/generate", response_model=RecommendationResponse)
+async def generate_recommendation(
+    user_id: Optional[str] = None,
+):
+    """
+    Generate a new recommendation on-demand (replay mode).
+    
+    This endpoint triggers immediate signal generation and caches the result.
+    Intended for dev/paper trading environments where on-demand generation is needed.
+    
+    The generated recommendation is stored in the database and cache, making it
+    available via the /today endpoint and other endpoints immediately.
+    
+    Args:
+        user_id: Optional user ID for personalized position sizing
+    
+    Returns:
+        Generated recommendation response
+    
+    Raises:
+        HTTPException 400: If capital is missing or validation fails
+        HTTPException 503: If data is stale/gaps or insufficient history (in production)
+        HTTPException 422: If recommendation generation fails
+    """
+    try:
+        # Force generation with allow_replay=True
+        data = await recommendation_service.get_today_recommendation(user_id=user_id, allow_replay=True)
+        if not data:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "status": "generation_failed",
+                    "reason": "Recommendation generation returned no data",
+                },
+            )
+        # Handle various error statuses similar to GET /today
+        if data.get("status") == "capital_missing":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "capital_missing",
+                    "reason": data.get("reason", "Capital validation required"),
+                    "requires_capital_input": data.get("requires_capital_input", True),
+                },
+            )
+        if data.get("status") == "data_stale":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "data_stale",
+                    "reason": data.get("reason", "Data is stale"),
+                    "interval": data.get("interval"),
+                    "latest_timestamp": data.get("latest_timestamp"),
+                    "threshold_minutes": data.get("threshold_minutes"),
+                },
+            )
+        if data.get("status") == "data_gaps":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "data_gaps",
+                    "reason": data.get("reason", "Data gaps detected"),
+                    "interval": data.get("interval"),
+                    "gaps": data.get("gaps", []),
+                    "tolerance_candles": data.get("tolerance_candles"),
+                },
+            )
+        if data.get("status") == "insufficient_history":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "insufficient_history",
+                    "reason": data.get("reason", "Insufficient performance history for risk assessment"),
+                    "required_trades": data.get("risk_metrics", {})
+                    .get("shutdown_status", {})
+                    .get("required_trades"),
+                    "lookback_trades": data.get("risk_metrics", {})
+                    .get("shutdown_status", {})
+                    .get("lookback_trades"),
+                    "message": data.get(
+                        "message",
+                        "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
+                    ),
+                },
+            )
+        if data.get("status") == "no_data":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "status": "generation_failed",
+                    "reason": data.get("reason", "No data available for generation"),
+                },
+            )
+        if data.get("status") == "invalid":
+            raise HTTPException(status_code=422, detail=data.get("reason", "Invalid recommendation"))
+        
+        # Return successful recommendation
+        return RecommendationResponse(
+            signal=data["signal"],
+            entry_range=data["entry_range"],
+            stop_loss_take_profit=data["stop_loss_take_profit"],
+            confidence=data["confidence"],
+            confidence_raw=data.get("confidence_raw", data["confidence"]),
+            current_price=data["current_price"],
+            analysis=data["analysis"],
+            indicators=data["indicators"],
+            risk_metrics=data["risk_metrics"],
+            factors=data.get("factors", {}),
+            signal_breakdown=data.get("signal_breakdown", {}),
+            timestamp=data["timestamp"],
+            status=data.get("status", "closed"),
+            opened_at=data.get("opened_at"),
+            closed_at=data.get("closed_at"),
+            exit_reason=data.get("exit_reason"),
+            exit_price=data.get("exit_price"),
+            exit_price_pct=data.get("exit_price_pct"),
+            recommended_risk_fraction=data.get("recommended_risk_fraction"),
+            recommended_position_size=data.get("recommended_position_size"),
+            risk_pct=data.get("risk_pct"),
+            capital_assumed=data.get("capital_assumed"),
+            disclaimer=data.get("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk."),
+            suggested_sizing=data.get("suggested_sizing"),
+            backtest_run_id=data.get("backtest_run_id"),
+            backtest_cagr=data.get("backtest_cagr"),
+            backtest_win_rate=data.get("backtest_win_rate"),
+            backtest_risk_reward_ratio=data.get("backtest_risk_reward_ratio"),
+            backtest_max_drawdown=data.get("backtest_max_drawdown"),
+            backtest_slippage_bps=data.get("backtest_slippage_bps"),
+            tracking_error_bps=data.get("tracking_error_bps"),
+            execution_plan=data.get("execution_plan"),
+            is_stale=data.get("is_stale", False),
+            fallback_cause=data.get("fallback_cause"),
+            original_signal_date=data.get("original_signal_date"),
+        )
+    except HTTPException:
+        raise
+    except RiskValidationError as e:
+        if e.audit_type == "daily_risk_limit_exceeded":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "daily_risk_limit_exceeded",
+                    "reason": e.reason,
+                    "context_data": e.context_data,
+                },
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "capital_missing",
+                    "reason": e.reason,
+                    "requires_capital_input": True,
+                },
+            )
+    except Exception as e:
+        logger.exception("Error generating recommendation on-demand")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/today", response_model=RecommendationResponse | RecommendationFallbackResponse)
 async def get_today_recommendation(
     user_id: Optional[str] = None,
@@ -116,6 +276,7 @@ async def get_today_recommendation(
             entry_range=data["entry_range"],
             stop_loss_take_profit=data["stop_loss_take_profit"],
             confidence=data["confidence"],
+            confidence_raw=data.get("confidence_raw", data["confidence"]),
             current_price=data["current_price"],
             analysis=data["analysis"],
             indicators=data["indicators"],
@@ -143,6 +304,9 @@ async def get_today_recommendation(
             backtest_slippage_bps=data.get("backtest_slippage_bps"),
             tracking_error_bps=data.get("tracking_error_bps"),
             execution_plan=data.get("execution_plan"),
+            is_stale=data.get("is_stale", False),
+            fallback_cause=data.get("fallback_cause"),
+            original_signal_date=data.get("original_signal_date"),
         )
     except HTTPException:
         raise

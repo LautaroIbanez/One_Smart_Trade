@@ -53,6 +53,9 @@ export interface Recommendation {
   calibration_metadata?: Record<string, unknown>
   timestamp: string
   disclaimer: string
+  is_stale?: boolean
+  fallback_cause?: string | null
+  original_signal_date?: string | null
 }
 
 export interface HistorySparklinePoint {

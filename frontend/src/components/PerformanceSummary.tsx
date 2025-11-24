@@ -1,9 +1,15 @@
-import { useMemo } from 'react'
-import { usePerformanceSummary, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { useMemo, useEffect, useState } from 'react'
+import { usePerformanceSummary, useCalculatePerformanceSummary, isTimeoutError, getErrorMessage } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
-  const { data, isLoading, error } = usePerformanceSummary()
+  const { data, isLoading, error, refetch } = usePerformanceSummary()
+  const calculatePerformance = useCalculatePerformanceSummary()
+  const [isCalculating, setIsCalculating] = useState(false)
+
+  // Check if status is degraded
+  const isDegradedStatus = data?.status === 'degraded'
+  const isDemoMetrics = data?.has_realistic_data === false && isDegradedStatus
 
   // Extract data from main payload or fallback_summary
   // Always attempt to extract partial/fallback data
@@ -45,9 +51,37 @@ function PerformanceSummary() {
     return data
   }, [data])
 
-  const isDegraded = (effectiveData as any)?._isDegraded === true
+  const isDegraded = (effectiveData as any)?._isDegraded === true || isDegradedStatus
+  const degradedMessage = isDemoMetrics 
+    ? (data?.message || 'Mostrando métricas demo. Los datos reales se están calculando en segundo plano.')
+    : ((effectiveData as any)?._degradedMessage || data?.message || 'Modo degradado')
 
-  if (isLoading) {
+  // Auto-refresh when degraded status changes to success
+  useEffect(() => {
+    if (isDegradedStatus && !isLoading) {
+      // Set up a polling interval to check for real metrics
+      const interval = setInterval(() => {
+        refetch()
+      }, 10000) // Poll every 10 seconds
+
+      return () => clearInterval(interval)
+    }
+  }, [isDegradedStatus, isLoading, refetch])
+
+  const handleCalculate = async () => {
+    setIsCalculating(true)
+    try {
+      await calculatePerformance.mutateAsync(false)
+      // After successful calculation, refetch to get the new metrics
+      await refetch()
+    } catch (err) {
+      console.error('Error calculating performance:', err)
+    } finally {
+      setIsCalculating(false)
+    }
+  }
+
+  if (isLoading || isCalculating) {
     return (
       <div className="performance-summary" role="status" aria-live="polite">
         <h2>Resumen de Performance</h2>
@@ -88,11 +122,46 @@ function PerformanceSummary() {
     <div className="performance-summary">
       <h2>Resumen de Performance (Backtesting)</h2>
       {isDegraded && (
-        <div className="degraded-mode-banner" role="status" aria-live="polite">
-          <p>
-            ⚠️ <strong>Modo degradado:</strong>{' '}
-            {(effectiveData as any)?._degradedMessage || 'Mostrando métricas almacenadas.'}
-          </p>
+        <div className="degraded-mode-banner" role="status" aria-live="polite" style={{
+          padding: '1rem',
+          backgroundColor: 'rgba(245, 158, 11, 0.1)',
+          border: '1px solid rgba(245, 158, 11, 0.3)',
+          borderRadius: '0.5rem',
+          marginBottom: '1rem',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+            <div style={{ flex: 1 }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#f59e0b' }}>
+                {isDemoMetrics ? '⚠️ Métricas Demo' : '⚠️ Modo Degradado'}
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+                {degradedMessage}
+              </p>
+              {isDemoMetrics && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
+                  Las métricas reales se están calculando en segundo plano. Esta página se actualizará automáticamente cuando estén listas.
+                </p>
+              )}
+            </div>
+            <button
+              onClick={handleCalculate}
+              type="button"
+              disabled={isCalculating}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: '#10b981',
+                color: 'white',
+                border: 'none',
+                borderRadius: '0.375rem',
+                cursor: isCalculating ? 'not-allowed' : 'pointer',
+                fontWeight: 500,
+                fontSize: '0.875rem',
+                opacity: isCalculating ? 0.6 : 1,
+              }}
+            >
+              {isCalculating ? '⏳ Calculando...' : '✨ Calcular Ahora'}
+            </button>
+          </div>
         </div>
       )}
       {hasMetrics ? (

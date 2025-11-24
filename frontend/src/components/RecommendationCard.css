@@ -821,6 +821,87 @@
   margin-top: 0.5rem;
 }
 
+/* Stale signal banner */
+.stale-signal-banner {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.15) 0%, rgba(245, 158, 11, 0.15) 100%);
+  border: 2px solid rgba(251, 191, 36, 0.5);
+  border-left: 4px solid #fbbf24;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 2px 8px rgba(251, 191, 36, 0.1);
+}
+
+.stale-signal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.stale-signal-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.stale-signal-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #fbbf24;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stale-signal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.stale-signal-message {
+  font-size: 0.9375rem;
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+  margin: 0;
+  line-height: 1.6;
+}
+
+.stale-signal-message strong {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.stale-signal-date {
+  font-size: 0.875rem;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.8));
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid #fbbf24;
+}
+
+.stale-signal-date strong {
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+  font-weight: 600;
+}
+
+.stale-signal-warning {
+  font-size: 0.875rem;
+  color: #fbbf24;
+  margin: 0;
+  padding: 0.75rem;
+  background: rgba(251, 191, 36, 0.15);
+  border-radius: 6px;
+  border-left: 3px solid #f59e0b;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.stale-signal-warning strong {
+  font-weight: 700;
+}
+
 .no-data-hint {
   font-size: 0.9375rem;
   color: var(--text-secondary, rgba(255, 255, 255, 0.8));

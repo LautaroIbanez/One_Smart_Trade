@@ -213,17 +213,20 @@ class AutoShutdownPolicy:
     def get_status(
         self,
         metrics: StrategyMetrics,
+        *,
+        allow_missing_data: bool = False,
     ) -> dict[str, Any]:
         """
         Get current shutdown policy status.
         
         Args:
             metrics: Current strategy metrics
+            allow_missing_data: If True, missing Sharpe/hit rate data won't trigger shutdown
             
         Returns:
             Dict with shutdown status, warnings, and recommendations
         """
-        should_shutdown, shutdown_reason = self.should_shutdown(metrics)
+        should_shutdown, shutdown_reason = self.should_shutdown(metrics, allow_missing_data=allow_missing_data)
         should_reduce, reduction_factor, reduce_reason = self.should_reduce_size(metrics)
         
         rolling_sharpe = metrics.rolling_sharpe(self.lookback_trades)
@@ -272,17 +275,20 @@ class AutoShutdownManager:
     def evaluate(
         self,
         metrics: StrategyMetrics,
+        *,
+        allow_missing_data: bool = False,
     ) -> dict[str, Any]:
         """
         Evaluate shutdown policy and update state.
         
         Args:
             metrics: Current strategy metrics
+            allow_missing_data: If True, missing Sharpe/hit rate data won't trigger shutdown
             
         Returns:
             Dict with evaluation results and recommendations
         """
-        status = self.policy.get_status(metrics)
+        status = self.policy.get_status(metrics, allow_missing_data=allow_missing_data)
         
         # Update shutdown state
         if status["shutdown"]:

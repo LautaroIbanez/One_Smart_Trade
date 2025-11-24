@@ -333,10 +333,18 @@ class TransparencyService:
             
             # Check if we've already warned for this summary
             if summary_key not in self._missing_metrics_warned:
-                logger.warning("Tracking error metrics missing in performance summary; cannot compute drawdown divergence")
+                logger.warning(
+                    "Tracking error metrics missing in performance summary; cannot compute drawdown divergence",
+                    extra={
+                        "summary_status": summary_payload.get("status", "unknown"),
+                        "has_fallback": fallback_summary is not None,
+                        "summary_sources_checked": len(summary_sources),
+                    }
+                )
                 self._missing_metrics_warned[summary_key] = now
             
             # Return a neutral/stale object instead of None to maintain semaphore consistency
+            # Include explicit status for frontend to handle gracefully
             is_stale = is_error_payload and fallback_summary is not None
             return DrawdownDivergence(
                 theoretical_max_dd=0.0,
@@ -345,25 +353,78 @@ class TransparencyService:
                 timestamp=datetime.utcnow().isoformat(),
                 metadata={
                     "is_stale": is_stale,
+                    "is_missing": True,  # Explicit flag for frontend
                     "reason": "tracking_error_metrics_missing",
                     "summary_status": summary_payload.get("status", "unknown"),
                     "has_fallback": fallback_summary is not None,
+                    "message": "Tracking error metrics no disponibles. Las métricas se calcularán cuando se ejecute el backtest completo.",
                 },
             )
-
+        
+        # Validate that required fields for drawdown divergence are present
         theoretical_max_dd = tracking_error_metrics.get("theoretical_max_drawdown")
         realistic_max_dd = tracking_error_metrics.get("realistic_max_drawdown")
-
-        if theoretical_max_dd in (None, 0):
-            return None
+        
+        # If theoretical_max_drawdown is missing or zero, cannot calculate divergence
+        if theoretical_max_dd is None:
+            # Already handled above with explicit return, but double-check
+            summary_key = self._create_summary_cache_key(summary_payload, fallback_summary)
+            now = datetime.utcnow().timestamp()
+            self._cleanup_missing_metrics_cache(now)
+            
+            if summary_key not in self._missing_metrics_warned:
+                logger.warning(
+                    "theoretical_max_drawdown is None in tracking_error_metrics; cannot compute drawdown divergence",
+                    extra={
+                        "tracking_error_metrics_keys": list(tracking_error_metrics.keys()) if tracking_error_metrics else [],
+                        "summary_status": summary_payload.get("status", "unknown"),
+                    }
+                )
+                self._missing_metrics_warned[summary_key] = now
+            
+            is_stale = is_error_payload and fallback_summary is not None
+            return DrawdownDivergence(
+                theoretical_max_dd=0.0,
+                realistic_max_dd=realistic_max_dd or 0.0,
+                divergence_pct=0.0,
+                timestamp=datetime.utcnow().isoformat(),
+                metadata={
+                    "is_stale": is_stale,
+                    "is_missing": True,
+                    "reason": "theoretical_max_drawdown_missing",
+                    "summary_status": summary_payload.get("status", "unknown"),
+                    "has_fallback": fallback_summary is not None,
+                    "message": "Drawdown teórico no disponible en las métricas de tracking error. Se requiere ejecutar un backtest completo.",
+                },
+            )
 
         if realistic_max_dd is None:
             realistic_max_dd = 0.0
 
+        # Calculate divergence
         try:
-            divergence_pct = abs(realistic_max_dd - theoretical_max_dd) / abs(theoretical_max_dd) * 100.0
-        except ZeroDivisionError:
-            return None
+            if abs(theoretical_max_dd) < 1e-6:  # Avoid division by zero
+                divergence_pct = 0.0
+            else:
+                divergence_pct = abs(realistic_max_dd - theoretical_max_dd) / abs(theoretical_max_dd) * 100.0
+        except (ZeroDivisionError, TypeError):
+            # Return with explicit missing status if calculation fails
+            is_stale = is_error_payload and fallback_summary is not None
+            return DrawdownDivergence(
+                theoretical_max_dd=theoretical_max_dd or 0.0,
+                realistic_max_dd=realistic_max_dd or 0.0,
+                divergence_pct=0.0,
+                timestamp=datetime.utcnow().isoformat(),
+                metadata={
+                    "is_stale": is_stale,
+                    "is_missing": True,
+                    "reason": "divergence_calculation_failed",
+                    "summary_status": summary_payload.get("status", "unknown"),
+                    "theoretical_max_dd": theoretical_max_dd,
+                    "realistic_max_dd": realistic_max_dd,
+                    "message": "No se pudo calcular la divergencia de drawdown. Valores inválidos en métricas.",
+                },
+            )
 
         return DrawdownDivergence(
             theoretical_max_dd=theoretical_max_dd,

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import axios, { AxiosError } from 'axios'
 import { getApiBaseUrl } from '../utils/apiConfig'
 import type { RecommendationHistoryResponse, SignalPerformanceResponse } from '../services/api'
@@ -186,6 +186,20 @@ export const useTodayRecommendation = () => {
   })
 }
 
+export const useGenerateRecommendation = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post('/api/v1/recommendation/generate')
+      return data
+    },
+    onSuccess: () => {
+      // Invalidate and refetch recommendation query after successful generation
+      queryClient.invalidateQueries({ queryKey: ['recommendation', 'today'] })
+    },
+  })
+}
+
 export interface RecommendationHistoryParams {
   limit?: number
   cursor?: string | null
@@ -249,18 +263,42 @@ export const useMarketData = (interval: Interval) => {
   })
 }
 
-export const usePerformanceSummary = (enabled: boolean = true) => {
+export const usePerformanceSummary = (enabled: boolean = true, warmup: boolean = false) => {
   return useQuery({
-    queryKey: ['performance', 'summary'],
+    queryKey: ['performance', 'summary', warmup],
     queryFn: async ({ signal }) => {
       const { data } = await api.get('/api/v1/performance/summary', {
-        params: { allow_stale_inputs: true },
+        params: { allow_stale_inputs: true, warmup },
         signal,
       })
       return data
     },
     staleTime: 300_000, // 5 minutes
     enabled, // Allow disabling to prevent automatic fetching
+    refetchInterval: (query) => {
+      // Auto-refresh if status is degraded (poll every 10 seconds)
+      const data = query.state.data as any
+      if (data?.status === 'degraded') {
+        return 10_000 // 10 seconds
+      }
+      return false // Don't auto-refresh otherwise
+    },
+  })
+}
+
+export const useCalculatePerformanceSummary = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (allow_stale_inputs: boolean = false) => {
+      const { data } = await api.post('/api/v1/performance/summary/calculate', null, {
+        params: { allow_stale_inputs },
+      })
+      return data
+    },
+    onSuccess: () => {
+      // Invalidate and refetch performance summary after successful calculation
+      queryClient.invalidateQueries({ queryKey: ['performance', 'summary'] })
+    },
   })
 }
 

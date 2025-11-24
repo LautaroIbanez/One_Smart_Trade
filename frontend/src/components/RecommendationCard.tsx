@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useInvalidateAll, useTodayRecommendation, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { useInvalidateAll, useTodayRecommendation, useGenerateRecommendation, isTimeoutError, getErrorMessage } from '../api/hooks'
 import RiskBadge from './RiskBadge'
 import { ContextualArticles } from './ContextualArticle'
 import './RecommendationCard.css'
@@ -10,6 +10,7 @@ function RecommendationCard() {
   const [isRetrying, setIsRetrying] = useState(false)
   const { data, isLoading, error, refetch, isRefetching } = useTodayRecommendation()
   const invalidateAll = useInvalidateAll()
+  const generateRecommendation = useGenerateRecommendation()
 
   const handleRetry = async () => {
     setIsRetrying(true)
@@ -25,11 +26,26 @@ function RecommendationCard() {
     }
   }
 
-  if (isLoading || isRefetching || isRetrying) {
+  const handleGenerate = async () => {
+    try {
+      await generateRecommendation.mutateAsync()
+      // After successful generation, refetch to get the new recommendation
+      await invalidateAll()
+      await refetch()
+    } catch (err) {
+      console.error('Error generating recommendation:', err)
+      // Error is accessible via generateRecommendation.error and will be shown in UI
+    }
+  }
+
+  const isGenerating = generateRecommendation.isPending
+  const generationError = generateRecommendation.error as any
+
+  if (isLoading || isRefetching || isRetrying || isGenerating) {
     return (
       <div className="recommendation-card loading" role="status" aria-live="polite">
         <div className="loading-spinner">
-          {isRetrying ? 'Reintentando...' : 'Cargando recomendación...'}
+          {isGenerating ? 'Generando recomendación...' : isRetrying ? 'Reintentando...' : 'Cargando recomendación...'}
         </div>
       </div>
     )
@@ -109,18 +125,50 @@ function RecommendationCard() {
           )}
           {data.allow_replay_hint && (
             <p className="no-data-replay-hint">
-              💡 <em>Nota: Puedes intentar generar una recomendación usando el parámetro `allow_replay=true` en modo desarrollo.</em>
+              💡 <em>Nota: Puedes generar una recomendación on-demand usando el botón de abajo (modo desarrollo/paper trading).</em>
             </p>
           )}
-          <button 
-            onClick={handleRetry} 
-            type="button" 
-            aria-label="Reintentar carga"
-            disabled={isRetrying}
-            className="guardrail-retry-button"
-          >
-            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
-          </button>
+          <div className="no-data-actions" style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <button 
+              onClick={handleGenerate} 
+              type="button" 
+              aria-label="Generar recomendación"
+              disabled={isGenerating || isRetrying}
+              className="guardrail-retry-button"
+              style={{ 
+                backgroundColor: isGenerating ? '#9ca3af' : '#10b981',
+              }}
+            >
+              {isGenerating ? '⏳ Generando...' : '✨ Generar Recomendación'}
+            </button>
+            <button 
+              onClick={handleRetry} 
+              type="button" 
+              aria-label="Reintentar carga"
+              disabled={isRetrying || isGenerating}
+              className="guardrail-retry-button"
+            >
+              {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+            </button>
+          </div>
+          {generationError && (
+            <div className="no-data-error" style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', borderRadius: '0.5rem', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              <p style={{ margin: 0, color: '#ef4444', fontSize: '0.875rem', fontWeight: 600 }}>
+                ❌ Error al generar recomendación
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0', color: '#fca5a5', fontSize: '0.875rem' }}>
+                {generationError?.response?.data?.detail?.message || 
+                 generationError?.response?.data?.detail?.reason || 
+                 (generationError?.response?.data?.detail && typeof generationError.response.data.detail === 'string' ? generationError.response.data.detail : null) ||
+                 (generationError instanceof Error ? generationError.message : 'Error desconocido al generar la recomendación')}
+              </p>
+              {generationError?.response?.data?.detail?.status === 'insufficient_history' && (
+                <p style={{ margin: '0.5rem 0 0 0', color: '#fca5a5', fontSize: '0.75rem', fontStyle: 'italic' }}>
+                  En modo desarrollo, asegúrate de que AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV esté habilitado para permitir generación sin historial.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     )
@@ -507,12 +555,58 @@ function RecommendationCard() {
     )
   }
 
+  // Check if this is a stale/fallback signal
+  const isStale = data.is_stale === true
+  const fallbackCause = data.fallback_cause
+  const originalSignalDate = data.original_signal_date
+
+  // Map fallback cause to user-friendly message
+  const getFallbackCauseMessage = (cause: string | null | undefined): string => {
+    if (!cause) return 'razón desconocida'
+    const causeMap: Record<string, string> = {
+      'insufficient_history': 'historial insuficiente',
+      'guardrail_blocked': 'guardrails activados',
+      'data_stale': 'datos desactualizados',
+      'data_gaps': 'gaps en los datos',
+    }
+    return causeMap[cause] || cause
+  }
+
   return (
     <div className="recommendation-card">
       <div className="recommendation-header" aria-label="Señal actual">
         <h2>Recomendación de Hoy</h2>
         <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
+      
+      {/* Stale signal banner */}
+      {isStale && (
+        <div className="stale-signal-banner" role="alert" aria-live="polite">
+          <div className="stale-signal-header">
+            <span className="stale-signal-icon">⏰</span>
+            <h3 className="stale-signal-title">Señal Histórica (Fallback)</h3>
+          </div>
+          <div className="stale-signal-content">
+            <p className="stale-signal-message">
+              Esta es una señal histórica que se está mostrando porque la señal del día es <strong>HOLD</strong> debido a{' '}
+              <strong>{getFallbackCauseMessage(fallbackCause)}</strong>.
+            </p>
+            {originalSignalDate && (
+              <p className="stale-signal-date">
+                <strong>Fecha original de la señal:</strong> {new Date(originalSignalDate).toLocaleDateString('es-ES', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric'
+                })}
+              </p>
+            )}
+            <p className="stale-signal-warning">
+              ⚠️ <strong>Advertencia:</strong> Los niveles de entrada, Stop Loss y Take Profit pueden estar desactualizados y no reflejar las condiciones actuales del mercado. Úsalos con precaución.
+            </p>
+          </div>
+        </div>
+      )}
+      
       {/* Trades remaining and daily risk indicators */}
       {(tradesRemaining !== undefined || committedRiskPct !== undefined) && (
         <div className="trade-activity-indicators">

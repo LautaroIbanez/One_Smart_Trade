@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     AUTO_SHUTDOWN_LOOKBACK_TRADES: int = 50  # Number of trades to look back for rolling metrics
     AUTO_SHUTDOWN_MIN_TRADES_FOR_SHARPE: int = 2  # Minimum trades required to compute Sharpe
     AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV: bool = True  # Allow bypass in dev/test when Sharpe data is missing (prod always requires data)
+    
+    # Paper trading fallback: Return last valid signal when HOLD due to guardrails
+    # When enabled, if today's signal is HOLD (due to guardrails like insufficient_history),
+    # the API will return the last valid BUY/SELL signal with is_stale=true for paper trading
+    HOLD_FALLBACK_TO_LAST_SIGNAL: bool = True  # Default True for dev/paper trading
 
     class Config:
         env_file = ".env"

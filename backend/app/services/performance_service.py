@@ -506,6 +506,25 @@ class PerformanceService:
             )
             metrics_status = "PASS" if guardrail_result.passed else "FAIL"
             
+            # Ensure tracking_error_metrics is always present with required fields
+            tracking_error_metrics = result.get("tracking_error_metrics") or {}
+            # Extract from metrics dict if not in result directly
+            if not tracking_error_metrics and isinstance(metrics, dict):
+                tracking_error_metrics = metrics.get("tracking_error_metrics") or {}
+            
+            # Ensure required fields for transparency service are present
+            # If not available, set to None/empty but structure must exist
+            if not tracking_error_metrics.get("theoretical_max_drawdown") and tracking_error_metrics.get("realistic_max_drawdown") is None:
+                # Try to extract from tracking_error_summary or calculate from equity curves
+                if tracking_error_summary:
+                    # Use existing tracking_error_summary if available
+                    tracking_error_metrics.setdefault("theoretical_max_drawdown", tracking_error_summary.get("theoretical_max_drawdown"))
+                    tracking_error_metrics.setdefault("realistic_max_drawdown", tracking_error_summary.get("realistic_max_drawdown"))
+                    tracking_error_metrics.setdefault("max_drawdown_divergence", tracking_error_summary.get("max_drawdown_divergence"))
+                    tracking_error_metrics.setdefault("rmse", tracking_error_summary.get("rmse"))
+                    tracking_error_metrics.setdefault("mean_deviation", tracking_error_summary.get("mean_deviation"))
+                    tracking_error_metrics.setdefault("max_divergence", tracking_error_summary.get("max_divergence"))
+            
             summary = {
                 "status": "success",
                 "metrics": metrics,
@@ -522,8 +541,8 @@ class PerformanceService:
                 "equity_theoretical": result.get("equity_theoretical", []),
                 "equity_realistic": result.get("equity_realistic", []),
                 "equity_curve": result.get("equity_curve", []),
-                "tracking_error": tracking_error_summary,
-                "tracking_error_metrics": result.get("tracking_error_metrics") or {},
+                "tracking_error": tracking_error_summary or {},
+                "tracking_error_metrics": tracking_error_metrics,  # Always include, even if empty
                 "tracking_error_series": result.get("tracking_error_series", []),
                 "tracking_error_cumulative": result.get("tracking_error_cumulative", []),
                 "has_realistic_data": bool(result.get("equity_curve_realistic") or result.get("equity_realistic")),
@@ -557,6 +576,9 @@ class PerformanceService:
             equity_curve = metrics.get("equity_curve", [])
             
             # Build response with tracking error fields
+            # Always include tracking_error_metrics field (even if empty/None) for consistency
+            tracking_error_metrics_dict = tracking_error_metrics or {}
+            
             response = {
                 "status": "success",
                 "metrics": metrics,
@@ -572,19 +594,21 @@ class PerformanceService:
                 "equity_theoretical": equity_theoretical,
                 "equity_realistic": equity_realistic,
                 "equity_curve": equity_curve,
+                # Always include tracking_error_metrics field for consistency (transparency service expects it)
+                "tracking_error_metrics": tracking_error_metrics_dict,
+                "tracking_error": {},
             }
             
-            # Include tracking error metrics if available in cached data
-            if tracking_error_metrics:
-                response["tracking_error_metrics"] = tracking_error_metrics
-                # Also populate tracking_error summary if we can derive it from metrics
-                # The tracking_error_metrics contains fields like max_drawdown_divergence, rmse, etc.
-                # which can be used for transparency calculations
+            # Populate tracking_error summary from metrics if available
+            if tracking_error_metrics_dict:
                 response["tracking_error"] = {
-                    "max_drawdown_divergence": tracking_error_metrics.get("max_drawdown_divergence"),
-                    "rmse": tracking_error_metrics.get("rmse"),
-                    "mean_deviation": tracking_error_metrics.get("mean_deviation"),
-                    "max_divergence": tracking_error_metrics.get("max_divergence"),
+                    "max_drawdown_divergence": tracking_error_metrics_dict.get("max_drawdown_divergence"),
+                    "rmse": tracking_error_metrics_dict.get("rmse"),
+                    "mean_deviation": tracking_error_metrics_dict.get("mean_deviation"),
+                    "max_divergence": tracking_error_metrics_dict.get("max_divergence"),
+                    "annualized_tracking_error": tracking_error_metrics_dict.get("annualized_tracking_error"),
+                    "theoretical_max_drawdown": tracking_error_metrics_dict.get("theoretical_max_drawdown"),
+                    "realistic_max_drawdown": tracking_error_metrics_dict.get("realistic_max_drawdown"),
                 }
             
             return response

@@ -174,6 +174,18 @@ class RecommendationResponse(BaseModel):
         None,
         description="Manual execution playbook with operational window, order type, sizing, and instructions",
     )
+    is_stale: bool = Field(
+        default=False,
+        description="True if this is a stale/fallback signal (last valid BUY/SELL when current is HOLD)",
+    )
+    fallback_cause: str | None = Field(
+        default=None,
+        description="Reason why fallback was used (e.g., 'insufficient_history', 'data_stale')",
+    )
+    original_signal_date: str | None = Field(
+        default=None,
+        description="Date of the original signal (when is_stale=True, this is when the signal was generated)",
+    )
 
 
 class RecommendationFallbackResponse(BaseModel):

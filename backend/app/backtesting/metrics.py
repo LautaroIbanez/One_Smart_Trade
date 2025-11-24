@@ -150,8 +150,18 @@ def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, fl
     }
     
     # Add tracking error metrics if available
+    # Always include tracking_error_metrics field (even if empty) for consistency
     tracking_error = backtest_result.get("tracking_error")
-    if tracking_error and isinstance(tracking_error, dict):
+    tracking_error_metrics = backtest_result.get("tracking_error_metrics")
+    
+    # Initialize with empty dict to ensure field always exists
+    metrics_dict["tracking_error_metrics"] = {}
+    
+    if tracking_error_metrics and isinstance(tracking_error_metrics, dict):
+        # Use tracking_error_metrics directly if available (from engine)
+        metrics_dict["tracking_error_metrics"] = tracking_error_metrics.copy()
+    elif tracking_error and isinstance(tracking_error, dict):
+        # Fallback: build from tracking_error dict
         metrics_dict["tracking_error_metrics"] = {
             "mean_deviation": tracking_error.get("mean_deviation", 0.0),
             "max_divergence": tracking_error.get("max_divergence", 0.0),
@@ -162,7 +172,29 @@ def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, fl
             "cumulative_tracking_error": tracking_error.get("cumulative_tracking_error", 0.0),
             "p95_divergence": tracking_error.get("p95_divergence", 0.0),
             "p99_divergence": tracking_error.get("p99_divergence", 0.0),
+            # Ensure theoretical_max_drawdown and realistic_max_drawdown are included
+            "theoretical_max_drawdown": tracking_error.get("theoretical_max_drawdown"),
+            "realistic_max_drawdown": tracking_error.get("realistic_max_drawdown"),
         }
+    
+    # If still missing theoretical_max_drawdown/realistic_max_drawdown, try to calculate from equity curves
+    if not metrics_dict["tracking_error_metrics"].get("theoretical_max_drawdown"):
+        equity_theoretical = backtest_result.get("equity_theoretical") or backtest_result.get("equity_curve", [])
+        equity_realistic = backtest_result.get("equity_realistic") or backtest_result.get("equity_curve", [])
+        
+        if equity_theoretical and len(equity_theoretical) > 1:
+            theoretical_peak = max(equity_theoretical)
+            theoretical_current = equity_theoretical[-1]
+            if theoretical_peak > 0:
+                theoretical_dd = ((theoretical_peak - theoretical_current) / theoretical_peak) * 100.0
+                metrics_dict["tracking_error_metrics"]["theoretical_max_drawdown"] = theoretical_dd
+        
+        if equity_realistic and len(equity_realistic) > 1:
+            realistic_peak = max(equity_realistic)
+            realistic_current = equity_realistic[-1]
+            if realistic_peak > 0:
+                realistic_dd = ((realistic_peak - realistic_current) / realistic_peak) * 100.0
+                metrics_dict["tracking_error_metrics"]["realistic_max_drawdown"] = realistic_dd
     
     # Add advanced metrics report if returns_per_period available
     returns_per_period = backtest_result.get("returns_per_period", {})

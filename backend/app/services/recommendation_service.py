@@ -97,6 +97,9 @@ class RecommendationService:
             risk_budget_pct=1.0,
             max_drawdown_pct=50.0,
         )
+        # Flags for tracking shutdown bypass in dev/test
+        self._shutdown_bypass_active = False
+        self._shutdown_bypass_reason: str | None = None
 
     def _schedule_async_task(self, coro) -> None:
         """Schedule an async coroutine from either sync or async contexts."""
@@ -1070,9 +1073,12 @@ class RecommendationService:
         except Exception as e:
             logger.error(f"Failed to log risk limit incident: {e}", exc_info=True)
 
-    async def _check_shutdown_status(self) -> dict[str, Any]:
+    async def _check_shutdown_status(self, *, allow_missing_data: bool = False) -> dict[str, Any]:
         """
         Check shutdown status using production metrics.
+        
+        Args:
+            allow_missing_data: If True, missing Sharpe/hit rate data won't trigger shutdown
         
         Returns:
             Dict with shutdown status and metrics
@@ -1118,10 +1124,8 @@ class RecommendationService:
                 equity_curve=equity_curve,
             )
             
-            # Evaluate shutdown policy
-            # Note: allow_missing_data is handled at the caller level (generate_recommendation)
-            # based on environment and settings
-            return self.shutdown_manager.evaluate(strategy_metrics)
+            # Evaluate shutdown policy with allow_missing_data flag
+            return self.shutdown_manager.evaluate(strategy_metrics, allow_missing_data=allow_missing_data)
         finally:
             if not self.session:
                 db.close()
@@ -1386,20 +1390,21 @@ class RecommendationService:
         self._current_committed_risk_pct = committed_risk_pct
 
         # Check auto-shutdown before generating recommendation
+        # Determine if we should allow bypass for missing data in dev/test
+        env = os.getenv("ENV", "dev").lower()
+        is_dev = env in ("dev", "test", "development")
+        allow_missing_data = is_dev and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
+        
         if self.shutdown_manager:
-            shutdown_status = await self._check_shutdown_status()
+            shutdown_status = await self._check_shutdown_status(allow_missing_data=allow_missing_data)
             if shutdown_status["shutdown"]:
-                # Check if this is a "missing data" case in dev environment
-                env = os.getenv("ENV", "dev").lower()
-                is_dev = env in ("dev", "test", "development")
+                # Check if this is a "missing data" case that we're bypassing
                 is_missing_data = "Insufficient performance history" in shutdown_status["shutdown_reason"]
-                allow_bypass = is_dev and is_missing_data and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
                 
-                if allow_bypass:
-                    # Even in dev, fail early with clear error when data is missing
-                    # This prevents confusing downstream failures and provides better feedback
-                    logger.error(
-                        "Cannot generate recommendation: insufficient performance history",
+                if allow_missing_data and is_missing_data:
+                    # In dev/test with allow_missing_data=True, continue but log and mark bypass
+                    logger.warning(
+                        "Bypassing insufficient_history guardrail in dev/test environment",
                         extra={
                             "environment": env,
                             "shutdown_reason": shutdown_status["shutdown_reason"],
@@ -1408,23 +1413,15 @@ class RecommendationService:
                             "lookback_trades": shutdown_status.get("lookback_trades"),
                             "required_trades": settings.AUTO_SHUTDOWN_LOOKBACK_TRADES,
                             "min_trades_for_sharpe": settings.AUTO_SHUTDOWN_MIN_TRADES_FOR_SHARPE,
-                            "note": "Recommendation generation requires sufficient trade history for risk assessment. "
-                                   "Generate recommendations and execute trades to build history.",
+                            "bypass_active": True,
+                            "note": "Recommendation generation continuing despite missing trade history. "
+                                   "This bypass is only active in dev/test. Production always requires data.",
                         },
                     )
-                    # Return early with clear error status instead of continuing and failing downstream
-                    return {
-                        "status": "insufficient_history",
-                        "reason": shutdown_status["shutdown_reason"],
-                        "signal": "HOLD",
-                        "risk_metrics": {
-                            "guardrail_reason": "insufficient_history",
-                            "shutdown_status": shutdown_status,
-                        },
-                        "message": "Cannot generate recommendation: insufficient performance history. "
-                                 "The system requires trade history to assess risk and performance. "
-                                 "Please execute trades to build the required history.",
-                    }
+                    # Continue with generation, but we'll mark it in the response metadata
+                    # Store bypass flag for later use in response
+                    self._shutdown_bypass_active = True
+                    self._shutdown_bypass_reason = shutdown_status["shutdown_reason"]
                 else:
                     # Production or real breach: block recommendation
                     logger.error(
@@ -1467,6 +1464,10 @@ class RecommendationService:
                             "message": shutdown_status["shutdown_reason"],
                         },
                     )
+            else:
+                # Not shutdown, ensure bypass flag is cleared
+                self._shutdown_bypass_active = False
+                self._shutdown_bypass_reason = None
             
             # Apply size reduction if needed
             if shutdown_status["size_reduction"]:
@@ -2083,11 +2084,32 @@ class RecommendationService:
         
         # Add shutdown status if applicable
         if self.shutdown_manager:
-            shutdown_status = await self._check_shutdown_status()
+            # Check shutdown status (reuse cached if available, but check again to be safe)
+            env = os.getenv("ENV", "dev").lower()
+            is_dev = env in ("dev", "test", "development")
+            allow_missing_data = is_dev and settings.AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV
+            shutdown_status = await self._check_shutdown_status(allow_missing_data=allow_missing_data)
             if isinstance(result, dict):
                 result["shutdown_status"] = shutdown_status
                 if shutdown_status["size_reduction"]:
                     result["size_reduction_factor"] = shutdown_status["size_reduction_factor"]
+        
+        # Add bypass metadata if active (for dev/test environments)
+        if isinstance(result, dict) and self._shutdown_bypass_active:
+            result["metadata"] = result.get("metadata", {})
+            result["metadata"]["shutdown_bypass"] = {
+                "active": True,
+                "reason": self._shutdown_bypass_reason,
+                "environment": os.getenv("ENV", "dev").lower(),
+                "warning": "This recommendation was generated with insufficient_history guardrail bypassed. "
+                          "Production always requires sufficient trade history. "
+                          "Metrics may not be reliable without historical data.",
+            }
+            # Add warning to risk_metrics as well
+            if "risk_metrics" not in result:
+                result["risk_metrics"] = {}
+            result["risk_metrics"]["shutdown_bypass_active"] = True
+            result["risk_metrics"]["shutdown_bypass_reason"] = self._shutdown_bypass_reason
         
         return result
 
@@ -2158,6 +2180,65 @@ class RecommendationService:
                             today,
                         )
                     result = self._cache_result(rec, user_id=user_id)
+                    
+                    # Check if signal is HOLD due to guardrails and fallback is enabled
+                    signal = result.get("signal", "").upper()
+                    if signal == "HOLD" and settings.HOLD_FALLBACK_TO_LAST_SIGNAL:
+                        # Check if HOLD is due to guardrails
+                        risk_metrics = result.get("risk_metrics", {})
+                        guardrail_reason = risk_metrics.get("guardrail_reason")
+                        shutdown_status = risk_metrics.get("shutdown_status", {})
+                        shutdown_reason = shutdown_status.get("reason") if isinstance(shutdown_status, dict) else None
+                        
+                        # Determine fallback cause
+                        fallback_cause = None
+                        if shutdown_reason == "insufficient_history":
+                            fallback_cause = "insufficient_history"
+                        elif guardrail_reason:
+                            fallback_cause = "guardrail_blocked"
+                        elif result.get("status") == "data_stale":
+                            fallback_cause = "data_stale"
+                        elif result.get("status") == "data_gaps":
+                            fallback_cause = "data_gaps"
+                        
+                        # If HOLD is due to guardrails, try to return last valid signal
+                        if fallback_cause:
+                            logger.info(
+                                f"Today's signal is HOLD due to {fallback_cause}, attempting fallback to last valid signal",
+                                extra={"fallback_cause": fallback_cause}
+                            )
+                            last_valid = self._get_last_valid_signal(exclude_hold=True)
+                            if last_valid:
+                                # Mark as stale and add metadata
+                                last_valid["is_stale"] = True
+                                last_valid["fallback_cause"] = fallback_cause
+                                last_valid["original_signal_date"] = last_valid.get("timestamp", "").split("T")[0] if last_valid.get("timestamp") else None
+                                
+                                # Update current_price to today's price if available in HOLD signal
+                                if result.get("current_price"):
+                                    last_valid["current_price"] = result.get("current_price")
+                                    last_valid["market_timestamp"] = result.get("market_timestamp")
+                                    last_valid["spot_source"] = result.get("spot_source")
+                                
+                                # Add warning to analysis
+                                original_analysis = last_valid.get("analysis", "")
+                                warning_msg = f"\n\n⚠️ NOTA: Esta es una señal histórica del {last_valid.get('original_signal_date', 'pasado')} (señal original: HOLD debido a {fallback_cause}). Los niveles de entrada y SL/TP pueden estar desactualizados."
+                                last_valid["analysis"] = original_analysis + warning_msg
+                                
+                                logger.info(
+                                    f"Returning stale signal {last_valid.get('signal')} from {last_valid.get('original_signal_date')} as fallback",
+                                    extra={
+                                        "fallback_cause": fallback_cause,
+                                        "original_date": last_valid.get("original_signal_date"),
+                                        "stale_signal": last_valid.get("signal"),
+                                    }
+                                )
+                                return self._apply_recency_metadata(last_valid, as_of=rec_date, today=today)
+                            else:
+                                logger.warning(
+                                    f"HOLD signal due to {fallback_cause}, but no valid fallback signal found"
+                                )
+                    
                     return self._apply_recency_metadata(result, as_of=rec_date, today=today)
             finally:
                 db.close()
@@ -3001,6 +3082,47 @@ class RecommendationService:
                     return exit_price, "take_profit", exit_at, pnl_pct
 
         return None
+
+    def _get_last_valid_signal(self, exclude_hold: bool = True) -> Optional[dict[str, Any]]:
+        """
+        Get the last valid BUY/SELL signal from history (excluding HOLD by default).
+        
+        Args:
+            exclude_hold: If True, only return BUY/SELL signals (default: True)
+        
+        Returns:
+            Recommendation dict or None if no valid signal found
+        """
+        with SessionLocal() as db:
+            try:
+                # Query for last recommendation excluding HOLD
+                stmt = select(RecommendationORM).order_by(
+                    desc(RecommendationORM.created_at), 
+                    desc(RecommendationORM.id)
+                ).limit(50)  # Check last 50 recommendations
+                
+                if exclude_hold:
+                    stmt = stmt.where(RecommendationORM.signal.in_(["BUY", "SELL"]))
+                
+                recs = list(db.execute(stmt).scalars().all())
+                
+                # Filter for valid actionable signals with required fields
+                for rec in recs:
+                    if rec.signal in ("BUY", "SELL"):
+                        # Ensure it has required fields for actionable signal
+                        if (rec.entry_range and rec.stop_loss_take_profit and 
+                            rec.current_price and rec.analysis):
+                            result = self._from_orm(rec)
+                            logger.info(
+                                f"Found last valid {rec.signal} signal from {rec.created_at.date()}",
+                                extra={"signal": rec.signal, "date": rec.created_at.date().isoformat()}
+                            )
+                            return result
+                
+                logger.debug("No valid BUY/SELL signal found in recent history")
+                return None
+            finally:
+                db.close()
 
     def _from_orm(self, r) -> dict[str, Any]:
         """Convert ORM model to API response dict."""

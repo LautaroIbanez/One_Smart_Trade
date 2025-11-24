@@ -65,10 +65,86 @@ async def _background_backfill_summary(*, allow_stale_inputs: bool = False) -> N
         )
 
 
+@router.post("/summary/calculate", response_model=PerformanceSummaryResponse)
+async def calculate_performance_summary(
+    allow_stale_inputs: bool = Query(False, description="Allow stale data inputs for calculation"),
+):
+    """
+    Force calculation of performance metrics (run backtest in foreground).
+    
+    This endpoint triggers immediate backtest execution and caching,
+    intended for administrative use or warmup scenarios.
+    
+    Returns:
+        Performance summary with real metrics (blocks until calculation completes)
+    
+    Raises:
+        HTTPException 503: If data is stale or has gaps (unless allow_stale_inputs=True)
+        HTTPException 500: If calculation fails
+    """
+    try:
+        logger.info("Forcing performance summary calculation (admin endpoint)")
+        
+        # Run backtest in foreground
+        backfill_result = await performance_service._run_backtest_and_cache(
+            allow_stale_inputs=allow_stale_inputs
+        )
+        
+        if not backfill_result:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "status": "calculation_failed",
+                    "message": "Performance calculation completed but no result was generated. Check logs for details.",
+                },
+            )
+        
+        # Get the newly cached summary
+        result = await performance_service.get_summary(
+            allow_stale_inputs=allow_stale_inputs,
+            trigger_backfill=False
+        )
+        
+        # Process result similar to GET /summary
+        metrics_dict = result.get("metrics", {})
+        has_metrics = bool(metrics_dict and len(metrics_dict) > 0)
+        
+        if not has_metrics:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "status": "calculation_failed",
+                    "message": "Performance calculation completed but no metrics were generated.",
+                },
+            )
+        
+        # Build successful response (reuse logic from GET endpoint)
+        # This will be processed by the normal response building logic below
+        # For now, return the result directly
+        if result.get("status") == "error":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": result.get("error_type", "error"),
+                    "message": result.get("message", "Performance calculation failed"),
+                },
+            )
+        
+        # Return the calculated summary
+        return PerformanceSummaryResponse.model_validate(result)
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error forcing performance summary calculation")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/summary", response_model=PerformanceSummaryResponse)
 async def get_performance_summary(
     background_tasks: BackgroundTasks,
-    allow_stale_inputs: bool = Query(False, description="Allow stale data inputs to return degraded results with fallback summary")
+    allow_stale_inputs: bool = Query(False, description="Allow stale data inputs to return degraded results with fallback summary"),
+    warmup: bool = Query(False, description="Force foreground calculation on cache miss (warmup mode)"),
 ):
     """
     Get backtesting performance summary with metrics and disclaimer.
@@ -81,47 +157,92 @@ async def get_performance_summary(
     - Enqueues background backfill to refresh cache asynchronously
     - Never blocks UI requests on full backtest execution
     - Response includes metadata: served_from_cache, generated_at
+    
+    When warmup=True:
+    - If cache miss detected, runs backtest in foreground (blocking)
+    - Ensures first request gets real metrics instead of demo
+    - Use this for initial setup or when forcing recalculation
     """
     try:
         result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs, trigger_backfill=True)
         
-        # Check for cache miss with empty metrics - return degraded response immediately
+        # Check for cache miss with empty metrics
         metadata = result.get("metadata", {})
         cache_miss = metadata.get("cache_miss", False)
         metrics_dict = result.get("metrics", {})
         has_metrics = bool(metrics_dict and len(metrics_dict) > 0)
         
-        # If cache miss and no metrics, return degraded response with demo metrics
+        # If cache miss and no metrics, handle based on warmup mode
         if cache_miss and not has_metrics:
-            logger.info(
-                "Cache miss detected with no metrics - returning degraded response with demo metrics",
-                extra={"cache_miss": cache_miss, "has_metrics": has_metrics},
-            )
-            # Trigger background backfill immediately (non-blocking)
-            background_tasks.add_task(
-                _background_backfill_summary,
-                allow_stale_inputs=allow_stale_inputs
-            )
-            logger.info("Enqueued background backfill for performance summary (cache miss)")
+            if warmup:
+                # WARMUP MODE: Run backtest in foreground to get real metrics
+                logger.info(
+                    "Cache miss detected in warmup mode - running backtest in foreground",
+                    extra={"cache_miss": cache_miss, "has_metrics": has_metrics, "warmup": warmup},
+                )
+                try:
+                    # Run backtest synchronously
+                    backfill_result = await performance_service._run_backtest_and_cache(
+                        allow_stale_inputs=allow_stale_inputs
+                    )
+                    if backfill_result:
+                        # Get the newly cached summary
+                        result = await performance_service.get_summary(
+                            allow_stale_inputs=allow_stale_inputs, 
+                            trigger_backfill=False
+                        )
+                        # Re-check if we now have metrics
+                        metrics_dict = result.get("metrics", {})
+                        has_metrics = bool(metrics_dict and len(metrics_dict) > 0)
+                        if has_metrics:
+                            logger.info("Warmup backtest completed successfully - returning real metrics")
+                            # Continue to normal response processing below
+                        else:
+                            logger.warning("Warmup backtest completed but no metrics in result")
+                            # Fall through to degraded response
+                    else:
+                        logger.warning("Warmup backtest failed - returning degraded response")
+                        # Fall through to degraded response
+                except Exception as exc:
+                    logger.exception(
+                        "Warmup backtest failed with exception - returning degraded response",
+                        extra={"error": str(exc), "error_type": type(exc).__name__},
+                    )
+                    # Fall through to degraded response
             
-            # Return degraded response with demo metrics
-            demo_metrics = _create_demo_metrics()
-            response = PerformanceSummaryResponse(
-                status="degraded",
-                message="No backtest cache available; showing demo metrics. Real metrics will be available after background backfill completes.",
-                metrics=demo_metrics,
-                period=None,
-                report_path=None,
-                tracking_error_rmse=None,
-                tracking_error_max=None,
-                orderbook_fallback_events=None,
-                has_realistic_data=False,
-                tracking_error_metrics=None,
-                tracking_error_series=None,
-                tracking_error_cumulative=None,
-                chart_banners=["No backtest data available - showing demo metrics"],
-            )
-            return response.model_dump()
+            # If still no metrics after warmup attempt, or warmup=False, return degraded
+            if not has_metrics:
+                logger.info(
+                    "Cache miss detected with no metrics - returning degraded response with demo metrics",
+                    extra={"cache_miss": cache_miss, "has_metrics": has_metrics, "warmup": warmup},
+                )
+                # Trigger background backfill immediately (non-blocking)
+                if not warmup:  # Don't trigger background if we just tried warmup
+                    background_tasks.add_task(
+                        _background_backfill_summary,
+                        allow_stale_inputs=allow_stale_inputs
+                    )
+                    logger.info("Enqueued background backfill for performance summary (cache miss)")
+                
+                # Return degraded response with demo metrics
+                demo_metrics = _create_demo_metrics()
+                response = PerformanceSummaryResponse(
+                    status="degraded",
+                    message="No backtest cache available; showing demo metrics. Real metrics will be available after background backfill completes." + 
+                           (" Use warmup=true to calculate immediately." if not warmup else ""),
+                    metrics=demo_metrics,
+                    period=None,
+                    report_path=None,
+                    tracking_error_rmse=None,
+                    tracking_error_max=None,
+                    orderbook_fallback_events=None,
+                    has_realistic_data=False,
+                    tracking_error_metrics=None,
+                    tracking_error_series=None,
+                    tracking_error_cumulative=None,
+                    chart_banners=["No backtest data available - showing demo metrics"],
+                )
+                return response.model_dump()
         
         # Server-side guardrail: When allow_stale_inputs=True, enqueue background backfill if needed
         # This ensures cache stays fresh without blocking the response
