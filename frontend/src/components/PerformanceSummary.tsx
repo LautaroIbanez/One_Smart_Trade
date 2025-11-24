@@ -1,5 +1,5 @@
 import { useMemo, useEffect, useState } from 'react'
-import { usePerformanceSummary, useCalculatePerformanceSummary, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { usePerformanceSummary, useCalculatePerformanceSummary, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
@@ -99,8 +99,16 @@ function PerformanceSummary() {
         <div className="error-message">
           {isTimeout ? (
             <div className="timeout-error">
-              <p><strong>⏱️ Tiempo de espera excedido</strong></p>
-              <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+              <p><strong>⏱️ Tiempo de espera excedido (25s)</strong></p>
+              <p>El backend puede estar ejecutando el pipeline inicial o ingiriendo datos.</p>
+              <div style={{ marginTop: '1rem', fontSize: '0.875rem' }}>
+                <p><strong>Pasos para solucionar:</strong></p>
+                <ol style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li>Espera a que termine el pipeline (puede tardar varios minutos)</li>
+                  <li>Verifica en los logs del backend que el pipeline haya finalizado</li>
+                  <li>Después de que termine, recarga esta página (F5 o Ctrl+R)</li>
+                </ol>
+              </div>
             </div>
           ) : (
             <div className="error-details">

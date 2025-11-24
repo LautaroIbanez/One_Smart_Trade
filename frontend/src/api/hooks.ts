@@ -50,27 +50,69 @@ api.interceptors.response.use(
     }
     
     // Enhance timeout errors with distinct error information
+    // Timeouts can indicate: 1) Backend is slow/processing, 2) URL is wrong (requests never reach backend)
     if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      const timeoutError = new Error('La solicitud ha excedido el tiempo de espera. El backend está ocupado procesando la solicitud.')
+      const requestedUrl = error.config?.url || error.request?.responseURL || 'unknown'
+      const baseUrl = getApiBaseUrl() || 'Vite proxy (localhost:8000)'
+      
+      const timeoutError = new Error(
+        'La solicitud ha excedido el tiempo de espera (25s). ' +
+        'El backend puede estar ejecutando el pipeline inicial o ingiriendo datos. Espera a que termine el pipeline (puede tardar varios minutos) y luego recarga la página. Si el problema persiste, verifica que la URL del backend esté correctamente configurada.'
+      )
       // @ts-ignore - custom properties for error handling
       timeoutError.isTimeout = true
       // @ts-ignore
       timeoutError.originalError = error
       // @ts-ignore
       timeoutError.code = 'TIMEOUT'
+      // @ts-ignore
+      timeoutError.requestedUrl = requestedUrl
+      // @ts-ignore
+      timeoutError.baseUrl = baseUrl
       throw timeoutError
     }
     
-    // Enhance network errors
+    // Enhance network errors - distinguish between backend down vs URL misconfiguration
     if (error.code === 'ERR_NETWORK' || !error.response) {
-      const networkError = new Error('No se pudo conectar con el backend. Verifica tu conexión a internet.')
+      // Check if this might be a URL configuration issue
+      const requestedUrl = error.config?.url || error.request?.responseURL || 'unknown'
+      const baseUrl = getApiBaseUrl() || 'Vite proxy (localhost:8000)'
+      
+      const networkError = new Error(
+        `No se pudo conectar con el backend en ${baseUrl}. ` +
+        `El backend puede estar apagado o la URL puede estar mal configurada.`
+      )
       // @ts-ignore
       networkError.isNetworkError = true
+      // @ts-ignore
+      networkError.isBackendDown = true // Flag to indicate backend is likely down
       // @ts-ignore
       networkError.originalError = error
       // @ts-ignore
       networkError.code = 'NETWORK_ERROR'
+      // @ts-ignore
+      networkError.requestedUrl = requestedUrl
+      // @ts-ignore
+      networkError.baseUrl = baseUrl
       throw networkError
+    }
+    
+    // Check for 404/503 which might indicate empty database
+    if (error.response?.status === 404 || error.response?.status === 503) {
+      const detail = error.response?.data?.detail
+      // Check if it's a specific error that suggests empty database (no_data, insufficient_history)
+      if (detail && typeof detail === 'object' && (detail.status === 'no_data' || detail.status === 'insufficient_history')) {
+        const emptyDbError = new Error('La base de datos está vacía o no hay datos suficientes.')
+        // @ts-ignore
+        emptyDbError.isEmptyDatabase = true
+        // @ts-ignore
+        emptyDbError.originalError = error
+        // @ts-ignore
+        emptyDbError.code = 'EMPTY_DATABASE'
+        // @ts-ignore
+        emptyDbError.detail = detail
+        throw emptyDbError
+      }
     }
     
     // Re-throw other errors as-is
@@ -113,6 +155,37 @@ export function isNetworkError(error: unknown): boolean {
 }
 
 /**
+ * Check if an error indicates the backend is down
+ */
+export function isBackendDown(error: unknown): boolean {
+  if (error instanceof Error) {
+    // @ts-ignore
+    return error.isBackendDown === true
+  }
+  if (axios.isAxiosError(error)) {
+    return error.code === 'ERR_NETWORK' || !error.response
+  }
+  return false
+}
+
+/**
+ * Check if an error indicates empty database
+ */
+export function isEmptyDatabase(error: unknown): boolean {
+  if (error instanceof Error) {
+    // @ts-ignore
+    return error.isEmptyDatabase === true || error.code === 'EMPTY_DATABASE'
+  }
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    if (detail && typeof detail === 'object') {
+      return detail.status === 'no_data' || detail.status === 'insufficient_history'
+    }
+  }
+  return false
+}
+
+/**
  * Check if an error indicates the operation is still processing
  */
 export function isProcessingError(error: unknown): boolean {
@@ -131,7 +204,13 @@ export function isProcessingError(error: unknown): boolean {
  */
 export function getErrorMessage(error: unknown): string {
   if (isTimeoutError(error)) {
-    return 'La solicitud ha excedido el tiempo de espera. El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.'
+    return 'La solicitud ha excedido el tiempo de espera (25s). El backend puede estar ejecutando el pipeline inicial o ingiriendo datos. Espera a que termine el pipeline (puede tardar varios minutos) y luego recarga la página.'
+  }
+  if (isEmptyDatabase(error)) {
+    return 'La base de datos está vacía o no hay datos suficientes. Ejecuta el pipeline de ingestión para poblar los datos.'
+  }
+  if (isBackendDown(error)) {
+    return 'El backend no está corriendo o no se puede conectar. Asegúrate de que el servidor esté activo.'
   }
   if (isNetworkError(error)) {
     return 'No se pudo conectar con el backend. Verifica tu conexión a internet e intenta nuevamente.'
@@ -159,23 +238,25 @@ export const useTodayRecommendation = () => {
         const { data } = await api.get('/api/v1/recommendation/today', { signal })
         return data
       } catch (error: any) {
-        // Handle HTTP 400 with capital_missing or daily_risk_limit_exceeded status
-        if (error?.response?.status === 400 && error?.response?.data?.detail) {
+        // Handle HTTP 503/400 with guardrail states
+        // These are VALID guardrail states, not errors - return them as data so UI can display them informatively
+        // Guardrails protect signal quality by blocking generation when data is stale, incomplete, or insufficient
+        if ((error?.response?.status === 503 || error?.response?.status === 400) && error?.response?.data?.detail) {
           const detail = error.response.data.detail
-          // If detail is an object with status capital_missing or daily_risk_limit_exceeded, return it as data
-          if (typeof detail === 'object' && (detail.status === 'capital_missing' || detail.status === 'daily_risk_limit_exceeded')) {
-            return detail
-          }
-        }
-        // Handle HTTP 503 with data_stale, data_gaps or insufficient_history status
-        if (error?.response?.status === 503 && error?.response?.data?.detail) {
-          const detail = error.response.data.detail
-          // If detail is an object with status data_stale, data_gaps, or insufficient_history return it as data
-          if (
-            typeof detail === 'object' &&
-            (detail.status === 'data_stale' || detail.status === 'data_gaps' || detail.status === 'insufficient_history')
-          ) {
-            return detail
+          // If detail is an object with a guardrail status, return it as data (not error)
+          if (typeof detail === 'object' && detail.status) {
+            const guardrailStatuses = [
+              'data_stale',
+              'data_gaps', 
+              'insufficient_history',
+              'capital_missing',
+              'daily_risk_limit_exceeded',
+            ]
+            if (guardrailStatuses.includes(detail.status)) {
+              // Return guardrail state as valid data - these are not errors, they're informative states
+              // The UI will display these with appropriate instructions, not as red error screens
+              return detail
+            }
           }
         }
         // Re-throw other errors (including timeout errors)

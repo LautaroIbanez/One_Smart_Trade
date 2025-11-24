@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useInvalidateAll, useTodayRecommendation, useGenerateRecommendation, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { useInvalidateAll, useTodayRecommendation, useGenerateRecommendation, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
 import RiskBadge from './RiskBadge'
 import { ContextualArticles } from './ContextualArticle'
 import './RecommendationCard.css'
@@ -53,13 +53,74 @@ function RecommendationCard() {
 
   if (error) {
     const isTimeout = isTimeoutError(error)
+    const backendDown = isBackendDown(error)
+    const emptyDb = isEmptyDatabase(error)
     const errorMessage = getErrorMessage(error)
+    
     return (
       <div className="recommendation-card error" role="alert" aria-live="assertive">
         {isTimeout ? (
           <>
-            <p><strong>⏱️ Tiempo de espera excedido</strong></p>
-            <p>El backend está ocupado procesando la solicitud. Por favor, intenta nuevamente en unos momentos.</p>
+            <p><strong>⏱️ Tiempo de espera excedido (25s)</strong></p>
+            <p>El backend puede estar ejecutando el pipeline inicial o ingiriendo datos.</p>
+            <div className="error-instructions" style={{ marginTop: '1rem' }}>
+              <p><strong>Pasos para solucionar:</strong></p>
+              <ol>
+                <li>Espera a que termine el pipeline (puede tardar varios minutos)</li>
+                <li>Verifica en los logs del backend que el pipeline haya finalizado</li>
+                <li>Después de que termine, recarga esta página (F5 o Ctrl+R)</li>
+                <li>Si el timeout persiste después de que el pipeline termine, verifica:</li>
+                <li style={{ marginLeft: '1.5rem', listStyle: 'none' }}>
+                  <ul style={{ marginTop: '0.5rem' }}>
+                    <li>El backend está corriendo y accesible</li>
+                    <li>La URL del backend está correcta (verifica en DevTools &gt; Network)</li>
+                    <li>Si usas otro host/puerto, configura <code>VITE_API_BASE_URL</code> en <code>frontend/.env</code></li>
+                    <li>Reinicia Vite después de cambiar <code>.env</code>: <code>pnpm run dev</code></li>
+                  </ul>
+                </li>
+              </ol>
+            </div>
+          </>
+        ) : backendDown ? (
+          <>
+            <p><strong>🔴 Backend no disponible</strong></p>
+            <p>{errorMessage}</p>
+            <div className="error-instructions">
+              <p><strong>Pasos para solucionar:</strong></p>
+              <ol>
+                <li>Verifica que el backend esté corriendo en la URL configurada</li>
+                <li>Arranca el backend en <code>backend/</code> ejecutando:</li>
+                <li className="code-block">./start-dev.ps1</li>
+                <li>o</li>
+                <li className="code-block">uvicorn app.main:app --reload --port 8000</li>
+                <li>Espera a ver el log de "Application startup complete"</li>
+                <li>Si el backend está en otro host/puerto, configura <code>VITE_API_BASE_URL</code> en <code>frontend/.env</code>:</li>
+                <li className="code-block">VITE_API_BASE_URL=http://127.0.0.1:8000</li>
+                <li className="code-block"># O para backend remoto: VITE_API_BASE_URL=https://api.example.com</li>
+                <li>Después de cambiar <code>.env</code>, reinicia Vite: <code>pnpm run dev</code></li>
+                <li>Verifica en DevTools &gt; Network que las peticiones van a la URL correcta</li>
+                <li>Refresca esta página después de que el backend esté corriendo</li>
+              </ol>
+            </div>
+          </>
+        ) : emptyDb ? (
+          <>
+            <p><strong>📭 Base de datos vacía</strong></p>
+            <p>{errorMessage}</p>
+            <div className="error-instructions">
+              <p><strong>Pasos para solucionar:</strong></p>
+              <ol>
+                <li>Arranca el backend si no está corriendo (ver instrucciones arriba)</li>
+                <li>Ejecuta el pipeline de ingestión para poblar la base de datos:</li>
+                <li className="code-block">python scripts/populate_database.py</li>
+                <li>o</li>
+                <li className="code-block">poetry run python -m app.scripts.populate_database</li>
+                <li>Espera a que termine la ingestión de datos</li>
+                <li>Verifica que los endpoints devuelven datos con:</li>
+                <li className="code-block">python scripts/verify_endpoints.py</li>
+                <li>Refresca esta página después de poblar los datos</li>
+              </ol>
+            </div>
           </>
         ) : (
           <>
@@ -236,12 +297,12 @@ function RecommendationCard() {
     )
   }
 
-  // Handle data_stale status
+  // Handle data_stale status - This is a valid guardrail state, not an error
   if (data.status === 'data_stale') {
     return (
       <div className="recommendation-card guardrail-blocked">
         <div className="guardrail-blocked-header">
-          <h2>⏰ Datos Desactualizados</h2>
+          <h2>⏰ Datos Desactualizados (Guardrail Activo)</h2>
         </div>
         <div className="guardrail-blocked-content">
           <p className="guardrail-message">{data.reason || "Los datos de mercado están desactualizados"}</p>
@@ -253,29 +314,56 @@ function RecommendationCard() {
                 Última actualización: {new Date(data.latest_timestamp).toLocaleString('es-ES')}
               </>
             ) : (
-              "Los datos de mercado necesitan ser actualizados antes de generar una recomendación. El backfill se está ejecutando en segundo plano."
+              "Los datos de mercado necesitan ser actualizados antes de generar una recomendación."
             )}
           </p>
-          <button 
-            onClick={handleRetry} 
-            type="button" 
-            aria-label="Reintentar después del backfill"
-            disabled={isRetrying}
-            className="guardrail-retry-button"
-          >
-            {isRetrying ? 'Reintentando...' : '🔄 Reintentar (después del backfill)'}
-          </button>
+          <div className="guardrail-instructions">
+            <p><strong>Pasos para solucionar:</strong></p>
+            <ol>
+              <li>Verifica que la última ingesta completó sin errores</li>
+              <li>Si hay data_stale, reejecuta el pipeline para refrescar los datos:</li>
+              <li className="code-block">python scripts/populate_database.py</li>
+              <li>o verifica manualmente con:</li>
+              <li className="code-block">curl http://localhost:8000/api/v1/recommendation/today</li>
+              <li>Espera a que termine el backfill (puede tardar varios minutos)</li>
+              <li>Refresca esta página después de que los datos estén actualizados</li>
+            </ol>
+            <p className="guardrail-note">
+              💡 <strong>Nota:</strong> Este es un guardrail válido del sistema. La señal no se genera cuando los datos no están frescos para proteger la calidad de las recomendaciones.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+            <button 
+              onClick={handleRetry} 
+              type="button" 
+              aria-label="Reintentar después del backfill"
+              disabled={isRetrying}
+              className="guardrail-retry-button"
+            >
+              {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+            </button>
+            <button 
+              onClick={handleGenerate} 
+              type="button" 
+              aria-label="Forzar generación (puede ignorar guardrails)"
+              disabled={isGenerating}
+              className="guardrail-retry-button"
+              style={{ backgroundColor: '#10b981' }}
+            >
+              {isGenerating ? 'Generando...' : '✨ Forzar Generación'}
+            </button>
+          </div>
         </div>
       </div>
     )
   }
 
-  // Handle data_gaps status
+  // Handle data_gaps status - This is a valid guardrail state, not an error
   if (data.status === 'data_gaps') {
     return (
       <div className="recommendation-card guardrail-blocked">
         <div className="guardrail-blocked-header">
-          <h2>📊 Faltan Datos (Gaps Detectados)</h2>
+          <h2>📊 Faltan Datos (Gaps Detectados - Guardrail Activo)</h2>
         </div>
         <div className="guardrail-blocked-content">
           <p className="guardrail-message">{data.reason || "Se detectaron gaps en los datos de mercado"}</p>
@@ -290,32 +378,58 @@ function RecommendationCard() {
               "Faltan velas en los datos de mercado. Ejecuta la ingesta de datos para completar la información necesaria."
             )}
           </p>
-          <button 
-            onClick={handleRetry} 
-            type="button" 
-            aria-label="Reintentar después de la ingesta"
-            disabled={isRetrying}
-            className="guardrail-retry-button"
-          >
-            {isRetrying ? 'Reintentando...' : '🔄 Reintentar (después de la ingesta)'}
-          </button>
+          <div className="guardrail-instructions">
+            <p><strong>Pasos para solucionar:</strong></p>
+            <ol>
+              <li>Verifica que la última ingesta completó sin errores</li>
+              <li>Si hay data_gaps, reejecuta el pipeline para parchear los huecos:</li>
+              <li className="code-block">python scripts/populate_database.py</li>
+              <li>Espera a que termine la ingestión de datos</li>
+              <li>Verifica que los endpoints devuelven datos con:</li>
+              <li className="code-block">python scripts/verify_endpoints.py</li>
+              <li>Refresca esta página después de que los gaps estén resueltos</li>
+            </ol>
+            <p className="guardrail-note">
+              💡 <strong>Nota:</strong> Este es un guardrail válido del sistema. Los gaps en los datos pueden afectar la calidad de las señales, por lo que se bloquea la generación hasta resolverlos.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+            <button 
+              onClick={handleRetry} 
+              type="button" 
+              aria-label="Reintentar después de la ingesta"
+              disabled={isRetrying}
+              className="guardrail-retry-button"
+            >
+              {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+            </button>
+            <button 
+              onClick={handleGenerate} 
+              type="button" 
+              aria-label="Forzar generación"
+              disabled={isGenerating}
+              className="guardrail-retry-button"
+              style={{ backgroundColor: '#10b981' }}
+            >
+              {isGenerating ? 'Generando...' : '✨ Forzar Generación'}
+            </button>
+          </div>
         </div>
       </div>
     )
   }
 
-  // Handle insufficient history guardrail
+  // Handle insufficient history guardrail - This is a valid guardrail state, not an error
   if (data.status === 'insufficient_history') {
     return (
       <div className="recommendation-card guardrail-blocked">
         <div className="guardrail-blocked-header">
-          <h2>📉 Historial insuficiente</h2>
+          <h2>📉 Historial Insuficiente (Guardrail Activo)</h2>
         </div>
         <div className="guardrail-blocked-content">
-          <p className="guardrail-message">{data.reason || 'No hay trades suficientes para calcular riesgo y rendimiento.'}</p>
+          <p className="guardrail-message">{data.reason || data.message || 'No hay trades suficientes para calcular riesgo y rendimiento.'}</p>
           <p className="guardrail-explanation">
-            {data.message ||
-              'Ejecuta algunas operaciones o carga historial de trades para habilitar las métricas de riesgo necesarias.'}
+            El sistema necesita historial de trades suficiente para calcular métricas de riesgo (Sharpe, hit rate) antes de generar señales accionables.
           </p>
           <ul className="guardrail-details">
             {data.required_trades && (
@@ -329,15 +443,44 @@ function RecommendationCard() {
               </li>
             )}
           </ul>
-          <button
-            onClick={handleRetry}
-            type="button"
-            aria-label="Reintentar después de cargar historial"
-            disabled={isRetrying}
-            className="guardrail-retry-button"
-          >
-            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
-          </button>
+          <div className="guardrail-instructions">
+            <p><strong>Pasos para solucionar:</strong></p>
+            <ol>
+              <li>En las primeras ejecuciones, el sistema no tendrá histórico suficiente</li>
+              <li>Ejecuta el pipeline para generar recomendaciones y acumular historial:</li>
+              <li className="code-block">python scripts/populate_database.py</li>
+              <li>Espera a que termine (puede tardar varios minutos en primeras ejecuciones)</li>
+              <li>El sistema devolverá HOLD/503 hasta acumular suficientes datos</li>
+              <li>Verifica el estado con:</li>
+              <li className="code-block">curl http://localhost:8000/api/v1/recommendation/today</li>
+              <li>Revisa el JSON de <code>status/reason</code> para confirmar el progreso</li>
+              <li>Una vez haya historial suficiente, las señales BUY/SELL comenzarán a generarse</li>
+            </ol>
+            <p className="guardrail-note">
+              💡 <strong>Nota:</strong> Este es un guardrail válido del sistema. En modo desarrollo/paper trading, puedes habilitar <code>HOLD_FALLBACK_TO_LAST_SIGNAL</code> para mostrar la última señal válida mientras se acumula historial.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+            <button
+              onClick={handleRetry}
+              type="button"
+              aria-label="Reintentar después de cargar historial"
+              disabled={isRetrying}
+              className="guardrail-retry-button"
+            >
+              {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+            </button>
+            <button
+              onClick={handleGenerate}
+              type="button"
+              aria-label="Forzar generación (puede usar fallback si está habilitado)"
+              disabled={isGenerating}
+              className="guardrail-retry-button"
+              style={{ backgroundColor: '#10b981' }}
+            >
+              {isGenerating ? 'Generando...' : '✨ Forzar Generación'}
+            </button>
+          </div>
         </div>
       </div>
     )

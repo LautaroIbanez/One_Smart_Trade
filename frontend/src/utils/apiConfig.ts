@@ -19,6 +19,11 @@
  *   - Same origin (prod): Leave VITE_API_BASE_URL unset → uses window.location.origin
  *   - Different host: VITE_API_BASE_URL=https://api.example.com
  *   - Different port: VITE_API_BASE_URL=http://localhost:8000
+ * 
+ * Configuration:
+ *   - Copy frontend/.env.example to frontend/.env and set VITE_API_BASE_URL if backend is not at localhost:8000
+ *   - After changing .env, restart the Vite dev server (pnpm run dev)
+ *   - Verify configuration in DevTools > Network tab - requests to /api/v1/* should go to configured backend
  */
 export function getApiBaseUrl(): string {
   // If VITE_API_BASE_URL is explicitly set, use it
@@ -34,5 +39,17 @@ export function getApiBaseUrl(): string {
   
   // Fallback to empty string for relative URLs (works with Vite proxy in dev)
   return ''
+}
+
+/**
+ * Get the effective API base URL for debugging/logging purposes
+ * Shows what URL is actually being used, helpful for troubleshooting configuration issues
+ */
+export function getEffectiveApiBaseUrl(): string {
+  const url = getApiBaseUrl()
+  if (!url) {
+    return 'Using Vite proxy (relative URLs → http://localhost:8000)'
+  }
+  return url
 }
 
