@@ -71,6 +71,61 @@ function RecommendationCard() {
     )
   }
 
+  // Type guard: Check if this is a fallback response (no_data) without required fields
+  const isFallbackResponse = (data: any): boolean => {
+    return data?.status === 'no_data' || 
+           !data?.signal || 
+           typeof data?.current_price !== 'number' || 
+           !data?.entry_range || 
+           !data?.stop_loss_take_profit
+  }
+
+  // Handle no_data status early - before accessing fields that don't exist in fallback response
+  if (data.status === 'no_data' || isFallbackResponse(data)) {
+    return (
+      <div className="recommendation-card no-data-state">
+        <div className="no-data-header">
+          <h2>📊 Sin Recomendación Disponible</h2>
+        </div>
+        <div className="no-data-content">
+          <p className="no-data-message">
+            {data.reason || 'Aún no se ha generado una recomendación para hoy.'}
+          </p>
+          {data.data_recency && (
+            <div className="no-data-details">
+              {data.data_recency.status === 'missing' ? (
+                <p className="no-data-hint">
+                  No hay recomendaciones generadas aún. Las recomendaciones se generan automáticamente todos los días a las 12:00 UTC.
+                </p>
+              ) : data.data_recency.status === 'stale' && data.data_recency.days_since_release !== undefined ? (
+                <p className="no-data-hint">
+                  La última recomendación disponible es de hace {data.data_recency.days_since_release} día(s).
+                  {data.latest_available_date && (
+                    <> Última disponible: {new Date(data.latest_available_date).toLocaleDateString('es-ES')}</>
+                  )}
+                </p>
+              ) : null}
+            </div>
+          )}
+          {data.allow_replay_hint && (
+            <p className="no-data-replay-hint">
+              💡 <em>Nota: Puedes intentar generar una recomendación usando el parámetro `allow_replay=true` en modo desarrollo.</em>
+            </p>
+          )}
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar carga"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   const formatTimeRemaining = (seconds: number) => {
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
@@ -420,13 +475,43 @@ function RecommendationCard() {
   const dailyRiskLimitPct = tradeActivity?.daily_risk_limit_pct
   const dailyRiskWarningPct = tradeActivity?.daily_risk_warning_pct
 
-  const signalClass = `signal-${data.signal.toLowerCase()}`
+  // Validate required fields exist before using them (type guard already ensures this, but extra safety)
+  const signal = data.signal ?? 'HOLD'
+  const signalClass = signal ? `signal-${signal.toLowerCase()}` : 'signal-hold'
+  const currentPrice = data.current_price ?? 0
+  const entryRange = data.entry_range ?? { min: 0, max: 0 }
+  const stopLossTakeProfit = data.stop_loss_take_profit ?? { stop_loss: 0, take_profit: 0 }
+
+  // If we somehow still don't have the minimum required data, show fallback
+  if (!signal || !data.current_price || !data.entry_range || !data.stop_loss_take_profit) {
+    return (
+      <div className="recommendation-card no-data-state">
+        <div className="no-data-header">
+          <h2>⚠️ Datos Incompletos</h2>
+        </div>
+        <div className="no-data-content">
+          <p className="no-data-message">
+            La recomendación no incluye todos los datos necesarios para mostrarse.
+          </p>
+          <button 
+            onClick={handleRetry} 
+            type="button" 
+            aria-label="Reintentar carga"
+            disabled={isRetrying}
+            className="guardrail-retry-button"
+          >
+            {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="recommendation-card">
       <div className="recommendation-header" aria-label="Señal actual">
         <h2>Recomendación de Hoy</h2>
-        <span className={`signal-badge ${signalClass}`}>{data.signal}</span>
+        <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
       {/* Trades remaining and daily risk indicators */}
       {(tradesRemaining !== undefined || committedRiskPct !== undefined) && (
@@ -452,22 +537,22 @@ function RecommendationCard() {
       <div className="recommendation-content">
         <div className="price-info">
           <span className="label">Precio Actual:</span>
-          <span className="value">${data.current_price.toLocaleString()}</span>
+          <span className="value">${currentPrice.toLocaleString()}</span>
         </div>
         <div className="entry-range">
           <span className="label">Rango de Entrada:</span>
           <span className="value">
-            ${data.entry_range.min.toLocaleString()} - ${data.entry_range.max.toLocaleString()}
+            ${entryRange.min.toLocaleString()} - ${entryRange.max.toLocaleString()}
           </span>
         </div>
         <div className="sl-tp">
           <div className="sl-tp-item">
             <span className="label">Stop Loss:</span>
-            <span className="value danger">${data.stop_loss_take_profit.stop_loss.toLocaleString()}</span>
+            <span className="value danger">${stopLossTakeProfit.stop_loss.toLocaleString()}</span>
           </div>
           <div className="sl-tp-item">
             <span className="label">Take Profit:</span>
-            <span className="value success">${data.stop_loss_take_profit.take_profit.toLocaleString()}</span>
+            <span className="value success">${stopLossTakeProfit.take_profit.toLocaleString()}</span>
           </div>
         </div>
         <div className="confidence-group">
