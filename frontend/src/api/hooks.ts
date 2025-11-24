@@ -190,7 +190,16 @@ export const useGenerateRecommendation = () => {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async () => {
-      const { data } = await api.post('/api/v1/recommendation/generate')
+      // Problem 1: Increase timeout for generation endpoint (can take > 25s)
+      // Create a separate axios instance with longer timeout for this operation
+      const { data } = await axios.post(
+        `${API_BASE_URL}/api/v1/recommendation/generate`,
+        {},
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 120_000, // 120 seconds for heavy computation (backtest + guardrails)
+        }
+      )
       return data
     },
     onSuccess: () => {

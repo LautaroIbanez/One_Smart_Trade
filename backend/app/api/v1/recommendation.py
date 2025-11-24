@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.database import SessionLocal
 from app.core.logging import logger
+from app.core.config import settings
 from app.core.exceptions import DataGapError, RiskValidationError
 from app.db.models import RecommendationORM
 from app.models.recommendation import (
@@ -93,23 +94,48 @@ async def generate_recommendation(
                 },
             )
         if data.get("status") == "insufficient_history":
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "status": "insufficient_history",
-                    "reason": data.get("reason", "Insufficient performance history for risk assessment"),
-                    "required_trades": data.get("risk_metrics", {})
-                    .get("shutdown_status", {})
-                    .get("required_trades"),
-                    "lookback_trades": data.get("risk_metrics", {})
-                    .get("shutdown_status", {})
-                    .get("lookback_trades"),
-                    "message": data.get(
-                        "message",
-                        "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
-                    ),
-                },
-            )
+            # Problem 2: If fallback is enabled, don't raise 503 - let the service's fallback logic handle it
+            # The service's get_today_recommendation should already apply fallback when HOLD_FALLBACK_TO_LAST_SIGNAL is True
+            # If we're here, the signal is likely HOLD and we should check if fallback was applied
+            signal = data.get("signal", "").upper()
+            
+            # If fallback is enabled and we have a valid signal (even if stale), allow it through
+            if settings.HOLD_FALLBACK_TO_LAST_SIGNAL and signal in ("BUY", "SELL", "HOLD"):
+                # Check if fallback was applied (is_stale indicates last valid signal was used)
+                if data.get("is_stale") or (signal in ("BUY", "SELL")):
+                    # Fallback was applied or we have a valid signal - continue to return it
+                    logger.info(
+                        f"insufficient_history detected but fallback enabled; returning {'stale' if data.get('is_stale') else 'current'} signal",
+                        extra={"signal": signal, "is_stale": data.get("is_stale")}
+                    )
+                    # Continue to return the response below - don't raise 503
+                elif signal == "HOLD":
+                    # HOLD signal without fallback - check if we can still return it with metadata
+                    # This allows UI to show the HOLD state instead of error
+                    logger.info(
+                        "insufficient_history: returning HOLD signal with metadata for UI display",
+                        extra={"signal": signal}
+                    )
+                    # Continue to return HOLD response with metadata
+            else:
+                # Fallback not enabled - raise 503 as before
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "status": "insufficient_history",
+                        "reason": data.get("reason", "Insufficient performance history for risk assessment"),
+                        "required_trades": data.get("risk_metrics", {})
+                        .get("shutdown_status", {})
+                        .get("required_trades"),
+                        "lookback_trades": data.get("risk_metrics", {})
+                        .get("shutdown_status", {})
+                        .get("lookback_trades"),
+                        "message": data.get(
+                            "message",
+                            "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
+                        ),
+                    },
+                )
         if data.get("status") == "no_data":
             raise HTTPException(
                 status_code=422,

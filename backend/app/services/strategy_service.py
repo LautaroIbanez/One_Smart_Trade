@@ -79,6 +79,14 @@ class StrategyService:
                 "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True},
             }
             self._apply_conservative_defaults(signal, market_df, regime)
+            # Problem 3: Ensure defaults meet RR threshold before applying guardrails
+            # _apply_conservative_defaults already calls _adjust_tp_for_min_rr if needed
+            # But double-check RR meets threshold before guardrails to avoid unnecessary HOLD
+            risk_metrics = signal.setdefault("risk_metrics", {})
+            rr_ratio = risk_metrics.get("risk_reward_ratio", 0.0)
+            if rr_ratio > 0 and rr_ratio < self.rr_floor:
+                # Final adjustment if still below threshold
+                self._adjust_tp_for_min_rr(signal, self.rr_floor)
             # Still apply guardrails even with conservative defaults to check RR threshold
             guardrail_reason = await self._apply_guardrails(signal, fallback_config, resolved_symbol)
         else:
