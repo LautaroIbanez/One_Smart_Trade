@@ -27,6 +27,7 @@ from app.db.models import PerformancePeriodicORM, PeriodicHorizon
 from sqlalchemy import select
 import os
 import pandas as pd
+from app.core import pipeline_state
 
 # Initialize logging
 setup_logging()
@@ -922,30 +923,26 @@ async def _run_initial_pipeline_if_needed() -> dict[str, Any]:
     
     if should_run:
         logger.info(f"Running initial pipeline on startup: {reason}")
-        try:
-            await job_daily_pipeline()
-            # Only log success if no exception was raised (pipeline completed successfully)
-            logger.info("Initial pipeline completed successfully")
-            return {
-                "status": "success",
-                "reason": reason,
-                "date": today,
-            }
-        except Exception as exc:
-            logger.error(f"Initial pipeline failed: {exc}", exc_info=True)
-            # Return structured degraded payload instead of raising
-            # This allows the app to start and serve a friendly "demo data only" response
-            degraded_payload = {
-                "status": "degraded",
-                "reason": f"Pipeline failed: {str(exc)}",
-                "date": today,
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "demo_data_available": settings.DEV_FAKE_DATA,
-            }
-            if settings.DEV_FAKE_DATA:
-                degraded_payload["message"] = "Demo data mode: Using seeded data instead of live ingestion"
-            return degraded_payload
+
+        pipeline_state.mark_running(reason=reason, date=today)
+
+        async def _run_pipeline_background() -> None:
+            try:
+                await job_daily_pipeline()
+                logger.info("Initial pipeline completed successfully")
+                pipeline_state.mark_completed(reason=reason, date=today)
+            except Exception as exc:
+                logger.error(f"Initial pipeline failed: {exc}", exc_info=True)
+                pipeline_state.mark_failed(str(exc), reason=reason, date=today, error_type=type(exc).__name__)
+
+        # Schedule the heavy pipeline asynchronously to avoid blocking the event loop
+        asyncio.create_task(_run_pipeline_background())
+
+        return {
+            "status": "scheduled",
+            "reason": reason,
+            "date": today,
+        }
     else:
         logger.info(f"Skipping initial pipeline: recommendation for {today} exists and AUTO_RUN_PIPELINE_ON_START is disabled")
         return {

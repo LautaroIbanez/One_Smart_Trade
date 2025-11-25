@@ -4,7 +4,7 @@ from typing import Optional
 from io import BytesIO
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.core.database import SessionLocal
 from app.core.logging import logger
@@ -21,6 +21,7 @@ from app.services.recommendation_service import RecommendationService
 from app.backtesting.risk_sizing import RiskSizer
 from app.utils.worm_storage import WormRepository
 from sqlalchemy import select
+from app.core import pipeline_state
 
 router = APIRouter()
 recommendation_service = RecommendationService()
@@ -260,6 +261,19 @@ async def get_today_recommendation(
             },
         )
     
+    # If the startup pipeline is still running, surface a non-blocking status so the frontend
+    # can keep polling instead of timing out.
+    if pipeline_state.is_running():
+        status = pipeline_state.get_status().to_dict()
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "processing",
+                "reason": "Startup pipeline en ejecución. Vuelve a intentar en unos momentos.",
+                "pipeline": status,
+            },
+        )
+
     try:
         data = await recommendation_service.get_today_recommendation(user_id=user_id, allow_replay=allow_replay)
         if not data:

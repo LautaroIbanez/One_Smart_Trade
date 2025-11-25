@@ -3,10 +3,12 @@ from typing import Literal
 import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 from app.services.market_service import MarketService
 from app.utils.cache import get_cached, set_cached
 from app.observability.metrics import ENDPOINT_RESPONSE_TIME
+from app.core import pipeline_state
 
 router = APIRouter()
 market_service = MarketService()
@@ -22,6 +24,18 @@ async def get_market_data(interval: Interval):
     Results are cached for 60 seconds to reduce load on data curation layer.
     """
     start_time = time.time()
+
+    # If the startup pipeline is warming up, return a fast 202 so the frontend can poll
+    # instead of waiting for a 25s timeout while the pipeline holds resources.
+    if pipeline_state.is_running():
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "processing",
+                "reason": "Startup pipeline en ejecución. Vuelve a intentar en unos momentos.",
+                "pipeline": pipeline_state.get_status().to_dict(),
+            },
+        )
     
     # Check cache
     cached_result = get_cached("market_data", interval=interval, ttl_seconds=60.0)

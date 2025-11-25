@@ -13,6 +13,8 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
   timeout: REQUEST_TIMEOUT_MS,
+  // Treat HTTP 202 (processing) as an error so we can surface a clear message and retry
+  validateStatus: (status) => status >= 200 && status < 300 && status !== 202,
 })
 
 // Request interceptor: Add AbortController signal to each request
