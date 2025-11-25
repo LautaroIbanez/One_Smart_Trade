@@ -275,6 +275,43 @@ async def job_daily_pipeline() -> None:
         }
         logger.info(f"Pipeline {run_id}: Curation completed in {curation_duration:.2f}s")
         
+        # Step 2.5: Performance backfill (after ingestion/curation, before signal generation)
+        # This ensures performance cache is populated even if signal generation fails
+        performance_start = time.time()
+        try:
+            from app.services.performance_service import get_performance_service
+            perf_service = get_performance_service()
+            logger.info(f"Pipeline {run_id}: Starting performance backfill (warmup)")
+            # Run backtest in foreground to populate cache
+            backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=False)
+            performance_duration = time.time() - performance_start
+            if backfill_result:
+                outcome_details["steps"]["performance_backfill"] = {
+                    "status": "success",
+                    "duration_seconds": round(performance_duration, 2),
+                    "cache_populated": True,
+                }
+                logger.info(f"Pipeline {run_id}: Performance backfill completed in {performance_duration:.2f}s")
+            else:
+                outcome_details["steps"]["performance_backfill"] = {
+                    "status": "failed",
+                    "duration_seconds": round(performance_duration, 2),
+                    "cache_populated": False,
+                    "reason": "Backtest completed but no result generated",
+                }
+                logger.warning(f"Pipeline {run_id}: Performance backfill completed but no result generated")
+        except Exception as perf_exc:
+            performance_duration = time.time() - performance_start
+            outcome_details["steps"]["performance_backfill"] = {
+                "status": "failed",
+                "duration_seconds": round(performance_duration, 2),
+                "cache_populated": False,
+                "error": str(perf_exc),
+                "error_type": type(perf_exc).__name__,
+            }
+            # Don't fail the pipeline if performance backfill fails - log warning and continue
+            logger.warning(f"Pipeline {run_id}: Performance backfill failed - {perf_exc}", exc_info=True)
+        
         # Step 3: Signal generation
         signal_start = time.time()
         service = RecommendationService(session=db)

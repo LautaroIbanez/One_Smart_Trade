@@ -103,9 +103,12 @@ class SignalDataProvider:
         # Validate data freshness if requested
         if validate_freshness:
             try:
-                # Use relaxed thresholds in dev mode
+                # Use relaxed thresholds in dev mode (only for intraday intervals)
+                # For 1d/1w, interval-specific thresholds are used automatically
                 threshold_minutes = settings.DEV_DATA_FRESHNESS_THRESHOLD_MINUTES if settings.DEV_FAKE_DATA else None
+                # 1d uses interval-specific threshold (48 hours by default), allowing yesterday's candle
                 self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol, threshold_minutes=threshold_minutes)
+                # 1h uses default threshold (90 minutes) or dev threshold if in dev mode
                 self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol, threshold_minutes=threshold_minutes)
                 logger.debug("Data freshness validation passed")
             except DataFreshnessError as exc:
@@ -114,9 +117,12 @@ class SignalDataProvider:
         
         # Validate data gaps if requested
         if validate_gaps:
-            # Use relaxed thresholds in dev mode
+            # Use relaxed thresholds in dev mode (only for intraday intervals)
+            # For 1d/1w, interval-specific tolerances are used automatically
             tolerance_candles = settings.DEV_DATA_GAP_TOLERANCE_CANDLES if settings.DEV_FAKE_DATA else None
+            # 1d uses interval-specific tolerance (15 candles by default), more lenient for historical data
             self.curation.validate_data_gaps("1d", venue=self.venue, symbol=self.symbol, tolerance_candles=tolerance_candles)
+            # 1h uses default tolerance (2 candles) or dev tolerance if in dev mode
             self.curation.validate_data_gaps("1h", venue=self.venue, symbol=self.symbol, tolerance_candles=tolerance_candles)
             logger.debug("Data gap validation passed")
         

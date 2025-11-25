@@ -39,6 +39,9 @@ async def generate_recommendation(
     The generated recommendation is stored in the database and cache, making it
     available via the /today endpoint and other endpoints immediately.
     
+    **Security**: This endpoint only works if ALLOW_MANUAL_REPLAY is enabled in configuration.
+    In production, this should be False to rely on scheduled jobs only.
+    
     Args:
         user_id: Optional user ID for personalized position sizing
     
@@ -46,10 +49,23 @@ async def generate_recommendation(
         Generated recommendation response
     
     Raises:
+        HTTPException 403: If manual replay is not enabled in configuration
         HTTPException 400: If capital is missing or validation fails
         HTTPException 503: If data is stale/gaps or insufficient history (in production)
         HTTPException 422: If recommendation generation fails
     """
+    from app.core.config import settings
+    
+    # Validate that manual replay is enabled
+    if not settings.ALLOW_MANUAL_REPLAY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "manual_replay_disabled",
+                "reason": "Manual replay mode is not enabled. Set ALLOW_MANUAL_REPLAY=True in configuration to enable on-demand generation.",
+            },
+        )
+    
     try:
         # Force generation with allow_replay=True
         data = await recommendation_service.get_today_recommendation(user_id=user_id, allow_replay=True)
@@ -225,10 +241,25 @@ async def get_today_recommendation(
     By default, only returns existing recommendations from the scheduled daily pipeline.
     Signal generation is deterministic and runs via the scheduled job at 12:00 UTC.
 
+    **Security**: The allow_replay parameter only works if ALLOW_MANUAL_REPLAY is enabled in configuration.
+    In production, this should be False to rely on scheduled jobs only.
+
     Args:
         user_id: Optional user ID for personalized position sizing based on portfolio data
-        allow_replay: If True, allows on-demand generation (for replays/testing only)
+        allow_replay: If True, allows on-demand generation (for replays/testing only) - requires ALLOW_MANUAL_REPLAY=True
     """
+    from app.core.config import settings
+    
+    # Validate that manual replay is enabled if requested
+    if allow_replay and not settings.ALLOW_MANUAL_REPLAY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "manual_replay_disabled",
+                "reason": "Manual replay mode is not enabled. Set ALLOW_MANUAL_REPLAY=True in configuration to enable on-demand generation.",
+            },
+        )
+    
     try:
         data = await recommendation_service.get_today_recommendation(user_id=user_id, allow_replay=allow_replay)
         if not data:

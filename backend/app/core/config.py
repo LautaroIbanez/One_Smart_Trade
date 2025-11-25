@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     
     # Admin API key for operational endpoints (set via ADMIN_API_KEY env var)
     ADMIN_API_KEY: str | None = None  # If set, required for admin endpoints like triggering pipeline
+    
+    # Manual replay mode: Allow on-demand recommendation generation (for testing/paper trading)
+    # Set to True in dev/demo environments to enable manual signal generation
+    # In production, this should be False to rely on scheduled jobs only
+    ALLOW_MANUAL_REPLAY: bool = False  # Default False - only allow manual generation in dev/demo
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
@@ -90,10 +95,18 @@ class Settings(BaseSettings):
     EXPORT_ROLES_ALLOWED: str = "admin,analyst,read-only"
 
     # Data freshness validation
+    # Default threshold for intraday intervals (1m, 5m, 15m, 1h, etc.)
     DATA_FRESHNESS_THRESHOLD_MINUTES: int = 90  # Maximum age (minutes) for latest candles before rejecting recommendation
+    # Thresholds for longer intervals (overrides default for daily/weekly)
+    DATA_FRESHNESS_THRESHOLD_1D_HOURS: int = 48  # Maximum age (hours) for 1d candles (allows yesterday's candle)
+    DATA_FRESHNESS_THRESHOLD_1W_DAYS: int = 7  # Maximum age (days) for 1w candles (allows last week's candle)
     
     # Data gap validation
+    # Default tolerance for intraday intervals (1h, 15m, 5m, 1m, etc.)
     DATA_GAP_TOLERANCE_CANDLES: int = 2  # Maximum number of missing candles allowed before blocking recommendation
+    # Tolerances for longer intervals (overrides default for daily/weekly)
+    DATA_GAP_TOLERANCE_1D_CANDLES: int = 15  # Maximum missing candles for 1d (more lenient for historical data)
+    DATA_GAP_TOLERANCE_1W_CANDLES: int = 4  # Maximum missing candles for 1w (allows for monthly gaps)
     DATA_GAP_CHECK_LOOKBACK_DAYS: int = 30  # Number of days to check for gaps before generating recommendation
     
     # Liquidity guardrails

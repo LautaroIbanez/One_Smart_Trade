@@ -334,6 +334,37 @@ class DataCuration:
             raise FileNotFoundError(f"Curated dataset not found for {interval} (venue={venue}, symbol={symbol})")
         return read_parquet(path)
 
+    @staticmethod
+    def _get_freshness_threshold_minutes(interval: str, threshold_minutes: int | None = None) -> int:
+        """
+        Get the appropriate freshness threshold in minutes for the given interval.
+        
+        Uses interval-specific thresholds for longer timeframes (1d, 1w) and default
+        threshold for intraday intervals (1h, 15m, 5m, 1m, etc.).
+        
+        Args:
+            interval: Timeframe to check (e.g., '1h', '1d', '1w')
+            threshold_minutes: Explicit threshold override (if provided, used as-is)
+            
+        Returns:
+            Threshold in minutes
+        """
+        if threshold_minutes is not None:
+            return threshold_minutes
+        
+        # Use interval-specific thresholds for longer timeframes
+        if interval == "1d":
+            # For daily candles, allow up to DATA_FRESHNESS_THRESHOLD_1D_HOURS hours
+            # This allows yesterday's candle when market is closed
+            return settings.DATA_FRESHNESS_THRESHOLD_1D_HOURS * 60
+        elif interval == "1w":
+            # For weekly candles, allow up to DATA_FRESHNESS_THRESHOLD_1W_DAYS days
+            # This allows last week's candle
+            return settings.DATA_FRESHNESS_THRESHOLD_1W_DAYS * 24 * 60
+        else:
+            # For intraday intervals (1h, 15m, 5m, 1m, etc.), use default threshold
+            return settings.DATA_FRESHNESS_THRESHOLD_MINUTES
+
     def validate_data_freshness(
         self,
         interval: str,
@@ -346,19 +377,23 @@ class DataCuration:
         """
         Validate that the latest candle for the given interval is fresh enough.
         
+        Uses interval-specific thresholds:
+        - Intraday (1h, 15m, 5m, 1m): DATA_FRESHNESS_THRESHOLD_MINUTES (default: 90 minutes)
+        - Daily (1d): DATA_FRESHNESS_THRESHOLD_1D_HOURS (default: 48 hours)
+        - Weekly (1w): DATA_FRESHNESS_THRESHOLD_1W_DAYS (default: 7 days)
+        
         Args:
-            interval: Timeframe to check (e.g., '1h', '1d')
+            interval: Timeframe to check (e.g., '1h', '1d', '1w')
             venue: Optional venue filter
             symbol: Optional symbol filter
-            threshold_minutes: Maximum age in minutes (defaults to settings.DATA_FRESHNESS_THRESHOLD_MINUTES)
+            threshold_minutes: Maximum age in minutes (if None, uses interval-specific threshold)
             reference_time: Time to compare against (defaults to current UTC time)
             
         Raises:
             DataFreshnessError: If data is missing or stale
             FileNotFoundError: If curated dataset doesn't exist
         """
-        if threshold_minutes is None:
-            threshold_minutes = settings.DATA_FRESHNESS_THRESHOLD_MINUTES
+        threshold_minutes = self._get_freshness_threshold_minutes(interval, threshold_minutes)
         
         if reference_time is None:
             reference_time = datetime.now(timezone.utc)
@@ -442,6 +477,35 @@ class DataCuration:
             },
         )
 
+    @staticmethod
+    def _get_gap_tolerance_candles(interval: str, tolerance_candles: int | None = None) -> int:
+        """
+        Get the appropriate gap tolerance in candles for the given interval.
+        
+        Uses interval-specific tolerances for longer timeframes (1d, 1w) and default
+        tolerance for intraday intervals (1h, 15m, 5m, 1m, etc.).
+        
+        Args:
+            interval: Timeframe to check (e.g., '1h', '1d', '1w')
+            tolerance_candles: Explicit tolerance override (if provided, used as-is)
+            
+        Returns:
+            Tolerance in candles
+        """
+        if tolerance_candles is not None:
+            return tolerance_candles
+        
+        # Use interval-specific tolerances for longer timeframes
+        if interval == "1d":
+            # For daily candles, allow more missing candles (historical data gaps are more common)
+            return settings.DATA_GAP_TOLERANCE_1D_CANDLES
+        elif interval == "1w":
+            # For weekly candles, allow some missing weeks (monthly gaps are acceptable)
+            return settings.DATA_GAP_TOLERANCE_1W_CANDLES
+        else:
+            # For intraday intervals (1h, 15m, 5m, 1m, etc.), use default tolerance
+            return settings.DATA_GAP_TOLERANCE_CANDLES
+
     def validate_data_gaps(
         self,
         interval: str,
@@ -454,12 +518,17 @@ class DataCuration:
         """
         Validate that data has no gaps exceeding tolerance threshold.
         
+        Uses interval-specific tolerances:
+        - Intraday (1h, 15m, 5m, 1m): DATA_GAP_TOLERANCE_CANDLES (default: 2 candles)
+        - Daily (1d): DATA_GAP_TOLERANCE_1D_CANDLES (default: 15 candles)
+        - Weekly (1w): DATA_GAP_TOLERANCE_1W_CANDLES (default: 4 candles)
+        
         Args:
-            interval: Timeframe to check (e.g., '1h', '1d')
+            interval: Timeframe to check (e.g., '1h', '1d', '1w')
             venue: Optional venue filter
             symbol: Optional symbol filter
             lookback_days: Number of days to check (defaults to settings.DATA_GAP_CHECK_LOOKBACK_DAYS)
-            tolerance_candles: Maximum number of missing candles allowed (defaults to settings.DATA_GAP_TOLERANCE_CANDLES)
+            tolerance_candles: Maximum number of missing candles allowed (if None, uses interval-specific tolerance)
             
         Raises:
             DataGapError: If gaps exceed tolerance threshold
@@ -469,8 +538,7 @@ class DataCuration:
         if lookback_days is None:
             lookback_days = settings.DATA_GAP_CHECK_LOOKBACK_DAYS
         
-        if tolerance_candles is None:
-            tolerance_candles = settings.DATA_GAP_TOLERANCE_CANDLES
+        tolerance_candles = self._get_gap_tolerance_candles(interval, tolerance_candles)
         
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=lookback_days)

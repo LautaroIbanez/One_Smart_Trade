@@ -223,6 +223,13 @@ function RecommendationCard() {
                  (generationError?.response?.data?.detail && typeof generationError.response.data.detail === 'string' ? generationError.response.data.detail : null) ||
                  (generationError instanceof Error ? generationError.message : 'Error desconocido al generar la recomendación')}
               </p>
+              {generationError?.response?.data?.detail?.status === 'manual_replay_disabled' && (
+                <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem', backgroundColor: 'rgba(251, 191, 36, 0.1)', borderRadius: '0.25rem', border: '1px solid rgba(251, 191, 36, 0.3)' }}>
+                  <p style={{ margin: 0, color: '#f59e0b', fontSize: '0.75rem', fontStyle: 'italic' }}>
+                    ⚠️ El modo replay manual no está habilitado en el backend. Para habilitarlo, configura <code>ALLOW_MANUAL_REPLAY=True</code> en las variables de entorno del backend.
+                  </p>
+                </div>
+              )}
               {generationError?.response?.data?.detail?.status === 'insufficient_history' && (
                 <p style={{ margin: '0.5rem 0 0 0', color: '#fca5a5', fontSize: '0.75rem', fontStyle: 'italic' }}>
                   En modo desarrollo, asegúrate de que AUTO_SHUTDOWN_ALLOW_MISSING_DATA_IN_DEV esté habilitado para permitir generación sin historial.
@@ -668,6 +675,7 @@ function RecommendationCard() {
 
   // Validate required fields exist before using them (type guard already ensures this, but extra safety)
   const signal = data.signal ?? 'HOLD'
+  const isManualGeneration = data.risk_metrics?.manual_generation === true
   const signalClass = signal ? `signal-${signal.toLowerCase()}` : 'signal-hold'
   const currentPrice = data.current_price ?? 0
   const entryRange = data.entry_range ?? { min: 0, max: 0 }
@@ -721,6 +729,29 @@ function RecommendationCard() {
         <h2>Recomendación de Hoy</h2>
         <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
+      
+      {/* Manual generation banner */}
+      {isManualGeneration && (
+        <div className="manual-generation-banner" role="alert" aria-live="polite" style={{ 
+          margin: '1rem 0', 
+          padding: '0.75rem', 
+          backgroundColor: 'rgba(251, 191, 36, 0.1)', 
+          borderRadius: '0.5rem', 
+          border: '1px solid rgba(251, 191, 36, 0.3)' 
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '1.25rem' }}>🔧</span>
+            <div>
+              <p style={{ margin: 0, color: '#f59e0b', fontSize: '0.875rem', fontWeight: 600 }}>
+                Modo Manual / Degradado
+              </p>
+              <p style={{ margin: '0.25rem 0 0 0', color: '#d97706', fontSize: '0.75rem' }}>
+                Esta recomendación fue generada manualmente (replay mode) para pruebas o paper trading. No es parte del pipeline automático diario.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Stale signal banner */}
       {isStale && (

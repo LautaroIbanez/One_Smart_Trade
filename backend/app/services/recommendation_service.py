@@ -2263,10 +2263,42 @@ class RecommendationService:
             )
             return self._build_no_data_payload(
                 reason="Todavía no hay recomendaciones generadas para la fecha solicitada.",
-                allow_replay_available=True,
+                allow_replay_available=settings.ALLOW_MANUAL_REPLAY,
+            )
+        
+        # Validate that manual replay is enabled in configuration
+        if not settings.ALLOW_MANUAL_REPLAY:
+            logger.warning(
+                "Manual replay requested but ALLOW_MANUAL_REPLAY is disabled in configuration"
+            )
+            return self._build_no_data_payload(
+                reason="Modo replay manual no está habilitado. Configure ALLOW_MANUAL_REPLAY=True para habilitar generación a demanda.",
+                allow_replay_available=False,
             )
 
-        logger.info("Generating recommendation on-demand (replay mode)")
+        logger.info("Generating recommendation on-demand (replay mode - manual execution)")
+        
+        # Log manual execution for audit trail
+        import uuid
+        from app.db.crud import log_run
+        run_id = str(uuid.uuid4())
+        manual_start = datetime.utcnow()
+        db_audit = self.session or SessionLocal()
+        try:
+            log_run(
+                db_audit,
+                "manual_replay",
+                "started",
+                f"Manual recommendation generation started - run_id={run_id}",
+                details={"run_id": run_id, "user_id": user_id, "trigger": "manual_api_call"},
+                run_id=run_id,
+                started_at=manual_start,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log manual replay start: {e}", exc_info=False)
+        finally:
+            if not self.session:
+                db_audit.close()
         # CRITICAL: Validate capital BEFORE generating signal
         ctx = self.user_risk_profile_service.get_context(settings.DEFAULT_USER_ID, base_risk_pct=1.0)
         if not ctx.has_data or ctx.equity is None or ctx.equity <= 0:
@@ -2395,6 +2427,12 @@ class RecommendationService:
             if "analysis" not in recommendation or not recommendation["analysis"]:
                 from app.quant.narrative import build_narrative
                 recommendation["analysis"] = build_narrative(recommendation)
+            
+            # Mark as manually generated for audit trail
+            risk_metrics = recommendation.setdefault("risk_metrics", {})
+            risk_metrics["manual_generation"] = True
+            risk_metrics["manual_run_id"] = run_id
+            risk_metrics["manual_generated_at"] = manual_start.isoformat()
             if "close" in df_1h.columns:
                 recommendation["current_price"] = float(df_1h["close"].iloc[-1])
             if "open_time" in df_1h.columns:
@@ -2447,10 +2485,31 @@ class RecommendationService:
                 try:
                     rec = create_recommendation(db, recommendation)
                     logger.info(
-                        f"✅ Preflight audit PASSED - recommendation {rec.id} published successfully. "
+                        f"✅ Preflight audit PASSED - recommendation {rec.id} published successfully (manual replay). "
                         f"All {len(audit_result.checks)} checks passed."
                     )
-                    logger.info(f"Generated and saved recommendation: {recommendation['signal']}")
+                    logger.info(f"Generated and saved recommendation: {recommendation['signal']} (manual replay mode)")
+                    
+                    # Log successful manual execution
+                    from app.db.crud import log_run
+                    manual_duration = (datetime.utcnow() - manual_start).total_seconds()
+                    log_run(
+                        db,
+                        "manual_replay",
+                        "success",
+                        f"Manual recommendation generation completed - run_id={run_id} - recommendation_id={rec.id}",
+                        details={
+                            "run_id": run_id,
+                            "recommendation_id": rec.id,
+                            "signal": recommendation.get("signal"),
+                            "user_id": user_id,
+                            "duration_seconds": round(manual_duration, 2),
+                            "audit_checks_passed": len(audit_result.checks),
+                        },
+                        run_id=run_id,
+                        started_at=manual_start,
+                    )
+                    
                     result = self._cache_result(rec, user_id=user_id)
                 finally:
                     db.close()
@@ -2472,11 +2531,62 @@ class RecommendationService:
                     reason="Failed to create recommendation in database",
                     details={},
                 )
-        except RecommendationGenerationError:
+        except RecommendationGenerationError as e:
+            # Log failed manual execution
+            db_audit = self.session or SessionLocal()
+            try:
+                from app.db.crud import log_run
+                manual_duration = (datetime.utcnow() - manual_start).total_seconds()
+                log_run(
+                    db_audit,
+                    "manual_replay",
+                    "failed",
+                    f"Manual recommendation generation failed - run_id={run_id} - {e.status}: {e.reason}",
+                    details={
+                        "run_id": run_id,
+                        "user_id": user_id,
+                        "duration_seconds": round(manual_duration, 2),
+                        "error_status": e.status,
+                        "error_reason": e.reason,
+                        "error_details": e.details,
+                    },
+                    run_id=run_id,
+                    started_at=manual_start,
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to log manual replay failure: {log_err}", exc_info=False)
+            finally:
+                if not self.session:
+                    db_audit.close()
             # Re-raise RecommendationGenerationError as-is
             raise
         except ValueError as exc:
             logger.warning(f"Recommendation invalidated by risk controls: {exc}")
+            # Log failed manual execution
+            db_audit = self.session or SessionLocal()
+            try:
+                from app.db.crud import log_run
+                manual_duration = (datetime.utcnow() - manual_start).total_seconds()
+                log_run(
+                    db_audit,
+                    "manual_replay",
+                    "failed",
+                    f"Manual recommendation generation failed - run_id={run_id} - invalidated by risk controls: {str(exc)}",
+                    details={
+                        "run_id": run_id,
+                        "user_id": user_id,
+                        "duration_seconds": round(manual_duration, 2),
+                        "error_type": "ValueError",
+                        "error_reason": str(exc),
+                    },
+                    run_id=run_id,
+                    started_at=manual_start,
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to log manual replay failure: {log_err}", exc_info=False)
+            finally:
+                if not self.session:
+                    db_audit.close()
             raise RecommendationGenerationError(
                 status="invalid",
                 reason=str(exc),
@@ -2484,6 +2594,31 @@ class RecommendationService:
             )
         except Exception as e:
             logger.error(f"Error generating recommendation: {e}", exc_info=True)
+            # Log failed manual execution
+            db_audit = self.session or SessionLocal()
+            try:
+                from app.db.crud import log_run
+                manual_duration = (datetime.utcnow() - manual_start).total_seconds()
+                log_run(
+                    db_audit,
+                    "manual_replay",
+                    "error",
+                    f"Manual recommendation generation error - run_id={run_id} - {type(e).__name__}: {str(e)}",
+                    details={
+                        "run_id": run_id,
+                        "user_id": user_id,
+                        "duration_seconds": round(manual_duration, 2),
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    },
+                    run_id=run_id,
+                    started_at=manual_start,
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to log manual replay error: {log_err}", exc_info=False)
+            finally:
+                if not self.session:
+                    db_audit.close()
             raise RecommendationGenerationError(
                 status="error",
                 reason=f"Unexpected error generating recommendation: {str(e)}",

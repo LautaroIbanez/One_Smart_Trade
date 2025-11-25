@@ -164,6 +164,21 @@ async def get_performance_summary(
     - Use this for initial setup or when forcing recalculation
     """
     try:
+        from app.core.config import settings
+        
+        # In dev mode, only allow stale inputs if we have valid cache
+        # This prevents serving demo metrics when cache is empty
+        if allow_stale_inputs and settings.DEV_FAKE_DATA:
+            # Check if we have valid cache before allowing stale inputs
+            cached_summary = performance_service._get_db_cached_success_summary(max_age_seconds=86400)
+            if not cached_summary:
+                logger.info(
+                    "allow_stale_inputs requested in dev mode but no valid cache exists - forcing warmup instead",
+                )
+                # Force warmup mode to populate cache instead of returning demo metrics
+                warmup = True
+                allow_stale_inputs = False
+        
         result = await performance_service.get_summary(allow_stale_inputs=allow_stale_inputs, trigger_backfill=True)
         
         # Check for cache miss with empty metrics
@@ -226,6 +241,12 @@ async def get_performance_summary(
                 
                 # Return degraded response with demo metrics
                 demo_metrics = _create_demo_metrics()
+                demo_cause = "cache_miss"
+                if warmup:
+                    demo_cause = "warmup_failed"
+                elif cache_miss:
+                    demo_cause = "cache_miss"
+                
                 response = PerformanceSummaryResponse(
                     status="degraded",
                     message="No backtest cache available; showing demo metrics. Real metrics will be available after background backfill completes." + 
@@ -240,9 +261,13 @@ async def get_performance_summary(
                     tracking_error_metrics=None,
                     tracking_error_series=None,
                     tracking_error_cumulative=None,
-                    chart_banners=["No backtest data available - showing demo metrics"],
+                    chart_banners=[f"No backtest data available - showing demo metrics (cause: {demo_cause})"],
                 )
-                return response.model_dump()
+                response_dict = response.model_dump()
+                # Add metadata about demo metrics cause
+                response_dict["demo_metrics_cause"] = demo_cause
+                response_dict["demo_metrics"] = True
+                return response_dict
         
         # Server-side guardrail: When allow_stale_inputs=True, enqueue background backfill if needed
         # This ensures cache stays fresh without blocking the response
@@ -367,21 +392,32 @@ async def get_performance_summary(
                 },
             )
             demo_metrics = _create_demo_metrics()
-            return PerformanceSummaryResponse(
+            response = PerformanceSummaryResponse(
                 status="degraded",
                 message=f"{result.get('message', 'Unknown error')}. Showing demo metrics until backtest completes.",
                 metrics=demo_metrics,
                 period=None,
                 report_path=None,
-                chart_banners=[f"Error: {result.get('message', 'Unknown error')} - showing demo metrics"],
+                chart_banners=[f"Error: {result.get('message', 'Unknown error')} - showing demo metrics (cause: error_no_fallback)"],
             )
+            response_dict = response.model_dump()
+            response_dict["demo_metrics_cause"] = "error_no_fallback"
+            response_dict["demo_metrics"] = True
+            return response_dict
 
         metrics_dict = result.get("metrics", {})
+        
+        # Initialize demo metrics flags
+        demo_metrics_used = False
+        demo_metrics_cause = None
         
         # If metrics dict is empty, use demo metrics instead of failing
         if not metrics_dict or len(metrics_dict) == 0:
             logger.warning("Empty metrics dict in result - using demo metrics for degraded response")
             metrics = _create_demo_metrics()
+            # Mark as demo metrics with cause
+            demo_metrics_used = True
+            demo_metrics_cause = "empty_metrics_dict"
         else:
             rolling_monthly = metrics_dict.get("rolling_monthly")
             rolling_quarterly = metrics_dict.get("rolling_quarterly")
@@ -500,11 +536,11 @@ async def get_performance_summary(
             return response_dict
 
         response = PerformanceSummaryResponse(
-            status="success",
+            status="success" if not demo_metrics_used else "degraded",
             metrics=metrics,
             period=period,
             report_path=result.get("report_path"),
-            message=None,
+            message=None if not demo_metrics_used else "Empty metrics dict - showing demo metrics",
             tracking_error_rmse=tracking_error_rmse,
             tracking_error_max=tracking_error_max,
             orderbook_fallback_events=orderbook_fallback_events,
@@ -512,7 +548,7 @@ async def get_performance_summary(
             tracking_error_metrics=result.get("tracking_error_metrics"),
             tracking_error_series=result.get("tracking_error_series"),
             tracking_error_cumulative=result.get("tracking_error_cumulative"),
-            chart_banners=result.get("chart_banners"),
+            chart_banners=result.get("chart_banners", []) + (["Empty metrics dict - showing demo metrics"] if demo_metrics_used else []),
         )
         
         # Add equity data to response model (will be in response body but not in schema)
@@ -522,6 +558,11 @@ async def get_performance_summary(
         response_dict["equity_curve"] = result.get("equity_curve", [])
         response_dict["equity_curve_theoretical"] = result.get("equity_curve_theoretical", [])
         response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
+        
+        # Add demo metrics metadata if applicable
+        if demo_metrics_used:
+            response_dict["demo_metrics"] = True
+            response_dict["demo_metrics_cause"] = demo_metrics_cause
         
         return response_dict
     except HTTPException:
