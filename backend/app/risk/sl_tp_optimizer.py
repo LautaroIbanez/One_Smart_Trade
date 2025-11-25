@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import ParameterGrid
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.quant.regime import RegimeClassifier
 
@@ -207,11 +208,25 @@ class StopLossTakeProfitOptimizer:
         """Load persisted configuration if still valid."""
         path = self._artifact_path(symbol, regime)
         if not path.exists():
+            # In dev mode, return deterministic defaults when config is missing
+            if settings.is_dev_mode():
+                logger.info(
+                    f"DEV MODE: No SL/TP config found for {symbol}/{regime}, using deterministic defaults",
+                    extra={"symbol": symbol, "regime": regime, "dev_mode": True},
+                )
+                return self._get_dev_default_config(symbol, regime)
             return None
         try:
             data = json.loads(path.read_text())
         except json.JSONDecodeError:
             logger.warning("Invalid SL/TP config JSON at %s", path)
+            # In dev mode, return defaults even if config is invalid
+            if settings.is_dev_mode():
+                logger.info(
+                    f"DEV MODE: Invalid SL/TP config for {symbol}/{regime}, using deterministic defaults",
+                    extra={"symbol": symbol, "regime": regime, "dev_mode": True},
+                )
+                return self._get_dev_default_config(symbol, regime)
             return None
 
         age_limit = max_age_days if max_age_days is not None else self.max_config_age_days
@@ -223,8 +238,54 @@ class StopLossTakeProfitOptimizer:
                 ts = None
             if ts and datetime.now(timezone.utc) - ts > timedelta(days=age_limit):
                 logger.warning("SL/TP config for %s/%s is stale (> %s days)", symbol, regime, age_limit)
+                # In dev mode, return defaults even if config is stale
+                if settings.is_dev_mode():
+                    logger.info(
+                        f"DEV MODE: Stale SL/TP config for {symbol}/{regime}, using deterministic defaults",
+                        extra={"symbol": symbol, "regime": regime, "dev_mode": True},
+                    )
+                    return self._get_dev_default_config(symbol, regime)
                 return None
         return data
+    
+    def _get_dev_default_config(self, symbol: str, regime: str) -> dict[str, Any]:
+        """
+        Get deterministic default SL/TP config for dev mode.
+        
+        Uses conservative defaults that meet minimum RR threshold:
+        - ATR multiplier SL: 1.5 (moderate stop loss)
+        - ATR multiplier TP: 2.5 (generous take profit)
+        - TP ratio: 1.8 (additional multiplier)
+        Expected RR: (2.5 * 1.8) / 1.5 = 4.5 / 1.5 = 3.0 (well above threshold)
+        """
+        default_params = {
+            "atr_multiplier_sl": 1.5,
+            "atr_multiplier_tp": 2.5,
+            "tp_ratio": 1.8,
+            "breakeven_buffer_pct": 0.15,
+        }
+        
+        return {
+            "symbol": symbol,
+            "regime": regime,
+            "rr_threshold": self.rr_floor,
+            "search_space": {k: [v] for k, v in default_params.items()},
+            "best_params": default_params,
+            "aggregates": {
+                "calmar": 1.5,
+                "profit_factor": 1.3,
+                "hit_rate": 0.45,
+                "avg_rr": 3.0,
+                "expectancy_r": 0.3,
+                "max_drawdown": 0.15,
+            },
+            "metadata": {
+                "method": "dev_defaults",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "dev_mode": True,
+                "fallback": True,
+            },
+        }
 
     def _attach_regimes(
         self,

@@ -146,6 +146,44 @@ class PreflightAuditService:
     
     async def _check_data_freshness(self) -> AuditCheck:
         """Check that data is fresh (within threshold)."""
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
+        # In dev mode, skip freshness check but log status
+        if dev_mode:
+            try:
+                inputs = self.data_provider.get_validated_inputs(
+                    validate_freshness=False,
+                    validate_gaps=False,
+                )
+                df_1h = inputs.df_1h
+                if not df_1h.empty:
+                    latest_timestamp = df_1h.index[-1] if hasattr(df_1h.index[-1], "to_pydatetime") else pd.Timestamp(df_1h.index[-1])
+                    if hasattr(latest_timestamp, "to_pydatetime"):
+                        latest_dt = latest_timestamp.to_pydatetime()
+                    else:
+                        latest_dt = pd.Timestamp(latest_timestamp).to_pydatetime()
+                    now = datetime.utcnow()
+                    age_minutes = (now - latest_dt).total_seconds() / 60.0
+                    logger.info(
+                        f"DEV MODE: Data freshness check skipped (data age: {age_minutes:.1f} minutes)",
+                        extra={"dev_mode": True, "age_minutes": age_minutes},
+                    )
+                return AuditCheck(
+                    name="data_freshness",
+                    passed=True,
+                    message=f"DEV MODE: Data freshness check skipped",
+                    details={"dev_mode": True},
+                )
+            except Exception as e:
+                logger.warning(f"DEV MODE: Error loading data for freshness check: {e}", exc_info=False)
+                return AuditCheck(
+                    name="data_freshness",
+                    passed=True,
+                    message=f"DEV MODE: Data freshness check skipped (error loading data)",
+                    details={"dev_mode": True, "error": str(e)},
+                )
+        
         try:
             # Use SignalDataProvider to validate freshness
             inputs = self.data_provider.get_validated_inputs(
@@ -219,6 +257,35 @@ class PreflightAuditService:
     
     async def _check_data_gaps(self) -> AuditCheck:
         """Check that data has no gaps exceeding tolerance threshold."""
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
+        # In dev mode, skip gap check but log status
+        if dev_mode:
+            try:
+                inputs = self.data_provider.get_validated_inputs(
+                    validate_freshness=False,
+                    validate_gaps=False,
+                )
+                logger.info(
+                    "DEV MODE: Data gap check skipped",
+                    extra={"dev_mode": True},
+                )
+                return AuditCheck(
+                    name="data_gaps",
+                    passed=True,
+                    message=f"DEV MODE: Data gap check skipped",
+                    details={"dev_mode": True},
+                )
+            except Exception as e:
+                logger.warning(f"DEV MODE: Error loading data for gap check: {e}", exc_info=False)
+                return AuditCheck(
+                    name="data_gaps",
+                    passed=True,
+                    message=f"DEV MODE: Data gap check skipped (error loading data)",
+                    details={"dev_mode": True, "error": str(e)},
+                )
+        
         try:
             # Use SignalDataProvider to validate gaps
             # Force refresh to ensure validate_data_gaps() is executed even if cache exists
@@ -299,6 +366,9 @@ class PreflightAuditService:
     
     def _check_backtest_ok(self, signal_payload: dict[str, Any]) -> AuditCheck:
         """Check that backtest results are present and meet requirements."""
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
         if not settings.BACKTEST_ENABLED:
             return AuditCheck(
                 name="backtest_ok",
@@ -309,6 +379,18 @@ class PreflightAuditService:
         
         backtest_run_id = signal_payload.get("backtest_run_id")
         if not backtest_run_id:
+            # In dev mode, bypass backtest check when metadata is missing
+            if dev_mode:
+                logger.info(
+                    "DEV MODE: Backtest run ID missing, bypassing backtest check",
+                    extra={"dev_mode": True},
+                )
+                return AuditCheck(
+                    name="backtest_ok",
+                    passed=True,
+                    message="DEV MODE: Backtest check bypassed (missing run_id)",
+                    details={"backtest_run_id": None, "dev_mode": True, "dev_bypass": "missing_backtest_metadata"},
+                )
             return AuditCheck(
                 name="backtest_ok",
                 passed=False,
@@ -323,6 +405,18 @@ class PreflightAuditService:
         backtest_max_drawdown = signal_payload.get("backtest_max_drawdown")
         
         if backtest_cagr is None:
+            # In dev mode, bypass backtest check when metrics are missing
+            if dev_mode:
+                logger.info(
+                    "DEV MODE: Backtest CAGR missing, bypassing backtest check",
+                    extra={"backtest_run_id": backtest_run_id, "dev_mode": True},
+                )
+                return AuditCheck(
+                    name="backtest_ok",
+                    passed=True,
+                    message="DEV MODE: Backtest check bypassed (missing CAGR)",
+                    details={"backtest_run_id": backtest_run_id, "dev_mode": True, "dev_bypass": "missing_backtest_metrics"},
+                )
             return AuditCheck(
                 name="backtest_ok",
                 passed=False,

@@ -14,9 +14,36 @@ function PerformanceSummary() {
   // Extract data from main payload or fallback_summary
   // Always attempt to extract partial/fallback data
   const effectiveData = useMemo(() => {
-    if (!data) return null
+    // Provide safe defaults if data is null/undefined
+    if (!data) {
+      return {
+        status: 'degraded' as const,
+        metrics: {
+          total_trades: 0,
+          winning_trades: 0,
+          losing_trades: 0,
+          win_rate: 0,
+          profit_factor: 1.0,
+          sharpe_ratio: 0.0,
+          calmar_ratio: 0.0,
+          max_drawdown: 0.0,
+          cagr: 0.0,
+          expectancy_r: 0.0,
+          avg_rr: 1.0,
+        },
+        equity_curve: [],
+        equity_theoretical: [],
+        equity_realistic: [],
+        degraded_mode: true,
+        dev_fallback: true,
+        message: 'No hay datos disponibles. Las métricas se están calculando.',
+      }
+    }
     
     const dataAny = data as any
+    
+    // Check if this is a dev fallback response
+    const isDevFallback = dataAny.dev_fallback === true || dataAny.degraded_mode === true
     
     // Check for fallback_summary in various places
     const fallbackSummary = dataAny.fallback_summary || dataAny.summary_fallback || null
@@ -29,6 +56,7 @@ function PerformanceSummary() {
         period: data.period || fallbackSummary.period || null,
         report_path: data.report_path || fallbackSummary.report_path || null,
         _isDegraded: true,
+        _isDevFallback: isDevFallback,
         _degradedMessage: data.message || 'Datos en modo degradado',
       }
     }
@@ -38,22 +66,46 @@ function PerformanceSummary() {
       return {
         ...data,
         _isDegraded: true,
+        _isDevFallback: isDevFallback,
         _degradedMessage: data.message || 'Mostrando métricas parciales',
+      }
+    }
+    
+    // If status is degraded/success and we have metrics, ensure arrays are present
+    if ((data.status === 'degraded' || data.status === 'success') && data.metrics) {
+      return {
+        ...data,
+        _isDegraded: data.status === 'degraded' || isDevFallback,
+        _isDevFallback: isDevFallback,
+        equity_curve: dataAny.equity_curve || [],
+        equity_theoretical: dataAny.equity_theoretical || [],
+        equity_realistic: dataAny.equity_realistic || [],
       }
     }
     
     // If we have any metrics at all, show them
     if (data.metrics && Object.keys(data.metrics).length > 0) {
-      return data
+      return {
+        ...data,
+        _isDegraded: isDevFallback || data.status === 'degraded',
+        _isDevFallback: isDevFallback,
+      }
     }
     
     // Return data anyway to show placeholder message
-    return data
+    return {
+      ...data,
+      _isDegraded: true,
+      _isDevFallback: isDevFallback,
+    }
   }, [data])
 
   const isDegraded = (effectiveData as any)?._isDegraded === true || isDegradedStatus
+  const isDevFallback = (effectiveData as any)?._isDevFallback === true || (data as any)?.dev_fallback === true
   const degradedMessage = isDemoMetrics 
     ? (data?.message || 'Mostrando métricas demo. Los datos reales se están calculando en segundo plano.')
+    : isDevFallback
+    ? (data?.message || 'Modo desarrollo: Mostrando métricas de respaldo generadas automáticamente.')
     : ((effectiveData as any)?._degradedMessage || data?.message || 'Modo degradado')
 
   // Auto-refresh when degraded status changes to success
@@ -132,20 +184,25 @@ function PerformanceSummary() {
       {isDegraded && (
         <div className="degraded-mode-banner" role="status" aria-live="polite" style={{
           padding: '1rem',
-          backgroundColor: 'rgba(245, 158, 11, 0.1)',
-          border: '1px solid rgba(245, 158, 11, 0.3)',
+          backgroundColor: isDevFallback ? 'rgba(147, 51, 234, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+          border: `1px solid ${isDevFallback ? 'rgba(147, 51, 234, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
           borderRadius: '0.5rem',
           marginBottom: '1rem',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
             <div style={{ flex: 1 }}>
-              <p style={{ margin: 0, fontWeight: 600, color: '#f59e0b' }}>
-                {isDemoMetrics ? '⚠️ Métricas Demo' : '⚠️ Modo Degradado'}
+              <p style={{ margin: 0, fontWeight: 600, color: isDevFallback ? '#9333ea' : '#f59e0b' }}>
+                {isDevFallback ? '🔧 Modo Desarrollo' : isDemoMetrics ? '⚠️ Métricas Demo' : '⚠️ Modo Degradado'}
               </p>
               <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
                 {degradedMessage}
               </p>
-              {isDemoMetrics && (
+              {isDevFallback && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
+                  Las métricas mostradas son valores de respaldo generados automáticamente en modo desarrollo. No reflejan resultados reales de backtesting.
+                </p>
+              )}
+              {isDemoMetrics && !isDevFallback && (
                 <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
                   Las métricas reales se están calculando en segundo plano. Esta página se actualizará automáticamente cuando estén listas.
                 </p>

@@ -2343,47 +2343,110 @@ class RecommendationService:
             symbol="BTCUSDT",
         )
         
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
         try:
+            # In dev mode, validation is automatically skipped by SignalDataProvider
             inputs = data_provider.get_validated_inputs(
-                validate_freshness=True,
-                validate_gaps=True,
+                validate_freshness=not dev_mode,
+                validate_gaps=not dev_mode,
             )
         except DataFreshnessError as e:
-            logger.warning(
-                f"Recommendation generation blocked: data freshness check failed - {e.reason}",
-                extra={
+            if dev_mode:
+                # In dev mode, log warning but continue with stale data
+                logger.warning(
+                    f"DEV MODE: Data freshness check failed but continuing - {e.reason}",
+                    extra={
+                        "interval": e.interval,
+                        "latest_timestamp": e.latest_timestamp,
+                        "threshold_minutes": e.threshold_minutes,
+                        "context": e.context_data,
+                        "dev_mode": True,
+                    },
+                )
+                # Retry without validation to get stale data
+                try:
+                    inputs = data_provider.get_validated_inputs(
+                        validate_freshness=False,
+                        validate_gaps=False,
+                    )
+                except (FileNotFoundError, ValueError) as retry_e:
+                    logger.error(f"DEV MODE: Cannot load data even without validation: {retry_e}")
+                    return {
+                        "status": "error",
+                        "reason": f"Failed to load data: {str(retry_e)}",
+                        "dev_mode": True,
+                    }
+            else:
+                logger.warning(
+                    f"Recommendation generation blocked: data freshness check failed - {e.reason}",
+                    extra={
+                        "interval": e.interval,
+                        "latest_timestamp": e.latest_timestamp,
+                        "threshold_minutes": e.threshold_minutes,
+                        "context": e.context_data,
+                    },
+                )
+                return {
+                    "status": "data_stale",
+                    "reason": e.reason,
                     "interval": e.interval,
                     "latest_timestamp": e.latest_timestamp,
                     "threshold_minutes": e.threshold_minutes,
-                    "context": e.context_data,
-                },
-            )
-            return {
-                "status": "data_stale",
-                "reason": e.reason,
-                "interval": e.interval,
-                "latest_timestamp": e.latest_timestamp,
-                "threshold_minutes": e.threshold_minutes,
-            }
+                }
         except DataGapError as e:
-            logger.warning(
-                f"Recommendation generation blocked: data gap check failed - {e.reason}",
-                extra={
+            if dev_mode:
+                # In dev mode, log warning but continue with gapped data
+                logger.warning(
+                    f"DEV MODE: Data gap check failed but continuing - {e.reason}",
+                    extra={
+                        "interval": e.interval,
+                        "gaps": e.gaps,
+                        "tolerance_candles": e.tolerance_candles,
+                        "context": e.context_data,
+                        "dev_mode": True,
+                    },
+                )
+                # Retry without validation to get gapped data
+                try:
+                    inputs = data_provider.get_validated_inputs(
+                        validate_freshness=False,
+                        validate_gaps=False,
+                    )
+                except (FileNotFoundError, ValueError) as retry_e:
+                    logger.error(f"DEV MODE: Cannot load data even without validation: {retry_e}")
+                    return {
+                        "status": "error",
+                        "reason": f"Failed to load data: {str(retry_e)}",
+                        "dev_mode": True,
+                    }
+            else:
+                logger.warning(
+                    f"Recommendation generation blocked: data gap check failed - {e.reason}",
+                    extra={
+                        "interval": e.interval,
+                        "gaps": e.gaps,
+                        "tolerance_candles": e.tolerance_candles,
+                        "context": e.context_data,
+                    },
+                )
+                return {
+                    "status": "data_gaps",
+                    "reason": e.reason,
                     "interval": e.interval,
                     "gaps": e.gaps,
                     "tolerance_candles": e.tolerance_candles,
-                    "context": e.context_data,
-                },
-            )
-            return {
-                "status": "data_gaps",
-                "reason": e.reason,
-                "interval": e.interval,
-                "gaps": e.gaps,
-                "tolerance_candles": e.tolerance_candles,
-            }
+                }
         except (FileNotFoundError, ValueError) as e:
             logger.warning(f"Cannot generate recommendation: {e}")
+            if dev_mode:
+                # In dev mode, return a structured error response instead of None
+                return {
+                    "status": "error",
+                    "reason": f"Failed to load data: {str(e)}",
+                    "dev_mode": True,
+                }
             return None
         
         # Extract validated dataframes from inputs
@@ -2532,6 +2595,47 @@ class RecommendationService:
                     details={},
                 )
         except RecommendationGenerationError as e:
+            # Check if dev mode and error is recoverable - return fallback recommendation
+            dev_mode = settings.is_dev_mode()
+            if dev_mode and e.status in {"data_stale", "audit_failed", "backtest_failed", "data_gaps"}:
+                logger.info(
+                    f"DEV MODE: Recommendation generation failed ({e.status}), returning dev fallback",
+                    extra={"error_status": e.status, "error_reason": e.reason, "dev_mode": True},
+                )
+                fallback_recommendation = self._build_dev_fallback_recommendation(signal="HOLD", error_status=e.status)
+                
+                # Save fallback recommendation to database
+                db_audit = self.session or SessionLocal()
+                try:
+                    from app.db.crud import create_recommendation, log_run
+                    rec = create_recommendation(db_audit, fallback_recommendation)
+                    manual_duration = (datetime.utcnow() - manual_start).total_seconds()
+                    log_run(
+                        db_audit,
+                        "manual_replay",
+                        "degraded",
+                        f"Manual recommendation generation returned dev fallback - run_id={run_id} - recommendation_id={rec.id}",
+                        details={
+                            "run_id": run_id,
+                            "recommendation_id": rec.id,
+                            "error_status": e.status,
+                            "error_reason": e.reason,
+                            "user_id": user_id,
+                            "duration_seconds": round(manual_duration, 2),
+                            "dev_mode": True,
+                        },
+                        run_id=run_id,
+                        started_at=manual_start,
+                    )
+                    result = self._cache_result(rec, user_id=user_id)
+                    if result:
+                        return result
+                except Exception as save_err:
+                    logger.warning(f"Failed to save dev fallback recommendation: {save_err}", exc_info=False)
+                finally:
+                    if not self.session:
+                        db_audit.close()
+            
             # Log failed manual execution
             db_audit = self.session or SessionLocal()
             try:
@@ -2625,6 +2729,102 @@ class RecommendationService:
                 details={"error_type": type(e).__name__},
             ) from e
 
+    def _build_dev_fallback_recommendation(self, signal: str = "HOLD", error_status: str = "unknown") -> dict[str, Any]:
+        """
+        Build a deterministic dev fallback recommendation when audits/backtests fail.
+        
+        Creates a minimal but valid recommendation payload with all required fields.
+        """
+        from datetime import datetime, timezone
+        
+        # Get current price estimate (use a default if unavailable)
+        current_price = 50000.0  # Default BTC price
+        try:
+            # Try to get latest price from data provider
+            inputs = self.signal_data_provider.get_validated_inputs(
+                validate_freshness=False,
+                validate_gaps=False,
+            )
+            if not inputs.df_1h.empty and "close" in inputs.df_1h.columns:
+                current_price = float(inputs.df_1h["close"].iloc[-1])
+        except Exception:
+            pass
+        
+        # Calculate entry range (1% spread around current price)
+        entry_spread = current_price * 0.01
+        entry_range = {
+            "min": round(current_price - entry_spread, 2),
+            "max": round(current_price + entry_spread, 2),
+            "optimal": round(current_price, 2),
+        }
+        
+        # Calculate SL/TP (conservative defaults)
+        sl_distance = current_price * 0.02  # 2% stop loss
+        tp_distance = current_price * 0.04  # 4% take profit
+        stop_loss = round(current_price - sl_distance, 2)
+        take_profit = round(current_price + tp_distance, 2)
+        
+        recommendation = {
+            "signal": signal,
+            "confidence": 50.0,
+            "confidence_calibrated": 50.0,
+            "entry_range": entry_range,
+            "current_price": current_price,
+            "stop_loss_take_profit": {
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "stop_loss_pct": round(-2.0, 2),
+                "take_profit_pct": round(4.0, 2),
+            },
+            "risk_metrics": {
+                "risk": round(sl_distance, 4),
+                "reward": round(tp_distance, 4),
+                "risk_reward_ratio": round(2.0, 3),
+                "rr_threshold": settings.RR_FLOOR,
+                "liquidity_check_passed": True,
+                "dev_fallback": True,
+                "fallback_reason": error_status,
+            },
+            "analysis": "DEV MODE: Fallback recommendation generated due to data/audit/backtest failures. This is a deterministic placeholder for development environments.",
+            "factors": {
+                "dev_mode": True,
+                "fallback": True,
+            },
+            "seed": 42,  # Deterministic seed
+            "market_timestamp": datetime.now(timezone.utc).isoformat(),
+            "spot_source": "dev_fallback",
+            # Dummy backtest metadata for audit checks
+            "backtest_run_id": "dev_fallback_placeholder",
+            "backtest_cagr": 0.0,
+            "backtest_win_rate": 0.5,
+            "backtest_max_drawdown": 0.0,
+            "backtest_risk_reward_ratio": 2.0,
+            "backtest_metrics": {
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "sharpe_ratio": 0.0,
+                "calmar_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "cagr": 0.0,
+            },
+            "execution_plan": {
+                "position_size_usd": 0.0,
+                "position_size_pct": 0.0,
+                "notional_value": 0.0,
+                "leverage": 1.0,
+            },
+        }
+        
+        logger.info(
+            f"Built dev fallback recommendation: signal={signal}, price={current_price}",
+            extra={"signal": signal, "current_price": current_price, "error_status": error_status, "dev_mode": True},
+        )
+        
+        return recommendation
+    
     def _sanitize_history_limit(self, limit: int | None, *, default: int = 25) -> int:
         try:
             value = int(limit) if limit is not None else default

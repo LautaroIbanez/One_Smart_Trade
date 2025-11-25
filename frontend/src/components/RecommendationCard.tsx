@@ -140,13 +140,48 @@ function RecommendationCard() {
     )
   }
 
+  // Handle null/undefined data with safe defaults
   if (!data) {
     return (
-      <div className="recommendation-card">
-        <p>No hay recomendación disponible</p>
+      <div className="recommendation-card no-data-state">
+        <div className="no-data-header">
+          <h2>📊 Sin Recomendación Disponible</h2>
+        </div>
+        <div className="no-data-content">
+          <p className="no-data-message">
+            No se pudo cargar la recomendación. El backend puede estar procesando datos o en modo degradado.
+          </p>
+          <div className="no-data-actions" style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <button 
+              onClick={handleRetry} 
+              type="button" 
+              aria-label="Reintentar carga"
+              disabled={isRetrying}
+              className="guardrail-retry-button"
+            >
+              {isRetrying ? 'Reintentando...' : '🔄 Reintentar'}
+            </button>
+            <button 
+              onClick={handleGenerate} 
+              type="button" 
+              aria-label="Generar recomendación"
+              disabled={isGenerating || isRetrying}
+              className="guardrail-retry-button"
+              style={{ 
+                backgroundColor: isGenerating ? '#9ca3af' : '#10b981',
+              }}
+            >
+              {isGenerating ? '⏳ Generando...' : '✨ Generar Recomendación'}
+            </button>
+          </div>
+        </div>
       </div>
     )
   }
+  
+  // Check if this is a dev fallback/degraded recommendation
+  const isDevFallback = (data as any)?.dev_fallback === true || (data as any)?.risk_metrics?.dev_fallback === true
+  const isDegradedMode = (data as any)?.degraded_mode === true || (data as any)?.risk_metrics?.degraded_mode === true
 
   // Type guard: Check if this is a fallback response (no_data) without required fields
   const isFallbackResponse = (data: any): boolean => {
@@ -730,23 +765,25 @@ function RecommendationCard() {
         <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
       
-      {/* Manual generation banner */}
-      {isManualGeneration && (
+      {/* Dev fallback / Degraded mode banner */}
+      {(isDevFallback || isDegradedMode || isManualGeneration) && (
         <div className="manual-generation-banner" role="alert" aria-live="polite" style={{ 
           margin: '1rem 0', 
           padding: '0.75rem', 
-          backgroundColor: 'rgba(251, 191, 36, 0.1)', 
+          backgroundColor: isDevFallback ? 'rgba(147, 51, 234, 0.1)' : 'rgba(251, 191, 36, 0.1)', 
           borderRadius: '0.5rem', 
-          border: '1px solid rgba(251, 191, 36, 0.3)' 
+          border: `1px solid ${isDevFallback ? 'rgba(147, 51, 234, 0.3)' : 'rgba(251, 191, 36, 0.3)'}` 
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '1.25rem' }}>🔧</span>
+            <span style={{ fontSize: '1.25rem' }}>{isDevFallback ? '🔧' : '🔧'}</span>
             <div>
-              <p style={{ margin: 0, color: '#f59e0b', fontSize: '0.875rem', fontWeight: 600 }}>
-                Modo Manual / Degradado
+              <p style={{ margin: 0, color: isDevFallback ? '#9333ea' : '#f59e0b', fontSize: '0.875rem', fontWeight: 600 }}>
+                {isDevFallback ? '⚠️ Modo Desarrollo (Datos Fallback)' : 'Modo Manual / Degradado'}
               </p>
-              <p style={{ margin: '0.25rem 0 0 0', color: '#d97706', fontSize: '0.75rem' }}>
-                Esta recomendación fue generada manualmente (replay mode) para pruebas o paper trading. No es parte del pipeline automático diario.
+              <p style={{ margin: '0.25rem 0 0 0', color: isDevFallback ? '#a855f7' : '#d97706', fontSize: '0.75rem' }}>
+                {isDevFallback 
+                  ? 'Esta recomendación usa datos de respaldo generados en modo desarrollo. Los valores pueden no reflejar condiciones reales del mercado.'
+                  : 'Esta recomendación fue generada manualmente (replay mode) para pruebas o paper trading. No es parte del pipeline automático diario.'}
               </p>
             </div>
           </div>

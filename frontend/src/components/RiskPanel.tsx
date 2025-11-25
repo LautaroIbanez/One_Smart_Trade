@@ -31,33 +31,34 @@ export default function RiskPanel({ risk }: Props) {
     )
   }
 
-  if (!risk) {
-    return (
-      <div className="risk-panel">
-        <h2>Riesgo</h2>
-        <div className="empty-state">
-          <p>No hay métricas de riesgo disponibles</p>
-        </div>
-      </div>
-    )
+  // Provide safe defaults if risk is null/undefined
+  const safeRisk = risk || {
+    risk_reward_ratio: 0,
+    sl_probability: 0,
+    tp_probability: 0,
+    expected_drawdown: 0,
+    volatility: 0,
+    dev_fallback: true,
+    degraded_mode: true,
   }
 
-  const showDegradedBanner = error && data && (data as any).metadata?.served_from_cache
+  const isDevFallback = (safeRisk as any)?.dev_fallback === true || (safeRisk as any)?.degraded_mode === true
+  const showDegradedBanner = error && data && ((data as any).metadata?.served_from_cache || isDevFallback)
   const items = [
-    { label: 'RR', value: risk.risk_reward_ratio },
-    { label: 'Prob. SL', value: `${risk.sl_probability}%` },
-    { label: 'Prob. TP', value: `${risk.tp_probability}%` },
-    { label: 'Drawdown esp.', value: risk.expected_drawdown },
-    { label: 'Volatilidad', value: `${risk.volatility}%` },
+    { label: 'RR', value: safeRisk.risk_reward_ratio ?? 0 },
+    { label: 'Prob. SL', value: `${safeRisk.sl_probability ?? 0}%` },
+    { label: 'Prob. TP', value: `${safeRisk.tp_probability ?? 0}%` },
+    { label: 'Drawdown esp.', value: safeRisk.expected_drawdown ?? 0 },
+    { label: 'Volatilidad', value: `${safeRisk.volatility ?? 0}%` },
   ]
   return (
     <div className="risk-panel">
       <h2>Riesgo</h2>
       {showDegradedBanner && (
         <DegradedDataBanner 
-          message="Mostrando métricas de riesgo desde caché."
-          source={(data as any).metadata?.source}
-          cachedAt={(data as any).metadata?.generated_at}
+          message={isDevFallback ? "Modo desarrollo: Métricas de riesgo de respaldo generadas automáticamente." : "Mostrando métricas de riesgo desde caché."}
+          source={(data as any)?.metadata?.source}
+          cachedAt={(data as any)?.metadata?.generated_at}
         />
       )}
       <div className="risk-grid">

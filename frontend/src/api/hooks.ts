@@ -229,6 +229,24 @@ export function getErrorMessage(error: unknown): string {
   return 'Ha ocurrido un error desconocido'
 }
 
+// Safe default recommendation structure for degraded/dev mode
+const DEFAULT_RECOMMENDATION = {
+  signal: 'HOLD' as const,
+  entry_range: { min: 0, max: 0, optimal: 0 },
+  stop_loss_take_profit: { stop_loss: 0, take_profit: 0, stop_loss_pct: 0, take_profit_pct: 0 },
+  current_price: 0,
+  confidence: 0,
+  confidence_raw: 0,
+  confidence_calibrated: 0,
+  analysis: 'No hay datos disponibles. La recomendación se está generando o los datos están en modo degradado.',
+  indicators: {},
+  risk_metrics: { dev_fallback: true, degraded_mode: true },
+  timestamp: new Date().toISOString(),
+  disclaimer: 'Datos en modo degradado. Esta recomendación puede no reflejar las condiciones actuales del mercado.',
+  status: 'degraded' as const,
+  dev_fallback: true,
+}
+
 export const useTodayRecommendation = () => {
   return useQuery({
     queryKey: ['recommendation', 'today'],
@@ -236,7 +254,8 @@ export const useTodayRecommendation = () => {
       try {
         // Pass signal to Axios for automatic cancellation
         const { data } = await api.get('/api/v1/recommendation/today', { signal })
-        return data
+        // Ensure we always return a structured object, never null/undefined
+        return data || DEFAULT_RECOMMENDATION
       } catch (error: any) {
         // Handle HTTP 503/400 with guardrail states
         // These are VALID guardrail states, not errors - return them as data so UI can display them informatively
@@ -259,11 +278,17 @@ export const useTodayRecommendation = () => {
             }
           }
         }
+        // For 200 responses with empty/null body, return default structure
+        if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
+          return DEFAULT_RECOMMENDATION
+        }
         // Re-throw other errors (including timeout errors)
         throw error
       }
     },
     staleTime: 60_000,
+    // Provide placeholder data to prevent loading spinner lock
+    placeholderData: (previousData) => previousData || DEFAULT_RECOMMENDATION,
   })
 }
 
@@ -353,18 +378,62 @@ export const useMarketData = (interval: Interval) => {
   })
 }
 
+// Safe default performance structure for degraded/dev mode
+const DEFAULT_PERFORMANCE = {
+  status: 'degraded' as const,
+  metrics: {
+    total_trades: 0,
+    winning_trades: 0,
+    losing_trades: 0,
+    win_rate: 0,
+    profit_factor: 1.0,
+    sharpe_ratio: 0.0,
+    calmar_ratio: 0.0,
+    max_drawdown: 0.0,
+    cagr: 0.0,
+    expectancy_r: 0.0,
+    avg_rr: 1.0,
+  },
+  equity_curve: [] as Array<{ timestamp: string; value: number }>,
+  equity_theoretical: [] as Array<{ timestamp: string; value: number }>,
+  equity_realistic: [] as Array<{ timestamp: string; value: number }>,
+  degraded_mode: true,
+  dev_fallback: true,
+  message: 'Datos en modo degradado. Las métricas se están calculando en segundo plano.',
+}
+
 export const usePerformanceSummary = (enabled: boolean = true, warmup: boolean = false) => {
   return useQuery({
     queryKey: ['performance', 'summary', warmup],
     queryFn: async ({ signal }) => {
-      const { data } = await api.get('/api/v1/performance/summary', {
-        params: { allow_stale_inputs: true, warmup },
-        signal,
-      })
-      return data
+      try {
+        const { data } = await api.get('/api/v1/performance/summary', {
+          params: { allow_stale_inputs: true, warmup },
+          signal,
+        })
+        // Ensure we always return a structured object, never null/undefined
+        // If status is error but arrays/metrics are present, preserve them for degraded rendering
+        if (!data || data === null) {
+          return DEFAULT_PERFORMANCE
+        }
+        // If status is error but we have partial metrics, merge with defaults
+        if (data.status === 'error' && (!data.metrics || Object.keys(data.metrics).length === 0)) {
+          return { ...DEFAULT_PERFORMANCE, ...data, metrics: DEFAULT_PERFORMANCE.metrics }
+        }
+        return data
+      } catch (error: any) {
+        // For 200 responses with empty/null body, return default structure
+        if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
+          return DEFAULT_PERFORMANCE
+        }
+        // Re-throw other errors
+        throw error
+      }
     },
     staleTime: 300_000, // 5 minutes
     enabled, // Allow disabling to prevent automatic fetching
+    // Provide placeholder data to prevent loading spinner lock
+    placeholderData: (previousData) => previousData || DEFAULT_PERFORMANCE,
     refetchInterval: (query) => {
       // Auto-refresh if status is degraded (poll every 10 seconds)
       const data = query.state.data as any

@@ -84,12 +84,23 @@ class PerformanceService:
             )
 
         if self._strategy_source == "daily_signal_engine":
+            # Check if dev mode is enabled (unified check)
+            dev_mode = settings.is_dev_mode()
+            
+            # In dev mode, automatically allow stale data
+            if dev_mode:
+                allow_stale_data = True
+                logger.info(
+                    "DEV MODE: Allowing stale data for performance strategy",
+                    extra={"dev_mode": True},
+                )
+            
             validate_freshness = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA and not allow_stale_data
             validate_gaps = settings.PERFORMANCE_STRATEGY_VALIDATE_DATA and not allow_stale_data
             if allow_stale_data and settings.PERFORMANCE_STRATEGY_VALIDATE_DATA:
                 logger.info(
                     "allow_stale_inputs=True, disabling gap validation to permit cached datasets",
-                    extra={"allow_stale_inputs": allow_stale_data},
+                    extra={"allow_stale_inputs": allow_stale_data, "dev_mode": dev_mode},
                 )
 
             try:
@@ -311,15 +322,35 @@ class PerformanceService:
             if annualized_te is not None and initial_capital:
                 tracking_error_annualized_pct = annualized_te / initial_capital
 
+            trade_count = metrics.get("total_trades", 0)
             guardrail_result = checker.check_all(
                 max_drawdown_pct=metrics.get("max_drawdown"),
                 risk_of_ruin=metrics.get("risk_of_ruin"),
-                trade_count=metrics.get("total_trades", 0),
+                trade_count=trade_count,
                 duration_days=total_days,
                 tracking_error_annualized_pct=tracking_error_annualized_pct,
             )
-            if not guardrail_result.passed:
-                metrics_status = "FAIL"
+            
+            # Check if dev mode and insufficient trades - generate fallback metrics
+            dev_mode = settings.is_dev_mode()
+            if dev_mode and trade_count < 50:
+                logger.info(
+                    f"DEV MODE: Insufficient trades ({trade_count} < 50), generating fallback metrics",
+                    extra={"trade_count": trade_count, "dev_mode": True},
+                )
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                metrics_status = "DEGRADED"
+            elif not guardrail_result.passed:
+                # Check if failure was due to insufficient trades in dev mode
+                if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
+                    logger.info(
+                        f"DEV MODE: Guardrail bypassed for insufficient trades, generating fallback metrics",
+                        extra={"trade_count": trade_count, "dev_mode": True},
+                    )
+                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                    metrics_status = "DEGRADED"
+                else:
+                    metrics_status = "FAIL"
 
             # Extract tracking error and execution data for response
             tracking_error = tracking_error_summary
@@ -331,6 +362,12 @@ class PerformanceService:
             has_realistic_data = bool(result.get("equity_curve_realistic") or equity_realistic)
             tracking_error_series = result.get("tracking_error_series", [])
             tracking_error_cumulative = result.get("tracking_error_cumulative", [])
+            
+            # In dev mode with degraded metrics, ensure equity curves are populated
+            if metrics_status == "DEGRADED" and not equity_curve:
+                initial_capital = metrics.get("initial_capital", 10000.0)
+                equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
+                equity_theoretical = equity_curve.copy()
             
             summary = {
                 "status": "success",
@@ -354,6 +391,13 @@ class PerformanceService:
                 "tracking_error_cumulative": tracking_error_cumulative,
                 "has_realistic_data": has_realistic_data,
             }
+            
+            # Add degraded mode metadata if applicable
+            if metrics_status == "DEGRADED":
+                summary.setdefault("metadata", {})["degraded_mode"] = True
+                summary["metadata"]["degraded_reason"] = "insufficient_trades_dev_mode"
+                summary["metadata"]["trade_count"] = trade_count
+            
             # Add metadata indicating this was freshly generated
             summary = self._enrich_with_cache_metadata(summary, served_from_cache=False)
             return summary
@@ -412,6 +456,67 @@ class PerformanceService:
         payload = self._error_cache.get("payload") or {}
         if payload.get("error_type") == "DATA_STALE":
             self._clear_error_cache()
+    
+    def _generate_fallback_metrics(
+        self,
+        existing_metrics: dict[str, Any],
+        trade_count: int,
+        total_days: int,
+    ) -> dict[str, Any]:
+        """
+        Generate fallback metrics when insufficient trades in dev mode.
+        
+        Creates minimal numeric metrics with neutral values and zeroed equity curves.
+        """
+        import numpy as np
+        
+        # Use existing metrics as base but fill in missing values
+        fallback = dict(existing_metrics)
+        
+        # Calculate synthetic equity curve (flat line)
+        initial_capital = existing_metrics.get("initial_capital", 10000.0)
+        equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
+        
+        # Set neutral metrics
+        fallback.update({
+            "total_trades": trade_count,
+            "winning_trades": max(0, trade_count // 2),  # Assume 50% win rate
+            "losing_trades": max(0, trade_count - (trade_count // 2)),
+            "win_rate": 0.5 if trade_count > 0 else 0.0,
+            "profit_factor": 1.0,  # Neutral
+            "sharpe_ratio": 0.0,  # Neutral (zero)
+            "calmar_ratio": 0.0,  # Neutral (zero)
+            "max_drawdown": 0.0,  # No drawdown
+            "cagr": 0.0,  # No return
+            "total_return": 0.0,
+            "total_return_pct": 0.0,
+            "risk_of_ruin": 0.0,  # No risk
+            "expectancy": 0.0,
+            "expectancy_pct": 0.0,
+            "avg_trade_return": 0.0,
+            "equity_curve": equity_curve,
+            "degraded_mode": True,
+        })
+        
+        # Ensure all expected numeric fields are present
+        numeric_fields = [
+            "sortino_ratio", "information_ratio", "ulcer_index",
+            "recovery_factor", "profit_to_max_drawdown", "stability",
+        ]
+        for field in numeric_fields:
+            if field not in fallback:
+                fallback[field] = 0.0
+        
+        logger.info(
+            "Generated fallback metrics for insufficient trades",
+            extra={
+                "trade_count": trade_count,
+                "total_days": total_days,
+                "dev_mode": True,
+            },
+        )
+        
+        return fallback
 
     def _enrich_with_cache_metadata(self, summary: dict[str, Any], *, served_from_cache: bool) -> dict[str, Any]:
         """Enrich summary with cache metadata fields for frontend."""
@@ -497,14 +602,37 @@ class PerformanceService:
             if annualized_te is not None and initial_capital:
                 tracking_error_annualized_pct = annualized_te / initial_capital
             
+            trade_count = metrics.get("total_trades", 0)
             guardrail_result = checker.check_all(
                 max_drawdown_pct=metrics.get("max_drawdown"),
                 risk_of_ruin=metrics.get("risk_of_ruin"),
-                trade_count=metrics.get("total_trades", 0),
+                trade_count=trade_count,
                 duration_days=total_days,
                 tracking_error_annualized_pct=tracking_error_annualized_pct,
             )
-            metrics_status = "PASS" if guardrail_result.passed else "FAIL"
+            
+            # Check if dev mode and insufficient trades - generate fallback metrics
+            dev_mode = settings.is_dev_mode()
+            if dev_mode and trade_count < 50:
+                logger.info(
+                    f"DEV MODE: Insufficient trades ({trade_count} < 50) in background backfill, generating fallback metrics",
+                    extra={"trade_count": trade_count, "dev_mode": True},
+                )
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                metrics_status = "DEGRADED"
+            elif not guardrail_result.passed:
+                # Check if failure was due to insufficient trades in dev mode
+                if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
+                    logger.info(
+                        f"DEV MODE: Guardrail bypassed for insufficient trades in background backfill, generating fallback metrics",
+                        extra={"trade_count": trade_count, "dev_mode": True},
+                    )
+                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                    metrics_status = "DEGRADED"
+                else:
+                    metrics_status = "FAIL"
+            else:
+                metrics_status = "PASS"
             
             # Ensure tracking_error_metrics is always present with required fields
             tracking_error_metrics = result.get("tracking_error_metrics") or {}

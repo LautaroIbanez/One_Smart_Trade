@@ -61,6 +61,7 @@ pnpm run dev
 **Configuración:**
 - El proxy de Vite redirige las peticiones `/api/*` a `http://localhost:8000`
 - Si el backend corre en otro host/puerto, crea `frontend/.env` con `VITE_API_BASE_URL=http://TU_BACKEND_URL`
+- **Para desarrollo local:** Crea `backend/.env` con `DEV_MODE=true` para habilitar modo desarrollo (relaja validaciones, permite datos stale, genera fallbacks)
 - Ver [START_BOTH.md](START_BOTH.md) para guía detallada
 
 ### Verificar (1 min)
@@ -88,6 +89,22 @@ curl http://localhost:8000/api/v1/recommendation/today
 ## Ejecución
 
 ### Desarrollo
+
+**Configuración de Modo Desarrollo:**
+
+Para desarrollo local, crea `backend/.env` con:
+```env
+DEV_MODE=true
+AUTO_RUN_PIPELINE_ON_START=true
+ALLOW_MANUAL_REPLAY=true
+```
+
+**¿Qué hace `DEV_MODE=true`?**
+- Relaja validaciones de frescura de datos (permite datos stale)
+- Bypassa guardrails de 50 trades (genera métricas fallback)
+- Usa configs SL/TP por defecto cuando faltan artefactos
+- Bypassa validación de backtest (usa metadatos dummy)
+- Siempre retorna payloads estructurados (nunca errores bloqueantes)
 
 **Backend:**
 ```bash

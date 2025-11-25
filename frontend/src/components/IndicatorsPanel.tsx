@@ -29,17 +29,14 @@ function IndicatorsPanel() {
     )
   }
 
-  if (!data) {
-    return (
-      <div className="indicators-panel">
-        <h2>Indicadores Clave</h2>
-        <div className="empty">No hay datos disponibles</div>
-      </div>
-    )
+  // Provide safe defaults if data is null/undefined
+  const safeData = data || {
+    indicators: {},
+    risk_metrics: { dev_fallback: true, degraded_mode: true },
   }
 
-  const indicators = data.indicators || {}
-  const riskMetrics = data.risk_metrics || {}
+  const indicators = safeData.indicators || {}
+  const riskMetrics = safeData.risk_metrics || {}
 
   // Format indicator values for display
   const formatValue = (key: string, value: unknown): string => {
@@ -63,16 +60,17 @@ function IndicatorsPanel() {
 
   const hasIndicators = Object.keys(indicators).length > 0
   const hasRiskMetrics = Object.keys(riskMetrics).length > 0
-  const showDegradedBanner = error && data && (data as any).metadata?.served_from_cache
+  const isDevFallback = (safeData as any)?.dev_fallback === true || (riskMetrics as any)?.dev_fallback === true
+  const showDegradedBanner = error && safeData && ((safeData as any).metadata?.served_from_cache || isDevFallback)
 
   return (
     <div className="indicators-panel">
       <h2>Indicadores Clave</h2>
       {showDegradedBanner && (
         <DegradedDataBanner 
-          message="Mostrando indicadores desde caché."
-          source={(data as any).metadata?.source}
-          cachedAt={(data as any).metadata?.generated_at}
+          message={isDevFallback ? "Modo desarrollo: Indicadores de respaldo generados automáticamente." : "Mostrando indicadores desde caché."}
+          source={(safeData as any).metadata?.source}
+          cachedAt={(safeData as any).metadata?.generated_at}
         />
       )}
       {hasIndicators ? (

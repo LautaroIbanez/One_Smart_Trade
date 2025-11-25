@@ -342,6 +342,8 @@ class DataCuration:
         Uses interval-specific thresholds for longer timeframes (1d, 1w) and default
         threshold for intraday intervals (1h, 15m, 5m, 1m, etc.).
         
+        In dev mode, uses relaxed thresholds to allow stale demo data.
+        
         Args:
             interval: Timeframe to check (e.g., '1h', '1d', '1w')
             threshold_minutes: Explicit threshold override (if provided, used as-is)
@@ -352,16 +354,28 @@ class DataCuration:
         if threshold_minutes is not None:
             return threshold_minutes
         
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
         # Use interval-specific thresholds for longer timeframes
         if interval == "1d":
+            # For daily candles, use dev threshold if in dev mode
+            if dev_mode:
+                return settings.DEV_DATA_FRESHNESS_THRESHOLD_1D_HOURS * 60
             # For daily candles, allow up to DATA_FRESHNESS_THRESHOLD_1D_HOURS hours
             # This allows yesterday's candle when market is closed
             return settings.DATA_FRESHNESS_THRESHOLD_1D_HOURS * 60
         elif interval == "1w":
+            # For weekly candles, use dev threshold if in dev mode
+            if dev_mode:
+                return settings.DEV_DATA_FRESHNESS_THRESHOLD_1W_DAYS * 24 * 60
             # For weekly candles, allow up to DATA_FRESHNESS_THRESHOLD_1W_DAYS days
             # This allows last week's candle
             return settings.DATA_FRESHNESS_THRESHOLD_1W_DAYS * 24 * 60
         else:
+            # For intraday intervals (1h, 15m, 5m, 1m, etc.), use dev threshold if in dev mode
+            if dev_mode:
+                return settings.DEV_DATA_FRESHNESS_THRESHOLD_MINUTES
             # For intraday intervals (1h, 15m, 5m, 1m, etc.), use default threshold
             return settings.DATA_FRESHNESS_THRESHOLD_MINUTES
 
@@ -373,6 +387,7 @@ class DataCuration:
         symbol: str | None = None,
         threshold_minutes: int | None = None,
         reference_time: datetime | None = None,
+        skip_in_dev: bool = True,
     ) -> None:
         """
         Validate that the latest candle for the given interval is fresh enough.
@@ -382,17 +397,99 @@ class DataCuration:
         - Daily (1d): DATA_FRESHNESS_THRESHOLD_1D_HOURS (default: 48 hours)
         - Weekly (1w): DATA_FRESHNESS_THRESHOLD_1W_DAYS (default: 7 days)
         
+        In dev mode (when DEV_MODE is enabled), validation is skipped
+        but freshness status is still logged for monitoring.
+        
         Args:
             interval: Timeframe to check (e.g., '1h', '1d', '1w')
             venue: Optional venue filter
             symbol: Optional symbol filter
             threshold_minutes: Maximum age in minutes (if None, uses interval-specific threshold)
             reference_time: Time to compare against (defaults to current UTC time)
+            skip_in_dev: If True, skip validation when dev mode is enabled (default: True)
             
         Raises:
-            DataFreshnessError: If data is missing or stale
+            DataFreshnessError: If data is missing or stale (unless dev mode is enabled)
             FileNotFoundError: If curated dataset doesn't exist
         """
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
+        # In dev mode, skip validation but log freshness status
+        if dev_mode and skip_in_dev:
+            try:
+                df = self.get_latest_curated(interval, venue=venue, symbol=symbol)
+                if df is not None and not df.empty and "open_time" in df.columns:
+                    latest_timestamp = df["open_time"].max()
+                    # Ensure timestamp is timezone-aware
+                    if isinstance(latest_timestamp, pd.Timestamp):
+                        if latest_timestamp.tz is None:
+                            latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                        else:
+                            latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                        latest_dt = latest_timestamp.to_pydatetime()
+                    elif isinstance(latest_timestamp, datetime):
+                        if latest_timestamp.tzinfo is None:
+                            latest_dt = latest_timestamp.replace(tzinfo=timezone.utc)
+                        else:
+                            latest_dt = latest_timestamp.astimezone(timezone.utc)
+                    else:
+                        latest_dt = pd.to_datetime(latest_timestamp)
+                        if latest_dt.tz is None:
+                            latest_dt = latest_dt.tz_localize(timezone.utc)
+                        else:
+                            latest_dt = latest_dt.tz_convert(timezone.utc)
+                        latest_dt = latest_dt.to_pydatetime()
+                    
+                    if reference_time is None:
+                        reference_time = datetime.now(timezone.utc)
+                    elif reference_time.tzinfo is None:
+                        reference_time = reference_time.replace(tzinfo=timezone.utc)
+                    
+                    age_delta = reference_time - latest_dt
+                    age_minutes = age_delta.total_seconds() / 60.0
+                    threshold_minutes = self._get_freshness_threshold_minutes(interval, threshold_minutes)
+                    
+                    if age_minutes > threshold_minutes:
+                        logger.info(
+                            f"DEV MODE: Data freshness check skipped (data is stale: {age_minutes:.1f} minutes old, threshold: {threshold_minutes} minutes)",
+                            extra={
+                                "interval": interval,
+                                "venue": venue,
+                                "symbol": symbol,
+                                "latest_timestamp": latest_dt.isoformat(),
+                                "age_minutes": age_minutes,
+                                "threshold_minutes": threshold_minutes,
+                                "dev_mode": True,
+                            },
+                        )
+                    else:
+                        logger.debug(
+                            f"DEV MODE: Data freshness check passed (data is fresh: {age_minutes:.1f} minutes old)",
+                            extra={
+                                "interval": interval,
+                                "venue": venue,
+                                "symbol": symbol,
+                                "latest_timestamp": latest_dt.isoformat(),
+                                "age_minutes": age_minutes,
+                                "threshold_minutes": threshold_minutes,
+                                "dev_mode": True,
+                            },
+                        )
+                    return
+            except (FileNotFoundError, ValueError, KeyError) as e:
+                logger.warning(
+                    f"DEV MODE: Data freshness check skipped (error loading data: {e})",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "error": str(e),
+                        "dev_mode": True,
+                    },
+                )
+                return
+        
         threshold_minutes = self._get_freshness_threshold_minutes(interval, threshold_minutes)
         
         if reference_time is None:
@@ -485,6 +582,8 @@ class DataCuration:
         Uses interval-specific tolerances for longer timeframes (1d, 1w) and default
         tolerance for intraday intervals (1h, 15m, 5m, 1m, etc.).
         
+        In dev mode, uses relaxed tolerances to allow gaps in demo data.
+        
         Args:
             interval: Timeframe to check (e.g., '1h', '1d', '1w')
             tolerance_candles: Explicit tolerance override (if provided, used as-is)
@@ -494,6 +593,13 @@ class DataCuration:
         """
         if tolerance_candles is not None:
             return tolerance_candles
+        
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
+        # For intraday intervals, use dev tolerance if in dev mode
+        if interval not in ["1d", "1w"] and dev_mode:
+            return settings.DEV_DATA_GAP_TOLERANCE_CANDLES
         
         # Use interval-specific tolerances for longer timeframes
         if interval == "1d":
@@ -514,6 +620,7 @@ class DataCuration:
         symbol: str | None = None,
         lookback_days: int | None = None,
         tolerance_candles: int | None = None,
+        skip_in_dev: bool = True,
     ) -> None:
         """
         Validate that data has no gaps exceeding tolerance threshold.
@@ -523,16 +630,93 @@ class DataCuration:
         - Daily (1d): DATA_GAP_TOLERANCE_1D_CANDLES (default: 15 candles)
         - Weekly (1w): DATA_GAP_TOLERANCE_1W_CANDLES (default: 4 candles)
         
+        In dev mode (when DEV_MODE is enabled), validation is skipped
+        but gap status is still logged for monitoring.
+        
         Args:
             interval: Timeframe to check (e.g., '1h', '1d', '1w')
             venue: Optional venue filter
             symbol: Optional symbol filter
             lookback_days: Number of days to check (defaults to settings.DATA_GAP_CHECK_LOOKBACK_DAYS)
             tolerance_candles: Maximum number of missing candles allowed (if None, uses interval-specific tolerance)
+            skip_in_dev: If True, skip validation when dev mode is enabled (default: True)
             
         Raises:
-            DataGapError: If gaps exceed tolerance threshold
+            DataGapError: If gaps exceed tolerance threshold (unless dev mode is enabled)
         """
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
+        # In dev mode, skip validation but log gap status
+        if dev_mode and skip_in_dev:
+            from app.data.ingestion import DataIngestion
+            
+            if lookback_days is None:
+                lookback_days = settings.DATA_GAP_CHECK_LOOKBACK_DAYS
+            
+            tolerance_candles = self._get_gap_tolerance_candles(interval, tolerance_candles)
+            
+            try:
+                end_time = datetime.now(timezone.utc)
+                start_time = end_time - timedelta(days=lookback_days)
+                
+                ingestion = DataIngestion()
+                gaps = ingestion.check_gaps(interval, start_time, end_time)
+                
+                if gaps:
+                    critical_gaps = [gap for gap in gaps if gap.get("missing_candles", 0) > tolerance_candles]
+                    if critical_gaps:
+                        total_missing = sum(gap.get("missing_candles", 0) for gap in critical_gaps)
+                        logger.info(
+                            f"DEV MODE: Data gap check skipped (critical gaps detected: {len(critical_gaps)} gap(s) with {total_missing} total missing candles, tolerance: {tolerance_candles} candles)",
+                            extra={
+                                "interval": interval,
+                                "venue": venue,
+                                "symbol": symbol,
+                                "gaps": critical_gaps,
+                                "tolerance_candles": tolerance_candles,
+                                "lookback_days": lookback_days,
+                                "dev_mode": True,
+                            },
+                        )
+                    else:
+                        logger.debug(
+                            f"DEV MODE: Data gap check passed (gaps within tolerance)",
+                            extra={
+                                "interval": interval,
+                                "venue": venue,
+                                "symbol": symbol,
+                                "gaps": gaps,
+                                "tolerance_candles": tolerance_candles,
+                                "lookback_days": lookback_days,
+                                "dev_mode": True,
+                            },
+                        )
+                else:
+                    logger.debug(
+                        f"DEV MODE: Data gap check passed (no gaps detected)",
+                        extra={
+                            "interval": interval,
+                            "venue": venue,
+                            "symbol": symbol,
+                            "lookback_days": lookback_days,
+                            "dev_mode": True,
+                        },
+                    )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"DEV MODE: Data gap check skipped (error checking gaps: {e})",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "error": str(e),
+                        "dev_mode": True,
+                    },
+                )
+                return
+        
         from app.data.ingestion import DataIngestion
         
         if lookback_days is None:

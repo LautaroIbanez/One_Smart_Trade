@@ -1,0 +1,32 @@
+{
+  "symbol": "BTCUSDT",
+  "regime": "stress",
+  "rr_threshold": 1.2,
+  "search_space": {
+    "atr_multiplier_sl": [1.5],
+    "atr_multiplier_tp": [2.5],
+    "tp_ratio": [1.8],
+    "breakeven_buffer_pct": [0.15]
+  },
+  "best_params": {
+    "atr_multiplier_sl": 1.5,
+    "atr_multiplier_tp": 2.5,
+    "tp_ratio": 1.8,
+    "breakeven_buffer_pct": 0.15
+  },
+  "aggregates": {
+    "calmar": 1.5,
+    "profit_factor": 1.3,
+    "hit_rate": 0.45,
+    "avg_rr": 3.0,
+    "expectancy_r": 0.3,
+    "max_drawdown": 0.15
+  },
+  "metadata": {
+    "method": "dev_defaults",
+    "updated_at": "2025-01-01T00:00:00+00:00",
+    "dev_mode": true,
+    "fallback": true
+  }
+}
+

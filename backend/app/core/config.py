@@ -40,9 +40,23 @@ class Settings(BaseSettings):
     # instead of failing. This allows dev environments to work without Binance access.
     DEV_FAKE_DATA: bool = False  # Set to True to enable demo data fallback in dev
     
+    # Dev mode: Unified development mode switch
+    # When enabled, relaxes all validation checks and enables fallback behaviors:
+    # - Data freshness/gap validation: Logged but non-blocking
+    # - SL/TP configs: Uses deterministic defaults when missing
+    # - 50-trade guardrail: Bypassed with fallback metrics
+    # - Backtest metadata: Bypassed with dummy values
+    # - Recommendation generation: Returns structured fallback payloads
+    # - Performance summary: Returns degraded metrics instead of errors
+    # Set DEV_MODE=True in .env for local development to enable all relaxed behaviors
+    DEV_MODE: bool = False  # Set to True to enable unified dev mode
+    ALLOW_STALE_IN_DEV: bool = False  # Legacy alias - automatically enables DEV_MODE if True
+    
     # Dev mode: Relaxed data validation thresholds
-    # When DEV_FAKE_DATA is enabled, these thresholds are used instead of production values
+    # When DEV_MODE is enabled, these thresholds are used instead of production values
     DEV_DATA_FRESHNESS_THRESHOLD_MINUTES: int = 1440  # 24 hours (vs 90 minutes in prod)
+    DEV_DATA_FRESHNESS_THRESHOLD_1D_HOURS: int = 168  # 7 days (vs 48 hours in prod)
+    DEV_DATA_FRESHNESS_THRESHOLD_1W_DAYS: int = 30  # 30 days (vs 7 days in prod)
     DEV_DATA_GAP_TOLERANCE_CANDLES: int = 10  # 10 candles (vs 2 in prod)
     
     # Admin API key for operational endpoints (set via ADMIN_API_KEY env var)
@@ -143,6 +157,15 @@ class Settings(BaseSettings):
     # the API will return the last valid BUY/SELL signal with is_stale=true for paper trading
     HOLD_FALLBACK_TO_LAST_SIGNAL: bool = True  # Default True for dev/paper trading
 
+    def is_dev_mode(self) -> bool:
+        """
+        Unified check for development mode.
+        
+        Returns True if DEV_MODE is enabled or ALLOW_STALE_IN_DEV is set (legacy).
+        This is the single source of truth for dev mode checks across the application.
+        """
+        return self.DEV_MODE or self.ALLOW_STALE_IN_DEV
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

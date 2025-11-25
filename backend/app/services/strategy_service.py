@@ -67,28 +67,53 @@ class StrategyService:
         config = self.optimizer.load_config(resolved_symbol, regime)
 
         if not config:
-            self.alerts.notify(
-                "risk.optimizer_missing",
-                f"No SL/TP config for regime={regime}",
-                payload={"symbol": resolved_symbol},
-            )
-            # Create fallback config with RR threshold for guardrails
-            fallback_config = {
-                "regime": regime,
-                "rr_threshold": self.rr_floor,
-                "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True},
-            }
-            self._apply_conservative_defaults(signal, market_df, regime)
-            # Problem 3: Ensure defaults meet RR threshold before applying guardrails
-            # _apply_conservative_defaults already calls _adjust_tp_for_min_rr if needed
-            # But double-check RR meets threshold before guardrails to avoid unnecessary HOLD
-            risk_metrics = signal.setdefault("risk_metrics", {})
-            rr_ratio = risk_metrics.get("risk_reward_ratio", 0.0)
-            if rr_ratio > 0 and rr_ratio < self.rr_floor:
-                # Final adjustment if still below threshold
-                self._adjust_tp_for_min_rr(signal, self.rr_floor)
-            # Still apply guardrails even with conservative defaults to check RR threshold
-            guardrail_reason = await self._apply_guardrails(signal, fallback_config, resolved_symbol)
+            # In dev mode, load_config should have returned defaults, but if not, use fallback
+            dev_mode = settings.is_dev_mode()
+            if dev_mode:
+                # load_config should have already returned dev defaults, but if not, create fallback
+                logger.info(
+                    f"DEV MODE: No SL/TP config found for {resolved_symbol}/{regime}, using deterministic defaults",
+                    extra={"symbol": resolved_symbol, "regime": regime, "dev_mode": True},
+                )
+                # Create dev mode fallback config with deterministic defaults
+                fallback_config = {
+                    "symbol": resolved_symbol,
+                    "regime": regime,
+                    "rr_threshold": self.rr_floor,
+                    "best_params": {
+                        "atr_multiplier_sl": 1.5,
+                        "atr_multiplier_tp": 2.5,
+                        "tp_ratio": 1.8,
+                        "breakeven_buffer_pct": 0.15,
+                    },
+                    "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True, "dev_mode": True},
+                }
+                signal.setdefault("factors", {})["optimizer_regime"] = regime
+                self._apply_config(signal, market_df, fallback_config)
+                guardrail_reason = await self._apply_guardrails(signal, fallback_config, resolved_symbol)
+            else:
+                self.alerts.notify(
+                    "risk.optimizer_missing",
+                    f"No SL/TP config for regime={regime}",
+                    payload={"symbol": resolved_symbol},
+                )
+                # Create fallback config with RR threshold for guardrails
+                fallback_config = {
+                    "regime": regime,
+                    "rr_threshold": self.rr_floor,
+                    "metadata": {"updated_at": datetime.now(timezone.utc).isoformat(), "fallback": True},
+                }
+                self._apply_conservative_defaults(signal, market_df, regime)
+                # Problem 3: Ensure defaults meet RR threshold before applying guardrails
+                # _apply_conservative_defaults already calls _adjust_tp_for_min_rr if needed
+                # But double-check RR meets threshold before guardrails to avoid unnecessary HOLD
+                risk_metrics = signal.setdefault("risk_metrics", {})
+                rr_ratio = risk_metrics.get("risk_reward_ratio", 0.0)
+                if rr_ratio > 0 and rr_ratio < self.rr_floor:
+                    # Final adjustment if still below threshold
+                    self._adjust_tp_for_min_rr(signal, self.rr_floor)
+                # Still apply guardrails even with conservative defaults to check RR threshold
+                guardrail_reason = await self._apply_guardrails(signal, fallback_config, resolved_symbol)
         else:
             signal.setdefault("factors", {})["optimizer_regime"] = regime
             self._apply_config(signal, market_df, config)

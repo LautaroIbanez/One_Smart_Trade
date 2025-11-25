@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import logger
 
 
@@ -146,7 +147,30 @@ class GuardrailChecker:
 
     def check_trade_count(self, trade_count: int) -> GuardrailResult:
         """Check if there are enough trades."""
+        # Check if dev mode is enabled (unified check)
+        dev_mode = settings.is_dev_mode()
+        
         if trade_count < self.config.min_trades:
+            # In dev mode, bypass the check but log it
+            if dev_mode:
+                logger.info(
+                    f"DEV MODE: Bypassing min_trades guardrail (trade_count={trade_count}, min_required={self.config.min_trades})",
+                    extra={
+                        "trade_count": trade_count,
+                        "min_required": self.config.min_trades,
+                        "dev_mode": True,
+                        "dev_bypass": "min_trades",
+                    },
+                )
+                return GuardrailResult(
+                    passed=True,
+                    details={
+                        "trade_count": trade_count,
+                        "min_required": self.config.min_trades,
+                        "dev_bypass": "min_trades",
+                        "dev_mode": True,
+                    },
+                )
             return GuardrailResult(
                 passed=False,
                 reason=CampaignRejectedReason.INSUFFICIENT_TRADES,
