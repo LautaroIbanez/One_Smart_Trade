@@ -1,5 +1,7 @@
 """Application configuration."""
 
+import os
+
 from pydantic_settings import BaseSettings
 
 
@@ -167,11 +169,24 @@ class Settings(BaseSettings):
     def is_dev_mode(self) -> bool:
         """
         Unified check for development mode.
-        
-        Returns True if DEV_MODE is enabled or ALLOW_STALE_IN_DEV is set (legacy).
-        This is the single source of truth for dev mode checks across the application.
+
+        Returns True when any of these conditions are met:
+        - DEV_MODE flag explicitly enabled
+        - ALLOW_STALE_IN_DEV legacy flag enabled
+        - ENV is set to a non-production value (dev/test/local)
+
+        This keeps local development environments from blocking on production-only
+        guardrails like data freshness, while still requiring explicit opt-in for
+        production (ENV=prod or DEV_MODE=False with ENV unset).
         """
-        return self.DEV_MODE or self.ALLOW_STALE_IN_DEV
+        if self.DEV_MODE or self.ALLOW_STALE_IN_DEV:
+            return True
+
+        env_value = os.getenv("ENV", "dev").lower()
+        if env_value in {"dev", "development", "test", "local"}:
+            return True
+
+        return False
     
     class Config:
         env_file = ".env"
