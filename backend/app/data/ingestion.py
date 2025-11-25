@@ -140,11 +140,17 @@ class DataIngestion:
 
         return gaps
 
-    async def ingest_all_timeframes(self) -> list[dict[str, Any]]:
+    async def ingest_all_timeframes(
+        self, *, symbol: str = "BTCUSDT", venue: str = "binance"
+    ) -> list[dict[str, Any]]:
+        """Ingest all supported timeframes for a specific venue/symbol."""
+
         results: list[dict[str, Any]] = []
         for interval in INTERVALS:
             try:
-                result = await self.ingest_timeframe(interval)
+                result = await self.ingest_timeframe(
+                    interval, symbol=symbol, venue=venue
+                )
             except Exception as exc:  # pragma: no cover - bubbled to caller
                 result = {
                     "status": "error",

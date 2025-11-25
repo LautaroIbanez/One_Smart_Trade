@@ -101,7 +101,10 @@ async def job_ingest_all() -> None:
     start_time = time.time()
 
     try:
-        results = await ingestion.ingest_all_timeframes()
+        venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
+        symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
+
+        results = await ingestion.ingest_all_timeframes(venue=venue, symbol=symbol)
         duration = time.time() - start_time
         total_rows = sum(item.get("rows", 0) for item in results)
 
@@ -197,14 +200,16 @@ async def job_daily_pipeline() -> None:
         ingestion_start = time.time()
         ingestion = DataIngestion()
         try:
-            ingestion_results = await ingestion.ingest_all_timeframes()
+            venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
+            symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
+
+            ingestion_results = await ingestion.ingest_all_timeframes(
+                venue=venue, symbol=symbol
+            )
             
             # Step 1.5: Verify 1d data exists, force reingestion if missing (especially critical for dev)
             from app.data.storage import get_raw_path, get_curated_path
             from datetime import datetime, timedelta, timezone
-            
-            venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
-            symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
             raw_1d_path = get_raw_path(venue, symbol, "1d").parent
             curated_1d_path = get_curated_path(venue, symbol, "1d")
             
@@ -329,7 +334,9 @@ async def job_daily_pipeline() -> None:
         curation_results = {}
         for interval in INTERVALS:
             try:
-                curation.curate_interval(interval)
+                curation.curate_interval(
+                    interval, venue=settings.PERFORMANCE_STRATEGY_VENUE, symbol=settings.PERFORMANCE_STRATEGY_SYMBOL
+                )
                 curation_results[interval] = "success"
             except FileNotFoundError:
                 logger.warning(f"Pipeline {run_id}: Skipping interval {interval} - raw data missing")
