@@ -229,6 +229,13 @@ export function getErrorMessage(error: unknown): string {
   return 'Ha ocurrido un error desconocido'
 }
 
+// Helper function for logging (if not available, use console)
+const logger = {
+  info: (msg: string, ...args: any[]) => console.log(`[INFO] ${msg}`, ...args),
+  warn: (msg: string, ...args: any[]) => console.warn(`[WARN] ${msg}`, ...args),
+  error: (msg: string, ...args: any[]) => console.error(`[ERROR] ${msg}`, ...args),
+}
+
 // Safe default recommendation structure for degraded/dev mode
 const DEFAULT_RECOMMENDATION = {
   signal: 'HOLD' as const,
@@ -251,44 +258,85 @@ export const useTodayRecommendation = () => {
   return useQuery({
     queryKey: ['recommendation', 'today'],
     queryFn: async ({ signal }) => {
-      try {
-        // Pass signal to Axios for automatic cancellation
-        const { data } = await api.get('/api/v1/recommendation/today', { signal })
-        // Ensure we always return a structured object, never null/undefined
-        return data || DEFAULT_RECOMMENDATION
-      } catch (error: any) {
-        // Handle HTTP 503/400 with guardrail states
-        // These are VALID guardrail states, not errors - return them as data so UI can display them informatively
-        // Guardrails protect signal quality by blocking generation when data is stale, incomplete, or insufficient
-        if ((error?.response?.status === 503 || error?.response?.status === 400) && error?.response?.data?.detail) {
-          const detail = error.response.data.detail
-          // If detail is an object with a guardrail status, return it as data (not error)
-          if (typeof detail === 'object' && detail.status) {
-            const guardrailStatuses = [
-              'data_stale',
-              'data_gaps', 
-              'insufficient_history',
-              'capital_missing',
-              'daily_risk_limit_exceeded',
-            ]
-            if (guardrailStatuses.includes(detail.status)) {
-              // Return guardrail state as valid data - these are not errors, they're informative states
-              // The UI will display these with appropriate instructions, not as red error screens
-              return detail
+      const maxRetries = 3
+      let lastError: any = null
+      
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          // Pass signal to Axios for automatic cancellation
+          const { data } = await api.get('/api/v1/recommendation/today', { signal })
+          // Ensure we always return a structured object, never null/undefined
+          return data || DEFAULT_RECOMMENDATION
+        } catch (error: any) {
+          lastError = error
+          
+          // Handle 202 Accepted (processing) - retry with exponential backoff
+          if (error?.response?.status === 202 || isProcessingError(error)) {
+            if (attempt < maxRetries) {
+              const retryDelay = Math.min(1000 * Math.pow(2, attempt), 10000) // Max 10s
+              logger.info(`Recommendation processing (202), retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`)
+              await new Promise(resolve => setTimeout(resolve, retryDelay))
+              continue
+            } else {
+              // After max retries, return processing state
+              return {
+                ...DEFAULT_RECOMMENDATION,
+                status: 'processing',
+                message: 'La recomendación se está generando. Por favor, espera unos momentos e intenta nuevamente.',
+                processing: true,
+              }
             }
           }
+          
+          // Handle HTTP 503/400 with guardrail states
+          // These are VALID guardrail states, not errors - return them as data so UI can display them informatively
+          // Guardrails protect signal quality by blocking generation when data is stale, incomplete, or insufficient
+          if ((error?.response?.status === 503 || error?.response?.status === 400) && error?.response?.data?.detail) {
+            const detail = error.response.data.detail
+            // If detail is an object with a guardrail status, return it as data (not error)
+            if (typeof detail === 'object' && detail.status) {
+              const guardrailStatuses = [
+                'data_stale',
+                'data_gaps', 
+                'insufficient_history',
+                'capital_missing',
+                'daily_risk_limit_exceeded',
+              ]
+              if (guardrailStatuses.includes(detail.status)) {
+                // Return guardrail state as valid data - these are not errors, they're informative states
+                // The UI will display these with appropriate instructions, not as red error screens
+                return detail
+              }
+            }
+          }
+          
+          // For timeout errors, retry with exponential backoff (only in dev/startup scenarios)
+          if (isTimeoutError(error) && attempt < maxRetries) {
+            const retryDelay = Math.min(2000 * Math.pow(2, attempt), 15000) // Max 15s for timeouts
+            logger.info(`Request timeout, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`)
+            await new Promise(resolve => setTimeout(resolve, retryDelay))
+            continue
+          }
+          
+          // For 200 responses with empty/null body, return default structure
+          if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
+            return DEFAULT_RECOMMENDATION
+          }
+          
+          // If this is the last attempt or non-retryable error, throw
+          if (attempt === maxRetries || (!isTimeoutError(error) && !isProcessingError(error))) {
+            throw error
+          }
         }
-        // For 200 responses with empty/null body, return default structure
-        if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
-          return DEFAULT_RECOMMENDATION
-        }
-        // Re-throw other errors (including timeout errors)
-        throw error
       }
+      
+      // Should never reach here, but TypeScript needs this
+      throw lastError
     },
     staleTime: 60_000,
     // Provide placeholder data to prevent loading spinner lock
     placeholderData: (previousData) => previousData || DEFAULT_RECOMMENDATION,
+    retry: false, // We handle retries manually above
   })
 }
 
@@ -406,38 +454,59 @@ export const usePerformanceSummary = (enabled: boolean = true, warmup: boolean =
   return useQuery({
     queryKey: ['performance', 'summary', warmup],
     queryFn: async ({ signal }) => {
-      try {
-        const { data } = await api.get('/api/v1/performance/summary', {
-          params: { allow_stale_inputs: true, warmup },
-          signal,
-        })
-        // Ensure we always return a structured object, never null/undefined
-        // If status is error but arrays/metrics are present, preserve them for degraded rendering
-        if (!data || data === null) {
-          return DEFAULT_PERFORMANCE
+      const maxRetries = 2 // Fewer retries for performance (less critical)
+      let lastError: any = null
+      
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const { data } = await api.get('/api/v1/performance/summary', {
+            params: { allow_stale_inputs: true, warmup },
+            signal,
+          })
+          // Ensure we always return a structured object, never null/undefined
+          // If status is error but arrays/metrics are present, preserve them for degraded rendering
+          if (!data || data === null) {
+            return DEFAULT_PERFORMANCE
+          }
+          // If status is error but we have partial metrics, merge with defaults
+          if (data.status === 'error' && (!data.metrics || Object.keys(data.metrics).length === 0)) {
+            return { ...DEFAULT_PERFORMANCE, ...data, metrics: DEFAULT_PERFORMANCE.metrics }
+          }
+          return data
+        } catch (error: any) {
+          lastError = error
+          
+          // Retry on timeout or processing errors
+          if ((isTimeoutError(error) || isProcessingError(error)) && attempt < maxRetries) {
+            const retryDelay = Math.min(2000 * Math.pow(2, attempt), 10000)
+            logger.info(`Performance summary timeout/processing, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`)
+            await new Promise(resolve => setTimeout(resolve, retryDelay))
+            continue
+          }
+          
+          // For 200 responses with empty/null body, return default structure
+          if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
+            return DEFAULT_PERFORMANCE
+          }
+          
+          // If this is the last attempt or non-retryable error, throw
+          if (attempt === maxRetries || (!isTimeoutError(error) && !isProcessingError(error))) {
+            throw error
+          }
         }
-        // If status is error but we have partial metrics, merge with defaults
-        if (data.status === 'error' && (!data.metrics || Object.keys(data.metrics).length === 0)) {
-          return { ...DEFAULT_PERFORMANCE, ...data, metrics: DEFAULT_PERFORMANCE.metrics }
-        }
-        return data
-      } catch (error: any) {
-        // For 200 responses with empty/null body, return default structure
-        if (error?.response?.status === 200 && (!error.response.data || error.response.data === null)) {
-          return DEFAULT_PERFORMANCE
-        }
-        // Re-throw other errors
-        throw error
       }
+      
+      throw lastError
     },
     staleTime: 300_000, // 5 minutes
     enabled, // Allow disabling to prevent automatic fetching
     // Provide placeholder data to prevent loading spinner lock
     placeholderData: (previousData) => previousData || DEFAULT_PERFORMANCE,
+    retry: false, // We handle retries manually above
     refetchInterval: (query) => {
       // Auto-refresh if status is degraded (poll every 10 seconds)
       const data = query.state.data as any
-      if (data?.status === 'degraded') {
+      if (data?.status === 'degraded' || data?.status === 'processing') {
         return 10_000 // 10 seconds
       }
       return false // Don't auto-refresh otherwise

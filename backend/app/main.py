@@ -26,6 +26,7 @@ from app.analytics.livelihood_report import LivelihoodReport
 from app.db.models import PerformancePeriodicORM, PeriodicHorizon
 from sqlalchemy import select
 import os
+import pandas as pd
 
 # Initialize logging
 setup_logging()
@@ -197,6 +198,75 @@ async def job_daily_pipeline() -> None:
         ingestion = DataIngestion()
         try:
             ingestion_results = await ingestion.ingest_all_timeframes()
+            
+            # Step 1.5: Verify 1d data exists, force reingestion if missing (especially critical for dev)
+            from app.data.storage import get_raw_path, get_curated_path
+            from datetime import datetime, timedelta, timezone
+            
+            venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
+            symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
+            raw_1d_path = get_raw_path(venue, symbol, "1d").parent
+            curated_1d_path = get_curated_path(venue, symbol, "1d")
+            
+            # Check if 1d data is missing
+            raw_1d_exists = raw_1d_path.exists() and any(raw_1d_path.glob("*.parquet"))
+            curated_1d_exists = curated_1d_path.exists()
+            
+            if not raw_1d_exists or not curated_1d_exists:
+                logger.warning(
+                    f"Pipeline {run_id}: 1d data missing (raw_exists={raw_1d_exists}, curated_exists={curated_1d_exists}), forcing reingestion",
+                    extra={"venue": venue, "symbol": symbol, "run_id": run_id},
+                )
+                try:
+                    # Determine start time: use last raw file if exists, otherwise 90 days back for dev
+                    if raw_1d_exists:
+                        from app.data.storage import read_parquet
+                        raw_files = sorted(raw_1d_path.glob("*.parquet"))
+                        if raw_files:
+                            last_raw = read_parquet(raw_files[-1])
+                            if not last_raw.empty and "open_time" in last_raw.columns:
+                                start_time = last_raw["open_time"].max()
+                                if isinstance(start_time, pd.Timestamp):
+                                    start_time = start_time.to_pydatetime()
+                                if start_time.tzinfo is None:
+                                    start_time = start_time.replace(tzinfo=timezone.utc)
+                            else:
+                                start_time = datetime.now(timezone.utc) - timedelta(days=90)
+                        else:
+                            start_time = datetime.now(timezone.utc) - timedelta(days=90)
+                    else:
+                        start_time = datetime.now(timezone.utc) - timedelta(days=90)
+                    
+                    end_time = datetime.now(timezone.utc)
+                    
+                    # Force reingest 1d
+                    reingest_result = await ingestion.ingest_timeframe(
+                        "1d",
+                        start=start_time,
+                        end=end_time,
+                        symbol=symbol,
+                        venue=venue,
+                    )
+                    
+                    if reingest_result.get("status") == "success":
+                        logger.info(
+                            f"Pipeline {run_id}: Successfully reingested 1d data - {reingest_result.get('rows', 0)} rows",
+                            extra={"venue": venue, "symbol": symbol, "run_id": run_id},
+                        )
+                        # Add to ingestion results
+                        ingestion_results.append(reingest_result)
+                    else:
+                        logger.warning(
+                            f"Pipeline {run_id}: Failed to reingest 1d data: {reingest_result}",
+                            extra={"venue": venue, "symbol": symbol, "run_id": run_id},
+                        )
+                except Exception as reingest_exc:
+                    logger.error(
+                        f"Pipeline {run_id}: Error during 1d reingestion: {reingest_exc}",
+                        exc_info=True,
+                        extra={"venue": venue, "symbol": symbol, "run_id": run_id},
+                    )
+            
             ingestion_duration = time.time() - ingestion_start
             total_rows = sum(item.get("rows", 0) for item in ingestion_results)
             outcome_details["steps"]["ingestion"] = {
@@ -277,40 +347,68 @@ async def job_daily_pipeline() -> None:
         
         # Step 2.5: Performance backfill (after ingestion/curation, before signal generation)
         # This ensures performance cache is populated even if signal generation fails
+        # In dev mode, run in background to avoid blocking pipeline startup
         performance_start = time.time()
-        try:
+        dev_mode = settings.is_dev_mode()
+        if dev_mode and settings.AUTO_RUN_PIPELINE_ON_START:
+            # In dev mode with auto-run, start backfill as background task to avoid blocking
+            logger.info(f"Pipeline {run_id}: Starting performance backfill in background (dev mode, non-blocking)")
             from app.services.performance_service import get_performance_service
             perf_service = get_performance_service()
-            logger.info(f"Pipeline {run_id}: Starting performance backfill (warmup)")
-            # Run backtest in foreground to populate cache
-            backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=False)
-            performance_duration = time.time() - performance_start
-            if backfill_result:
-                outcome_details["steps"]["performance_backfill"] = {
-                    "status": "success",
-                    "duration_seconds": round(performance_duration, 2),
-                    "cache_populated": True,
-                }
-                logger.info(f"Pipeline {run_id}: Performance backfill completed in {performance_duration:.2f}s")
-            else:
+            
+            async def background_backfill():
+                try:
+                    backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=True)
+                    if backfill_result:
+                        logger.info(f"Pipeline {run_id}: Background performance backfill completed successfully")
+                    else:
+                        logger.warning(f"Pipeline {run_id}: Background performance backfill completed but no result generated")
+                except Exception as bg_exc:
+                    logger.warning(f"Pipeline {run_id}: Background performance backfill failed - {bg_exc}", exc_info=True)
+            
+            # Start background task without awaiting
+            asyncio.create_task(background_backfill())
+            outcome_details["steps"]["performance_backfill"] = {
+                "status": "queued_background",
+                "duration_seconds": 0,
+                "cache_populated": False,
+                "reason": "Started in background (dev mode, non-blocking)",
+            }
+        else:
+            # Production mode or manual pipeline: run synchronously
+            try:
+                from app.services.performance_service import get_performance_service
+                perf_service = get_performance_service()
+                logger.info(f"Pipeline {run_id}: Starting performance backfill (warmup)")
+                # Run backtest in foreground to populate cache
+                backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=dev_mode)
+                performance_duration = time.time() - performance_start
+                if backfill_result:
+                    outcome_details["steps"]["performance_backfill"] = {
+                        "status": "success",
+                        "duration_seconds": round(performance_duration, 2),
+                        "cache_populated": True,
+                    }
+                    logger.info(f"Pipeline {run_id}: Performance backfill completed in {performance_duration:.2f}s")
+                else:
+                    outcome_details["steps"]["performance_backfill"] = {
+                        "status": "failed",
+                        "duration_seconds": round(performance_duration, 2),
+                        "cache_populated": False,
+                        "reason": "Backtest completed but no result generated",
+                    }
+                    logger.warning(f"Pipeline {run_id}: Performance backfill completed but no result generated")
+            except Exception as perf_exc:
+                performance_duration = time.time() - performance_start
                 outcome_details["steps"]["performance_backfill"] = {
                     "status": "failed",
                     "duration_seconds": round(performance_duration, 2),
                     "cache_populated": False,
-                    "reason": "Backtest completed but no result generated",
+                    "error": str(perf_exc),
+                    "error_type": type(perf_exc).__name__,
                 }
-                logger.warning(f"Pipeline {run_id}: Performance backfill completed but no result generated")
-        except Exception as perf_exc:
-            performance_duration = time.time() - performance_start
-            outcome_details["steps"]["performance_backfill"] = {
-                "status": "failed",
-                "duration_seconds": round(performance_duration, 2),
-                "cache_populated": False,
-                "error": str(perf_exc),
-                "error_type": type(perf_exc).__name__,
-            }
-            # Don't fail the pipeline if performance backfill fails - log warning and continue
-            logger.warning(f"Pipeline {run_id}: Performance backfill failed - {perf_exc}", exc_info=True)
+                # Don't fail the pipeline if performance backfill fails - log warning and continue
+                logger.warning(f"Pipeline {run_id}: Performance backfill failed - {perf_exc}", exc_info=True)
         
         # Step 3: Signal generation
         signal_start = time.time()
@@ -394,10 +492,60 @@ async def job_daily_pipeline() -> None:
                     error_details["recommendation_status"] = exc.status
                     error_details["recommendation_details"] = exc.details
             
-            outcome_details["steps"]["signal_generation"] = error_details
-            logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
-            record_signal_generation(signal_duration, False, str(type(exc).__name__))
-            raise
+            # In dev mode, persist fallback recommendation instead of failing
+            dev_mode = settings.is_dev_mode()
+            if dev_mode and isinstance(exc, RecommendationGenerationError):
+                error_status = exc.status
+                if error_status in {"data_stale", "audit_failed", "backtest_failed", "data_gaps", "insufficient_history"}:
+                    logger.info(
+                        f"Pipeline {run_id}: DEV MODE: Signal generation failed ({error_status}), persisting dev fallback recommendation",
+                        extra={"error_status": error_status, "error_reason": exc.reason, "dev_mode": True, "run_id": run_id},
+                    )
+                    try:
+                        from app.services.recommendation_service import RecommendationService
+                        fallback_service = RecommendationService(session=db)
+                        fallback_recommendation = fallback_service._build_dev_fallback_recommendation(signal="HOLD", error_status=error_status)
+                        
+                        from app.db.crud import create_recommendation
+                        rec = create_recommendation(db, fallback_recommendation)
+                        
+                        error_details["status"] = "degraded_fallback"
+                        error_details["fallback_recommendation_id"] = rec.id
+                        error_details["fallback_reason"] = error_status
+                        error_details["dev_mode"] = True
+                        
+                        logger.info(
+                            f"Pipeline {run_id}: DEV MODE: Dev fallback recommendation persisted - recommendation_id={rec.id}",
+                            extra={"recommendation_id": rec.id, "run_id": run_id, "dev_mode": True},
+                        )
+                        
+                        # Don't raise - allow pipeline to complete with degraded status
+                        outcome_details["steps"]["signal_generation"] = error_details
+                        record_signal_generation(signal_duration, False, str(type(exc).__name__))
+                        # Continue to pipeline completion with degraded status
+                    except Exception as fallback_exc:
+                        logger.error(
+                            f"Pipeline {run_id}: Failed to persist dev fallback recommendation: {fallback_exc}",
+                            exc_info=True,
+                            extra={"run_id": run_id, "dev_mode": True},
+                        )
+                        # If fallback persistence fails, raise original exception
+                        outcome_details["steps"]["signal_generation"] = error_details
+                        logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
+                        record_signal_generation(signal_duration, False, str(type(exc).__name__))
+                        raise
+                else:
+                    # Other error types in dev mode - still raise
+                    outcome_details["steps"]["signal_generation"] = error_details
+                    logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
+                    record_signal_generation(signal_duration, False, str(type(exc).__name__))
+                    raise
+            else:
+                # Production mode or non-RecommendationGenerationError - raise normally
+                outcome_details["steps"]["signal_generation"] = error_details
+                logger.error(f"Pipeline {run_id}: Signal generation failed - {exc}", exc_info=True)
+                record_signal_generation(signal_duration, False, str(type(exc).__name__))
+                raise
         
         # Pipeline completed successfully
         total_duration = time.time() - start_time
@@ -803,6 +951,31 @@ async def _run_initial_pipeline_if_needed() -> dict[str, Any]:
 @app.on_event("startup")
 async def on_startup():
     from app.core.logging import logger, sanitize_log_extra
+    
+    # Validate API and CORS configuration
+    logger.info(
+        "API Configuration",
+        extra=sanitize_log_extra({
+            "cors_origins": settings.CORS_ORIGINS,
+            "cors_origins_count": len(settings.CORS_ORIGINS),
+            "dev_mode": settings.is_dev_mode(),
+        }),
+    )
+    
+    # Warn if CORS origins are limited and might block common dev ports
+    common_dev_ports = ["5173", "3000", "5174", "5175", "8080"]
+    configured_ports = [origin.split(":")[-1] for origin in settings.CORS_ORIGINS if ":" in origin]
+    missing_ports = [port for port in common_dev_ports if port not in configured_ports]
+    if missing_ports and settings.is_dev_mode():
+        logger.warning(
+            f"DEV MODE: Common dev ports not in CORS_ORIGINS: {missing_ports}. "
+            f"Frontend on these ports may be blocked. Current CORS_ORIGINS: {settings.CORS_ORIGINS}",
+            extra=sanitize_log_extra({
+                "missing_ports": missing_ports,
+                "cors_origins": settings.CORS_ORIGINS,
+                "dev_mode": True,
+            }),
+        )
     
     # Jobs are already scheduled via decorators
     scheduler.start()

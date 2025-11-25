@@ -53,3 +53,16 @@ export function getEffectiveApiBaseUrl(): string {
   return url
 }
 
+// Log effective API configuration on module load (development only)
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  const effectiveUrl = getEffectiveApiBaseUrl()
+  const envUrl = import.meta.env.VITE_API_BASE_URL
+  console.log('[API Config] Effective API Base URL:', effectiveUrl)
+  if (envUrl) {
+    console.log('[API Config] VITE_API_BASE_URL from .env:', envUrl)
+  } else {
+    console.log('[API Config] VITE_API_BASE_URL not set, using:', window.location.origin)
+    console.log('[API Config] Note: If backend is on different host/port, set VITE_API_BASE_URL in frontend/.env')
+  }
+}
+

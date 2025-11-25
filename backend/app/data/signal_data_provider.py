@@ -157,13 +157,47 @@ class SignalDataProvider:
                 else:
                     raise
         
-        # Load curated datasets
+        # Load curated datasets with verification and fallback
         try:
             df_1d = self.curation.get_latest_curated("1d", venue=self.venue, symbol=self.symbol)
         except FileNotFoundError:
+            # Check if raw data exists to determine if reingestion is needed
+            from app.data.storage import get_raw_path, RAW_ROOT
+            raw_1d_path = get_raw_path(self.venue, self.symbol, "1d").parent
+            raw_files_exist = raw_1d_path.exists() and any(raw_1d_path.glob("*.parquet"))
+            
+            if dev_mode:
+                if not raw_files_exist:
+                    logger.warning(
+                        "DEV MODE: 1d data missing (no raw files found). Pipeline should trigger reingestion on startup.",
+                        extra={
+                            "venue": self.venue,
+                            "symbol": self.symbol,
+                            "raw_path": str(raw_1d_path),
+                            "dev_mode": True,
+                        },
+                    )
+                else:
+                    logger.info(
+                        "DEV MODE: 1d curated data missing but raw data exists. Curation may be needed.",
+                        extra={"venue": self.venue, "symbol": self.symbol, "dev_mode": True},
+                    )
+            
             # Fallback to legacy path structure
             logger.warning("Partitioned 1d data not found, falling back to legacy path")
-            df_1d = self.curation.get_latest_curated("1d")
+            try:
+                df_1d = self.curation.get_latest_curated("1d")
+            except FileNotFoundError:
+                if dev_mode:
+                    # In dev mode, allow empty dataframe to proceed with warning
+                    logger.warning(
+                        "DEV MODE: No 1d data available (neither partitioned nor legacy). Signal generation may fail or use degraded mode.",
+                        extra={"venue": self.venue, "symbol": self.symbol, "dev_mode": True},
+                    )
+                    # Create empty dataframe as fallback - will be caught by validation below
+                    df_1d = pd.DataFrame()
+                else:
+                    raise
         
         try:
             df_1h = self.curation.get_latest_curated("1h", venue=self.venue, symbol=self.symbol)

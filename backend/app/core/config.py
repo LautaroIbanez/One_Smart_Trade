@@ -68,7 +68,14 @@ class Settings(BaseSettings):
     ALLOW_MANUAL_REPLAY: bool = False  # Default False - only allow manual generation in dev/demo
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    # Common dev ports: 5173 (Vite default), 3000 (React default), 5174-5175 (Vite alternate), 8080 (common)
+    # Add more origins as needed for your development setup
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",  # Vite default
+        "http://localhost:3000",  # React default
+        "http://127.0.0.1:5173",   # Vite (127.0.0.1 variant)
+        "http://127.0.0.1:3000",   # React (127.0.0.1 variant)
+    ]
 
     # Risk alerts
     RISK_RUIN_ALERT_THRESHOLD: float = 0.05
