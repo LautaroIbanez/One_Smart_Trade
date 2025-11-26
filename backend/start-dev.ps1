@@ -30,12 +30,25 @@ if (Get-Command poetry -ErrorAction SilentlyContinue) {
     }
     
     if (-not $poetryCmd) {
+        # Si Poetry no está disponible, intentar usar el entorno virtual directamente
+        $venvPython = ".venv\Scripts\python.exe"
+        if (Test-Path $venvPython) {
+            Write-Host "Poetry no encontrado, usando entorno virtual (.venv)..." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Iniciando servidor con Python del entorno virtual..." -ForegroundColor Cyan
+            & $venvPython -m uvicorn app.main:app --reload --port 8000
+            exit 0
+        }
+        
         Write-Host "ERROR: Poetry no está instalado o no está en PATH." -ForegroundColor Red
         Write-Host "Por favor instala Poetry desde: https://python-poetry.org/docs/#installation" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "O ejecuta manualmente:" -ForegroundColor Yellow
-        Write-Host "  python -m pip install poetry" -ForegroundColor Cyan
-        Write-Host "  poetry run uvicorn app.main:app --reload --port 8000" -ForegroundColor Cyan
+        Write-Host "  .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+        Write-Host "  uvicorn app.main:app --reload --port 8000" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "O directamente:" -ForegroundColor Yellow
+        Write-Host "  .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000" -ForegroundColor Cyan
         exit 1
     }
 }

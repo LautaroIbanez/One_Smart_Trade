@@ -350,7 +350,7 @@ class BacktestEngine:
         self.max_gap_ratio = max_gap_ratio
         self.gap_threshold_multiplier = gap_threshold_multiplier
 
-    def _load_candle_series(self, request: BacktestRunRequest) -> CandleSeries:
+    async def _load_candle_series(self, request: BacktestRunRequest) -> CandleSeries:
         """
         Load and normalize candle series from curated data.
         
@@ -436,7 +436,11 @@ class BacktestEngine:
             },
         )
 
-        df = read_parquet(path)
+        # Execute blocking file read in thread pool to avoid blocking HTTP requests
+        import asyncio
+        logger.info(f"Reading parquet file (this may take a moment for large files)...")
+        df = await asyncio.to_thread(read_parquet, path)
+        logger.info(f"Parquet file loaded: {len(df)} rows, {len(df.columns)} columns")
         
         def _convert_to_datetime_utc(series: pd.Series) -> pd.Series:
             """Convert timestamp series to UTC datetime, handling numeric epoch values."""
@@ -480,30 +484,44 @@ class BacktestEngine:
             # Convert existing timestamp column
             df["timestamp"] = _convert_to_datetime_utc(df["timestamp"])
         
-        df = df.set_index("timestamp")
-
-        # Filter by date range
-        # Ensure request dates are timezone-aware UTC for comparison
-        start_date = pd.to_datetime(request.start_date, utc=True)
-        if start_date.tz is None:
-            start_date = start_date.tz_localize("UTC")
-        else:
-            start_date = start_date.tz_convert("UTC")
+        logger.info(f"Setting timestamp index and filtering data...")
+        # Execute blocking pandas operations in thread pool
+        def _process_dataframe(df, start_date, end_date):
+            df = df.set_index("timestamp")
+            # Filter by date range
+            # Ensure request dates are timezone-aware UTC for comparison
+            start_ts = pd.to_datetime(start_date, utc=True)
+            if start_ts.tz is None:
+                start_ts = start_ts.tz_localize("UTC")
+            else:
+                start_ts = start_ts.tz_convert("UTC")
+            
+            end_ts = pd.to_datetime(end_date, utc=True)
+            if end_ts.tz is None:
+                end_ts = end_ts.tz_localize("UTC")
+            else:
+                end_ts = end_ts.tz_convert("UTC")
+            
+            mask = (df.index >= start_ts) & (df.index <= end_ts)
+            return df[mask].copy()
         
-        end_date = pd.to_datetime(request.end_date, utc=True)
-        if end_date.tz is None:
-            end_date = end_date.tz_localize("UTC")
-        else:
-            end_date = end_date.tz_convert("UTC")
-        
-        mask = (df.index >= start_date) & (df.index <= end_date)
-        df_filtered = df[mask].copy()
+        df_filtered = await asyncio.to_thread(_process_dataframe, df, request.start_date, request.end_date)
+        logger.info(f"Data filtered: {len(df_filtered)} rows in date range")
 
         if len(df_filtered) == 0:
             raise ValueError(
-                f"No data in range {start_date} to {end_date}. "
+                f"No data in range {request.start_date} to {request.end_date}. "
                 f"Available data range: {df.index.min()} to {df.index.max()}"
             )
+
+        logger.info(
+            f"Candle data loaded and ready: {len(df_filtered)} candles from {df_filtered.index.min()} to {df_filtered.index.max()}",
+            extra={
+                "rows": len(df_filtered),
+                "start_date": df_filtered.index.min().isoformat() if not df_filtered.empty else None,
+                "end_date": df_filtered.index.max().isoformat() if not df_filtered.empty else None,
+            },
+        )
 
         return CandleSeries(
             symbol=request.instrument,
@@ -891,7 +909,7 @@ class BacktestEngine:
 
         # Load data
         try:
-            candle_series = self._load_candle_series(request)
+            candle_series = await self._load_candle_series(request)
         except FileNotFoundError as exc:
             # Re-raise FileNotFoundError as-is (it's a clear business error)
             logger.error(
@@ -979,10 +997,39 @@ class BacktestEngine:
         significant_gap_count = 0
         timeframe_duration = self._get_timeframe_duration(request.timeframe)
         gap_threshold = timeframe_duration * self.gap_threshold_multiplier
+        
+        # Estimate total bars for progress logging
+        total_candles = len(candle_series.data)
+        progress_log_interval = max(100, total_candles // 20)  # Log every 5% or every 100 bars, whichever is larger
+        logger.info(
+            f"Starting backtest: processing {total_candles} candles from {start_ts.date()} to {end_ts.date()}",
+            extra={
+                "total_candles": total_candles,
+                "start_date": start_ts.isoformat(),
+                "end_date": end_ts.isoformat(),
+                "instrument": instrument,
+                "timeframe": timeframe,
+            },
+        )
 
         for bar in candle_series.stream():
             bar_date = bar.name if isinstance(bar.name, pd.Timestamp) else pd.Timestamp(bar.get("timestamp", pd.Timestamp.utcnow()))
             total_bars += 1
+            
+            # Log progress periodically to show backtest is working
+            if total_bars % progress_log_interval == 0 or total_bars == total_candles:
+                progress_pct = (total_bars / total_candles * 100) if total_candles > 0 else 0
+                logger.info(
+                    f"Backtest progress: {total_bars}/{total_candles} candles processed ({progress_pct:.1f}%)",
+                    extra={
+                        "bars_processed": total_bars,
+                        "total_bars": total_candles,
+                        "progress_pct": round(progress_pct, 1),
+                        "current_date": bar_date.isoformat() if isinstance(bar_date, pd.Timestamp) else str(bar_date),
+                        "trades_closed": len(state.closed_trades),
+                        "current_equity": round(state.equity_realistic, 2),
+                    },
+                )
             
             # Strict chronological validation
             if prev_bar_ts is not None and bar_date <= prev_bar_ts:

@@ -75,8 +75,9 @@ poetry run python -m app.scripts.regenerate_signal
 3. [Datos Incompletos](data_incomplete.md)
 4. [Cálculo de Recomendación Fallido](calc_failure.md)
 5. [Degradación de Métricas](metrics_degradation.md)
-6. [Latencia Excesiva](#latencia-excesiva)
-7. [Base de Datos Corrupta](#base-de-datos-corrupta)
+6. [Frontend sin Datos / Timeouts](frontend_no_data.md)
+7. [Latencia Excesiva](#latencia-excesiva)
+8. [Base de Datos Corrupta](#base-de-datos-corrupta)
 
 ### Flujos Automáticos
 

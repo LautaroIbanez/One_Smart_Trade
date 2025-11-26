@@ -188,7 +188,9 @@ class DataIngestion:
                 "meta": meta,
             }
 
-        df = self._klines_to_dataframe(raw_klines)
+        # Execute blocking pandas operations in thread pool to avoid blocking HTTP requests
+        import asyncio
+        df = await asyncio.to_thread(self._klines_to_dataframe, raw_klines)
         df["venue"] = venue
         df["symbol"] = symbol
         
@@ -200,10 +202,12 @@ class DataIngestion:
             output = RAW_ROOT / interval / f"{filename}.parquet"
             output.parent.mkdir(parents=True, exist_ok=True)
         
-        write_parquet(
+        # Execute blocking file write in thread pool to avoid blocking HTTP requests
+        await asyncio.to_thread(
+            write_parquet,
             df,
             output,
-            metadata=meta | {"rows": len(df), "venue": venue, "symbol": symbol},
+            meta | {"rows": len(df), "venue": venue, "symbol": symbol},
         )
         return {
             "status": "success",

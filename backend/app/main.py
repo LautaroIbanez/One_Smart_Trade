@@ -80,6 +80,21 @@ async def root():
 @app.get("/health")
 async def health():
     """Detailed health check."""
+    from app.core import pipeline_state
+    from fastapi.responses import JSONResponse
+    
+    # If the startup pipeline is warming up, return a fast 202 so diagnostic tools
+    # can detect that the backend is running but still processing.
+    if pipeline_state.is_running():
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "processing",
+                "reason": "Startup pipeline en ejecución. Vuelve a intentar en unos momentos.",
+                "pipeline": pipeline_state.get_status().to_dict(),
+            },
+        )
+    
     return {"status": "healthy"}
 
 
@@ -229,7 +244,8 @@ async def job_daily_pipeline() -> None:
                         from app.data.storage import read_parquet
                         raw_files = sorted(raw_1d_path.glob("*.parquet"))
                         if raw_files:
-                            last_raw = read_parquet(raw_files[-1])
+                            # Execute blocking file read in thread pool to avoid blocking HTTP requests
+                            last_raw = await asyncio.to_thread(read_parquet, raw_files[-1])
                             if not last_raw.empty and "open_time" in last_raw.columns:
                                 start_time = last_raw["open_time"].max()
                                 if isinstance(start_time, pd.Timestamp):
@@ -330,13 +346,18 @@ async def job_daily_pipeline() -> None:
                 raise
         
         # Step 2: Data curation
+        # Run curation in thread pool to avoid blocking the event loop
         curation_start = time.time()
         curation = DataCuration()
         curation_results = {}
         for interval in INTERVALS:
             try:
-                curation.curate_interval(
-                    interval, venue=settings.PERFORMANCE_STRATEGY_VENUE, symbol=settings.PERFORMANCE_STRATEGY_SYMBOL
+                # Execute blocking curation operations in thread pool to avoid blocking HTTP requests
+                await asyncio.to_thread(
+                    curation.curate_interval,
+                    interval,
+                    venue=settings.PERFORMANCE_STRATEGY_VENUE,
+                    symbol=settings.PERFORMANCE_STRATEGY_SYMBOL
                 )
                 curation_results[interval] = "success"
             except FileNotFoundError:
@@ -936,6 +957,7 @@ async def _run_initial_pipeline_if_needed() -> dict[str, Any]:
                 pipeline_state.mark_failed(str(exc), reason=reason, date=today, error_type=type(exc).__name__)
 
         # Schedule the heavy pipeline asynchronously to avoid blocking the event loop
+        # The pipeline itself uses thread pools for blocking operations (read_parquet, write_parquet, etc.)
         asyncio.create_task(_run_pipeline_background())
 
         return {
