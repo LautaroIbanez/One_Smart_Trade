@@ -941,8 +941,30 @@ class PerformanceService:
                 df_rl = pd.DataFrame(curve_rl).rename(columns={"equity": "equity_realistic"})
                 equity_df = pd.merge(df_th, df_rl, on="timestamp", how="outer")
         if not equity_df.empty:
-            equity_df["timestamp"] = pd.to_datetime(equity_df["timestamp"])
-            equity_df = equity_df.sort_values("timestamp")
+            # Robust mixed-format ISO8601 parsing with coercion
+            raw_ts = equity_df["timestamp"]
+            parsed_ts = pd.to_datetime(raw_ts, errors="coerce", utc=True)
+            invalid_mask = parsed_ts.isna() & raw_ts.notna()
+            if invalid_mask.any():
+                invalid_examples = raw_ts[invalid_mask].astype(str).unique()[:5]
+                logger.warning(
+                    "Dropped equity rows with unparseable timestamps during chart generation",
+                    extra=sanitize_log_extra(
+                        {
+                            "dropped_rows": int(invalid_mask.sum()),
+                            "sample_values": list(map(str, invalid_examples)),
+                        }
+                    ),
+                )
+            equity_df["timestamp"] = parsed_ts
+            equity_df = equity_df.dropna(subset=["timestamp"])
+            if equity_df.empty:
+                logger.warning(
+                    "All equity timestamps became NaT after parsing; skipping equity charts",
+                    extra=sanitize_log_extra({"reason": "all_timestamps_invalid"}),
+                )
+            else:
+                equity_df = equity_df.sort_values("timestamp")
 
         # Determine data availability and warnings
         has_realistic_data = (
@@ -1027,50 +1049,95 @@ class PerformanceService:
         # Tracking error panel (instant + cumulative)
         if tracking_error_series:
             te_series_df = pd.DataFrame(tracking_error_series)
-            te_series_df["timestamp"] = pd.to_datetime(te_series_df["timestamp"])
-            te_series_df = te_series_df.sort_values("timestamp")
+            if not te_series_df.empty:
+                raw_ts = te_series_df["timestamp"]
+                parsed_ts = pd.to_datetime(raw_ts, errors="coerce", utc=True)
+                invalid_mask = parsed_ts.isna() & raw_ts.notna()
+                if invalid_mask.any():
+                    invalid_examples = raw_ts[invalid_mask].astype(str).unique()[:5]
+                    logger.warning(
+                        "Dropped tracking error rows with unparseable timestamps during chart generation",
+                        extra=sanitize_log_extra(
+                            {
+                                "dropped_rows": int(invalid_mask.sum()),
+                                "sample_values": list(map(str, invalid_examples)),
+                            }
+                        ),
+                    )
+                te_series_df["timestamp"] = parsed_ts
+                te_series_df = te_series_df.dropna(subset=["timestamp"])
+                if te_series_df.empty:
+                    logger.warning(
+                        "All tracking error timestamps became NaT after parsing; skipping tracking error charts",
+                        extra=sanitize_log_extra({"reason": "all_timestamps_invalid"}),
+                    )
+                else:
+                    te_series_df = te_series_df.sort_values("timestamp")
 
-            if not tracking_error_cumulative:
-                cumulative_values = te_series_df["tracking_error"].cumsum()
-                te_cumulative_df = pd.DataFrame(
-                    {
-                        "timestamp": te_series_df["timestamp"],
-                        "tracking_error_cumulative": cumulative_values,
-                    }
-                )
-            else:
-                te_cumulative_df = pd.DataFrame(tracking_error_cumulative)
-                te_cumulative_df["timestamp"] = pd.to_datetime(te_cumulative_df["timestamp"])
-                te_cumulative_df = te_cumulative_df.sort_values("timestamp")
+                    if not tracking_error_cumulative:
+                        cumulative_values = te_series_df["tracking_error"].cumsum()
+                        te_cumulative_df = pd.DataFrame(
+                            {
+                                "timestamp": te_series_df["timestamp"],
+                                "tracking_error_cumulative": cumulative_values,
+                            }
+                        )
+                    else:
+                        te_cumulative_df = pd.DataFrame(tracking_error_cumulative)
+                        raw_cum_ts = te_cumulative_df["timestamp"]
+                        parsed_cum_ts = pd.to_datetime(raw_cum_ts, errors="coerce", utc=True)
+                        invalid_cum_mask = parsed_cum_ts.isna() & raw_cum_ts.notna()
+                        if invalid_cum_mask.any():
+                            invalid_examples_cum = raw_cum_ts[invalid_cum_mask].astype(str).unique()[:5]
+                            logger.warning(
+                                "Dropped cumulative tracking error rows with unparseable timestamps during chart generation",
+                                extra=sanitize_log_extra(
+                                    {
+                                        "dropped_rows": int(invalid_cum_mask.sum()),
+                                        "sample_values": list(map(str, invalid_examples_cum)),
+                                    }
+                                ),
+                            )
+                        te_cumulative_df["timestamp"] = parsed_cum_ts
+                        te_cumulative_df = te_cumulative_df.dropna(subset=["timestamp"])
+                        if te_cumulative_df.empty:
+                            logger.warning(
+                                "All cumulative tracking error timestamps became NaT after parsing; skipping tracking error charts",
+                                extra=sanitize_log_extra({"reason": "all_cumulative_timestamps_invalid"}),
+                            )
+                            te_cumulative_df = None
+                        else:
+                            te_cumulative_df = te_cumulative_df.sort_values("timestamp")
 
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-            ax1.plot(
-                te_series_df["timestamp"],
-                te_series_df["tracking_error"],
-                color="#f59e0b",
-                linewidth=1,
-            )
-            ax1.axhline(y=0, color="black", linestyle="--", alpha=0.4)
-            ax1.set_ylabel("Tracking Error ($)")
-            ax1.set_title("Tracking Error Instantáneo (Real - Teórico)")
-            ax1.grid(True, alpha=0.3)
+                    if te_cumulative_df is not None:
+                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+                        ax1.plot(
+                            te_series_df["timestamp"],
+                            te_series_df["tracking_error"],
+                            color="#f59e0b",
+                            linewidth=1,
+                        )
+                        ax1.axhline(y=0, color="black", linestyle="--", alpha=0.4)
+                        ax1.set_ylabel("Tracking Error ($)")
+                        ax1.set_title("Tracking Error Instantáneo (Real - Teórico)")
+                        ax1.grid(True, alpha=0.3)
 
-            ax2.plot(
-                te_cumulative_df["timestamp"],
-                te_cumulative_df["tracking_error_cumulative"],
-                color="#8b5cf6",
-                linewidth=2,
-            )
-            ax2.axhline(y=0, color="black", linestyle="--", alpha=0.4)
-            ax2.set_xlabel("Tiempo")
-            ax2.set_ylabel("Tracking Error Acumulado ($)")
-            ax2.set_title("Tracking Error Acumulado")
-            ax2.grid(True, alpha=0.3)
+                        ax2.plot(
+                            te_cumulative_df["timestamp"],
+                            te_cumulative_df["tracking_error_cumulative"],
+                            color="#8b5cf6",
+                            linewidth=2,
+                        )
+                        ax2.axhline(y=0, color="black", linestyle="--", alpha=0.4)
+                        ax2.set_xlabel("Tiempo")
+                        ax2.set_ylabel("Tracking Error Acumulado ($)")
+                        ax2.set_title("Tracking Error Acumulado")
+                        ax2.grid(True, alpha=0.3)
 
-            plt.tight_layout()
-            te_chart_path = _save_chart(fig, "tracking_error_panel.png")
-            charts["tracking_error_panel"] = te_chart_path
-            charts["tracking_error"] = te_chart_path  # Legacy key
+                        plt.tight_layout()
+                        te_chart_path = _save_chart(fig, "tracking_error_panel.png")
+                        charts["tracking_error_panel"] = te_chart_path
+                        charts["tracking_error"] = te_chart_path  # Legacy key
 
         if trades:
             df = pd.DataFrame(trades)

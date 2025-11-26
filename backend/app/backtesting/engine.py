@@ -884,6 +884,11 @@ class BacktestEngine:
         start_ts = _normalize_date(start_date)
         end_ts = _normalize_date(end_date)
 
+        # Wall-clock profiling for backtest duration
+        import time
+
+        wall_start = time.time()
+
         # Set seed if provided
         if seed is not None:
             np.random.seed(seed)
@@ -998,9 +1003,24 @@ class BacktestEngine:
         timeframe_duration = self._get_timeframe_duration(request.timeframe)
         gap_threshold = timeframe_duration * self.gap_threshold_multiplier
         
-        # Estimate total bars for progress logging
+        # Estimate total bars for progress logging and cooperative scheduling
         total_candles = len(candle_series.data)
         progress_log_interval = max(100, total_candles // 20)  # Log every 5% or every 100 bars, whichever is larger
+        # Yield control to the event loop periodically so scheduler/other tasks stay responsive
+        yield_interval = max(500, total_candles // 50) or 500  # ~2% chunks, minimum 500 bars
+
+        # Precompute tracking error configuration and sampling interval for stats
+        bars_per_year_map = {
+            "15m": 365 * 24 * 4,  # 4 bars per hour
+            "30m": 365 * 24 * 2,  # 2 bars per hour
+            "1h": 365 * 24,  # 24 bars per day
+            "4h": 365 * 6,  # 6 bars per day
+            "1d": 365,  # Daily
+            "1w": 52,  # Weekly
+        }
+        bars_per_year = bars_per_year_map.get(request.timeframe, 252)  # Default to 252 for daily
+        # Only recompute tracking_error_stats periodically to reduce overhead on long runs
+        tracking_error_stats_interval = max(100, total_candles // 20) or 100  # Same scale as progress logs
         logger.info(
             f"Starting backtest: processing {total_candles} candles from {start_ts.date()} to {end_ts.date()}",
             extra={
@@ -1030,6 +1050,12 @@ class BacktestEngine:
                         "current_equity": round(state.equity_realistic, 2),
                     },
                 )
+            
+            # Cooperative yield: let the event loop run other scheduled jobs
+            if total_bars % yield_interval == 0:
+                # sleep(0) yields control without adding real delay
+                import asyncio
+                await asyncio.sleep(0)
             
             # Strict chronological validation
             if prev_bar_ts is not None and bar_date <= prev_bar_ts:
@@ -1444,26 +1470,16 @@ class BacktestEngine:
 
             # Update equity curves
             state.update_equity(state.equity_theoretical, state.equity_realistic, bar_date)
-
-            # Calculate tracking error after updating equity curves
+            
+            # Calculate tracking error stats periodically (not on every bar) to improve throughput
             if len(state.equity_curve) >= 2:
-                # Get bars_per_year based on timeframe for annualization
-                bars_per_year_map = {
-                    "15m": 365 * 24 * 4,  # 4 bars per hour
-                    "30m": 365 * 24 * 2,  # 2 bars per hour
-                    "1h": 365 * 24,  # 24 bars per day
-                    "4h": 365 * 6,  # 6 bars per day
-                    "1d": 365,  # Daily
-                    "1w": 52,  # Weekly
-                }
-                bars_per_year = bars_per_year_map.get(request.timeframe, 252)  # Default to 252 for daily
-
-                tracking_stats = TrackingErrorCalculator.from_curves(
-                    theoretical=state.equity_curve["equity_theoretical"],
-                    realistic=state.equity_curve["equity_realistic"],
-                    bars_per_year=bars_per_year,
-                )
-                state.tracking_error_stats.append(tracking_stats.to_dict())
+                if (total_bars % tracking_error_stats_interval == 0) or (total_bars == total_candles):
+                    tracking_stats = TrackingErrorCalculator.from_curves(
+                        theoretical=state.equity_curve["equity_theoretical"],
+                        realistic=state.equity_curve["equity_realistic"],
+                        bars_per_year=bars_per_year,
+                    )
+                    state.tracking_error_stats.append(tracking_stats.to_dict())
 
             # Calculate periodic returns based on actual dates
             # Daily returns
@@ -1702,3 +1718,18 @@ class BacktestEngine:
             "tracking_error_series": tracking_error_series_records,
             "tracking_error_cumulative": tracking_error_cumulative_records,
         }
+
+        # Final wall-clock profiling log
+        wall_duration = time.time() - wall_start
+        logger.info(
+            "Backtest completed",
+            extra=sanitize_log_extra(
+                {
+                    "instrument": instrument,
+                    "timeframe": timeframe,
+                    "duration_seconds": round(wall_duration, 2),
+                    "total_bars": total_bars,
+                    "bars_per_second": round(total_bars / wall_duration, 2) if wall_duration > 0 else None,
+                }
+            ),
+        )

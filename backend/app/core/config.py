@@ -71,12 +71,20 @@ class Settings(BaseSettings):
 
     # CORS
     # Common dev ports: 5173 (Vite default), 3000 (React default), 5174-5175 (Vite alternate), 8080 (common)
-    # Add more origins as needed for your development setup
+    # These defaults are safe for local dev; production deployments should override via env variables.
     CORS_ORIGINS: list[str] = [
-        "http://localhost:5173",  # Vite default
-        "http://localhost:3000",  # React default
-        "http://127.0.0.1:5173",   # Vite (127.0.0.1 variant)
-        "http://127.0.0.1:3000",   # React (127.0.0.1 variant)
+        # Vite / React defaults
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        # Additional common dev ports
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:8080",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+        "http://127.0.0.1:8080",
     ]
 
     # Risk alerts

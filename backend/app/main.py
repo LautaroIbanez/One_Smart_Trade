@@ -102,7 +102,18 @@ async def health():
 Base.metadata.create_all(bind=engine)
 
 
-scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
+# Configure scheduler with sane defaults to tolerate brief delays and avoid unnecessary misfires.
+# Individual jobs can still override these via the decorator parameters.
+scheduler = AsyncIOScheduler(
+    timezone=settings.SCHEDULER_TIMEZONE,
+    job_defaults={
+        # Allow a few minutes of delay before a run is considered a misfire
+        "misfire_grace_time": 300,
+        # Prevent unbounded overlap; critical jobs may override as needed
+        "max_instances": 1,
+        "coalesce": False,
+    },
+)
 _preflight_task: asyncio.Task | None = None
 
 
@@ -180,7 +191,14 @@ async def job_transparency_checks() -> None:
         logger.error(f"Error running transparency checks: {exc}", exc_info=True)
 
 
-@scheduler.scheduled_job("cron", hour=12, minute=0, id="daily_pipeline")
+@scheduler.scheduled_job(
+    "cron",
+    hour=12,
+    minute=0,
+    id="daily_pipeline",
+    misfire_grace_time=3600,  # Daily job: tolerate up to 1h delay without dropping the run
+    max_instances=1,
+)
 async def job_daily_pipeline() -> None:
     """
     Deterministic daily pipeline: ingestion → checks → signal generation.
@@ -717,10 +735,38 @@ async def job_analytics_alerts() -> None:
     except Exception as exc:
         logger.exception("Analytics alerts job failed", extra=sanitize_log_extra({"error": str(exc)}))
 
-@scheduler.scheduled_job("cron", minute="*/5", id="auto_close_trades")
+@scheduler.scheduled_job(
+    "cron",
+    minute="*/5",
+    id="auto_close_trades",
+    misfire_grace_time=180,  # Allow up to 3 minutes of drift under load
+    max_instances=2,  # Permit one overlapping retry if a previous run was slightly slow
+)
 async def job_auto_close_trades() -> None:
     """Scheduled job to close open trades when TP/SL levels are hit."""
+    from datetime import datetime, timedelta
+    from app.core.logging import logger, sanitize_log_extra
     from app.services.recommendation_service import RecommendationService
+
+    # Compute how far from the ideal 5-minute boundary this execution is
+    now = datetime.utcnow()
+    # Nearest past 5-minute boundary
+    minute_bucket = (now.minute // 5) * 5
+    scheduled = now.replace(minute=minute_bucket, second=0, microsecond=0)
+    if scheduled > now:
+        scheduled -= timedelta(minutes=5)
+    delay_seconds = (now - scheduled).total_seconds()
+
+    logger.info(
+        "auto_close_trades job starting",
+        extra=sanitize_log_extra(
+            {
+                "started_at": now.isoformat(),
+                "scheduled_bucket": scheduled.isoformat(),
+                "start_delay_seconds": round(delay_seconds, 2),
+            }
+        ),
+    )
 
     service = RecommendationService()
     await service.auto_close_open_trade()
@@ -988,20 +1034,34 @@ async def on_startup():
         }),
     )
     
-    # Warn if CORS origins are limited and might block common dev ports
+    # In dev mode, assert that common dev ports are present in CORS_ORIGINS so frontend UIs work out of the box.
+    # This is a soft assertion: it only logs a warning if ports are missing, and should normally be silent
+    # because defaults in Settings already include these ports.
     common_dev_ports = ["5173", "3000", "5174", "5175", "8080"]
     configured_ports = [origin.split(":")[-1] for origin in settings.CORS_ORIGINS if ":" in origin]
     missing_ports = [port for port in common_dev_ports if port not in configured_ports]
-    if missing_ports and settings.is_dev_mode():
-        logger.warning(
-            f"DEV MODE: Common dev ports not in CORS_ORIGINS: {missing_ports}. "
-            f"Frontend on these ports may be blocked. Current CORS_ORIGINS: {settings.CORS_ORIGINS}",
-            extra=sanitize_log_extra({
-                "missing_ports": missing_ports,
-                "cors_origins": settings.CORS_ORIGINS,
-                "dev_mode": True,
-            }),
-        )
+    if settings.is_dev_mode():
+        if missing_ports:
+            logger.warning(
+                f"DEV MODE: Common dev ports not in CORS_ORIGINS: {missing_ports}. "
+                f"Frontend on these ports may be blocked. Current CORS_ORIGINS: {settings.CORS_ORIGINS}",
+                extra=sanitize_log_extra({
+                    "missing_ports": missing_ports,
+                    "cors_origins": settings.CORS_ORIGINS,
+                    "dev_mode": True,
+                }),
+            )
+        else:
+            # Lightweight positive assertion for validation/diagnostics
+            logger.info(
+                "DEV MODE: All common dev ports are present in CORS_ORIGINS",
+                extra=sanitize_log_extra({
+                    "cors_origins": settings.CORS_ORIGINS,
+                    "cors_origins_count": len(settings.CORS_ORIGINS),
+                    "checked_ports": common_dev_ports,
+                    "dev_mode": True,
+                }),
+            )
     
     # Jobs are already scheduled via decorators
     scheduler.start()

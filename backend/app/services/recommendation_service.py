@@ -449,15 +449,30 @@ class RecommendationService:
         # Get comprehensive user risk context
         ctx = self.user_risk_profile_service.get_context(user_id, base_risk_pct=1.0)
         
-        # CRITICAL: If user has no equity data, return None to force explicit capital input
+        # CRITICAL: If user has no equity data, return structured payload to force explicit capital input
         if not ctx.has_data or ctx.equity <= 0:
             logger.info(f"User {user_id or 'anonymous'} has no equity data - sizing requires explicit capital")
             user_id_str = str(user_id or "default")
             USER_RISK_REJECTIONS_TOTAL.labels(user_id=user_id_str, rejection_type="missing_equity").inc()
             return {
                 "status": "missing_equity",
-                "message": "Conecta tu cuenta o ingresa capital para recibir sizing personalizado. Usa /api/v1/risk/sizing con tu capital disponible.",
+                "message": (
+                    "Conecta tu cuenta o ingresa capital para recibir sizing personalizado. "
+                    "Puedes usar /api/v1/risk/sizing o /api/v1/risk/sizing/from-recommendation "
+                    "con tu capital disponible para calcular el tamaño de posición."
+                ),
                 "requires_capital_input": True,
+                "capital_input_hint": {
+                    "endpoints": [
+                        "/api/v1/risk/sizing",
+                        "/api/v1/risk/sizing/from-recommendation",
+                    ],
+                    "fields": {
+                        "capital": "Capital disponible en moneda base",
+                        "entry": "Precio de entrada",
+                        "stop": "Precio de stop loss",
+                    },
+                },
             }
         
         # Initialize risk manager with user's real equity
