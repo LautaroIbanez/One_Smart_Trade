@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # In production, this should be False to rely on scheduled jobs only
     AUTO_RUN_PIPELINE_ON_START: bool = True  # Default True for dev/demo environments
     
+    # Startup backtest backfill control
+    # Set to False to skip expensive backtest backfill during startup pipeline (speeds up boot)
+    # Set to a positive integer to limit backtest lookback to N days (e.g., 30 = last 30 days only)
+    # When True or unset, uses full historical lookback (5 years)
+    # Useful in dev environments to speed feedback cycles and reduce scheduler misfires
+    STARTUP_BACKTEST_BACKFILL_ENABLED: bool | int = True  # True = full backfill, False = skip, int = limit days
+    
     # Dev mode: Use fake/demo data when live ingestion fails
     # When enabled, if no raw data exists locally, the pipeline will seed demo klines
     # instead of failing. This allows dev environments to work without Binance access.

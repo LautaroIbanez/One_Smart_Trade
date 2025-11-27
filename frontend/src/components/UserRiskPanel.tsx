@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { api, isTimeoutError, getErrorMessage } from '../api/hooks'
+import { getPollingInterval } from '../utils/polling'
 import { ContextualArticles } from './ContextualArticle'
 import './UserRiskPanel.css'
 
@@ -48,14 +49,32 @@ interface UserRiskPanelProps {
 }
 
 export function UserRiskPanel({ userId = '00000000-0000-0000-0000-000000000001', pollingInterval = 30000 }: UserRiskPanelProps) {
+  const { getPollingInterval } = require('../utils/polling')
+  
   const { data, isLoading, error } = useQuery<UserRiskState>({
     queryKey: ['user-risk-state', userId],
     queryFn: async ({ signal }) => {
       const { data } = await api.get(`/api/v1/user-risk/state?user_id=${userId}`, { signal })
       return data
     },
-    refetchInterval: pollingInterval,
-    staleTime: 10000,
+    staleTime: 300_000, // 5 minutes - increased from 10s
+    refetchInterval: (query) => {
+      // If explicit polling interval is provided, use it
+      if (typeof pollingInterval === 'number') {
+        return pollingInterval
+      }
+      if (pollingInterval === false) {
+        return false
+      }
+      
+      // Otherwise use status-based polling
+      const data = query.state.data as UserRiskState | undefined
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      return getPollingInterval(status, isStale, cacheAge)
+    },
   })
 
   const criticalWarnings = useMemo(() => {

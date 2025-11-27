@@ -316,12 +316,40 @@ class TransparencyService:
                 if isinstance(nested, dict) and nested:
                     return nested
             return None
+        
+        def _extract_tracking_error_status(source: dict[str, Any]) -> str | None:
+            """Extract explicit tracking_error_status from summary."""
+            if not source:
+                return None
+            return source.get("tracking_error_status")
 
         tracking_error_metrics: dict[str, Any] | None = None
+        tracking_error_status: str | None = None
         for candidate in summary_sources:
             tracking_error_metrics = _extract_tracking_error_metrics(candidate)
+            tracking_error_status = _extract_tracking_error_status(candidate)
             if tracking_error_metrics:
                 break
+        
+        # Check explicit status first - if status indicates missing/degraded, handle accordingly
+        if tracking_error_status in ("missing", "degraded"):
+            # Explicit status indicates tracking error is not available
+            is_stale = is_error_payload and fallback_summary is not None
+            return DrawdownDivergence(
+                theoretical_max_dd=0.0,
+                realistic_max_dd=0.0,
+                divergence_pct=0.0,
+                timestamp=datetime.utcnow().isoformat(),
+                metadata={
+                    "is_stale": is_stale,
+                    "is_missing": True,
+                    "reason": f"tracking_error_{tracking_error_status}",
+                    "tracking_error_status": tracking_error_status,
+                    "summary_status": summary_payload.get("status", "unknown"),
+                    "has_fallback": fallback_summary is not None,
+                    "message": f"Tracking error metrics {tracking_error_status}. Las métricas se calcularán cuando se ejecute el backtest completo." if tracking_error_status == "missing" else f"Tracking error metrics {tracking_error_status}. Datos parciales disponibles.",
+                },
+            )
         
         if not tracking_error_metrics:
             # Create a cache key from summary payload to memoize the warning
@@ -331,14 +359,16 @@ class TransparencyService:
             # Clean up expired cache entries
             self._cleanup_missing_metrics_cache(now)
             
-            # Check if we've already warned for this summary
-            if summary_key not in self._missing_metrics_warned:
+            # Only warn if tracking_error_status is not explicitly set to "missing"
+            # This prevents repeated warnings when status is already known
+            if tracking_error_status != "missing" and summary_key not in self._missing_metrics_warned:
                 logger.warning(
                     "Tracking error metrics missing in performance summary; cannot compute drawdown divergence",
                     extra={
                         "summary_status": summary_payload.get("status", "unknown"),
                         "has_fallback": fallback_summary is not None,
                         "summary_sources_checked": len(summary_sources),
+                        "tracking_error_status": tracking_error_status,
                     }
                 )
                 self._missing_metrics_warned[summary_key] = now

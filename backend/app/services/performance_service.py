@@ -22,6 +22,7 @@ from app.db.crud import get_latest_backtest_result, save_backtest_result
 from app.data.signal_data_provider import SignalDataProvider
 from app.core.exceptions import DataFreshnessError
 from app.quant.signal_engine import DailySignalEngine
+from app.utils.time import parse_timestamp_utc
 
 
 class StrategyConfigurationError(Exception):
@@ -323,6 +324,10 @@ class PerformanceService:
                 tracking_error_annualized_pct = annualized_te / initial_capital
 
             trade_count = metrics.get("total_trades", 0)
+            
+            # Extract no-trade diagnostics from backtest result if available
+            no_trade_diagnostics = result.get("no_trade_diagnostics")
+            
             guardrail_result = checker.check_all(
                 max_drawdown_pct=metrics.get("max_drawdown"),
                 risk_of_ruin=metrics.get("risk_of_ruin"),
@@ -333,24 +338,62 @@ class PerformanceService:
             
             # Check if dev mode and insufficient trades - generate fallback metrics
             dev_mode = settings.is_dev_mode()
-            if dev_mode and trade_count < 50:
+            degraded_reason = None
+            if trade_count == 0:
+                # No trades executed - use explicit fallback status
+                root_cause = "unknown"
+                if no_trade_diagnostics:
+                    root_cause = no_trade_diagnostics.get("root_cause", "unknown")
+                    logger.info(
+                        "No trades executed during backtest",
+                        extra={
+                            "trade_count": trade_count,
+                            "root_cause": root_cause,
+                            "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
+                            "reason": no_trade_diagnostics.get("reason", ""),
+                        },
+                    )
+                else:
+                    logger.info(
+                        "No trades executed during backtest, generating fallback metrics",
+                        extra={"trade_count": trade_count},
+                    )
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                metrics_status = "FALLBACK_NO_TRADES"
+                degraded_reason = f"no_trades_executed_{root_cause}"
+            elif dev_mode and trade_count < 50:
                 logger.info(
                     f"DEV MODE: Insufficient trades ({trade_count} < 50), generating fallback metrics",
-                    extra={"trade_count": trade_count, "dev_mode": True},
+                    extra=sanitize_log_extra({
+                        "trade_count": trade_count,
+                        "dev_mode": True,
+                        "fallback_reason": "insufficient_trades_dev_mode",
+                        "guardrail_threshold": 50,
+                        "metrics_status": "DEV_FALLBACK",
+                    }),
                 )
                 metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                metrics_status = "DEGRADED"
+                metrics_status = "DEV_FALLBACK"
+                degraded_reason = "insufficient_trades_dev_mode"
             elif not guardrail_result.passed:
                 # Check if failure was due to insufficient trades in dev mode
                 if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
                     logger.info(
                         f"DEV MODE: Guardrail bypassed for insufficient trades, generating fallback metrics",
-                        extra={"trade_count": trade_count, "dev_mode": True},
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "dev_mode": True,
+                            "fallback_reason": "insufficient_trades_guardrail_bypass",
+                            "guardrail_threshold": 50,
+                            "metrics_status": "DEV_FALLBACK",
+                        }),
                     )
                     metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                    metrics_status = "DEGRADED"
+                    metrics_status = "DEV_FALLBACK"
+                    degraded_reason = "insufficient_trades_guardrail_bypass"
                 else:
                     metrics_status = "FAIL"
+                    degraded_reason = "guardrail_validation_failed"
 
             # Extract tracking error and execution data for response
             tracking_error = tracking_error_summary
@@ -363,11 +406,37 @@ class PerformanceService:
             tracking_error_series = result.get("tracking_error_series", [])
             tracking_error_cumulative = result.get("tracking_error_cumulative", [])
             
-            # In dev mode with degraded metrics, ensure equity curves are populated
-            if metrics_status == "DEGRADED" and not equity_curve:
+            # Ensure tracking_error_metrics always has required fields for transparency service
+            # If missing, try to extract from tracking_error summary
+            if not tracking_error_metrics or not tracking_error_metrics.get("theoretical_max_drawdown"):
+                if tracking_error_summary:
+                    # Populate from tracking_error summary if available
+                    tracking_error_metrics.setdefault("theoretical_max_drawdown", tracking_error_summary.get("theoretical_max_drawdown"))
+                    tracking_error_metrics.setdefault("realistic_max_drawdown", tracking_error_summary.get("realistic_max_drawdown"))
+                    tracking_error_metrics.setdefault("max_drawdown_divergence", tracking_error_summary.get("max_drawdown_divergence"))
+                    tracking_error_metrics.setdefault("rmse", tracking_error_summary.get("rmse"))
+                    tracking_error_metrics.setdefault("mean_deviation", tracking_error_summary.get("mean_deviation"))
+                    tracking_error_metrics.setdefault("max_divergence", tracking_error_summary.get("max_divergence"))
+                    tracking_error_metrics.setdefault("annualized_tracking_error", tracking_error_summary.get("annualized_tracking_error"))
+            
+            # Determine tracking_error_status based on data availability
+            tracking_error_status = "available"
+            if not tracking_error_metrics or not tracking_error_metrics.get("theoretical_max_drawdown"):
+                tracking_error_status = "missing"
+            elif not has_realistic_data or not tracking_error_series:
+                tracking_error_status = "degraded"
+            
+            # In dev mode with fallback metrics, ensure equity curves are populated
+            if metrics_status in ("DEV_FALLBACK", "FALLBACK_NO_TRADES") and not equity_curve:
                 initial_capital = metrics.get("initial_capital", 10000.0)
                 equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
                 equity_theoretical = equity_curve.copy()
+            
+            # Store metrics_status and tracking_error_status in metrics dict for persistence
+            metrics["metrics_status"] = metrics_status
+            metrics["tracking_error_status"] = tracking_error_status
+            if degraded_reason:
+                metrics["degraded_reason"] = degraded_reason
             
             summary = {
                 "status": "success",
@@ -386,17 +455,26 @@ class PerformanceService:
                 "equity_realistic": equity_realistic,
                 "equity_curve": equity_curve,
                 "tracking_error": tracking_error,
-                "tracking_error_metrics": tracking_error_metrics,
+                "tracking_error_metrics": tracking_error_metrics,  # Always present, even if empty
+                "tracking_error_status": tracking_error_status,  # Explicit status: "available", "missing", or "degraded"
                 "tracking_error_series": tracking_error_series,
                 "tracking_error_cumulative": tracking_error_cumulative,
                 "has_realistic_data": has_realistic_data,
             }
             
-            # Add degraded mode metadata if applicable
-            if metrics_status == "DEGRADED":
+            # Add degraded/fallback mode metadata if applicable
+            if metrics_status in ("DEV_FALLBACK", "FALLBACK_NO_TRADES"):
                 summary.setdefault("metadata", {})["degraded_mode"] = True
-                summary["metadata"]["degraded_reason"] = "insufficient_trades_dev_mode"
+                summary.setdefault("metadata", {})["fallback_mode"] = True
+                if degraded_reason:
+                    summary["metadata"]["degraded_reason"] = degraded_reason
                 summary["metadata"]["trade_count"] = trade_count
+                
+                # Include no-trade diagnostics if available
+                if metrics_status == "FALLBACK_NO_TRADES" and no_trade_diagnostics:
+                    summary["metadata"]["no_trade_diagnostics"] = no_trade_diagnostics
+                    summary["metadata"]["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+                    summary["metadata"]["no_trade_reason"] = no_trade_diagnostics.get("reason", "")
             
             # Add metadata indicating this was freshly generated
             summary = self._enrich_with_cache_metadata(summary, served_from_cache=False)
@@ -509,11 +587,13 @@ class PerformanceService:
         
         logger.info(
             "Generated fallback metrics for insufficient trades",
-            extra={
+            extra=sanitize_log_extra({
                 "trade_count": trade_count,
                 "total_days": total_days,
                 "dev_mode": True,
-            },
+                "fallback_reason": "insufficient_trades",
+                "fallback_metrics_generated": True,
+            }),
         )
         
         return fallback
@@ -533,15 +613,22 @@ class PerformanceService:
         summary["metadata"] = metadata
         return summary
 
-    async def _run_backtest_and_cache(self, *, allow_stale_inputs: bool = False) -> dict[str, Any] | None:
+    async def _run_backtest_and_cache(self, *, allow_stale_inputs: bool = False, lookback_days: int | None = None) -> dict[str, Any] | None:
         """
         Run backtest asynchronously and cache the result.
         
         This method is intended to be called from background tasks.
         Returns the summary if successful, None if failed (errors are logged).
+        
+        Args:
+            allow_stale_inputs: Whether to allow stale data for strategy resolution
+            lookback_days: Number of days to look back (default: 5 years / 1825 days)
+                          If None, uses full historical lookback (5 years)
         """
         end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=5 * 365)
+        if lookback_days is None:
+            lookback_days = 5 * 365  # Default: 5 years
+        start_date = end_date - timedelta(days=lookback_days)
         
         try:
             strategy = self._resolve_strategy(allow_stale_data=allow_stale_inputs)
@@ -553,7 +640,14 @@ class PerformanceService:
             return None
         
         try:
-            logger.info("Starting background backtest backfill")
+            logger.info(
+                "Starting background backtest backfill",
+                extra=sanitize_log_extra({
+                    "lookback_days": lookback_days,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                }),
+            )
             result = await self.engine.run_backtest(start_date, end_date, strategy=strategy)
             
             if "error" in result:
@@ -603,6 +697,10 @@ class PerformanceService:
                 tracking_error_annualized_pct = annualized_te / initial_capital
             
             trade_count = metrics.get("total_trades", 0)
+            
+            # Extract no-trade diagnostics from backtest result if available
+            no_trade_diagnostics = result.get("no_trade_diagnostics")
+            
             guardrail_result = checker.check_all(
                 max_drawdown_pct=metrics.get("max_drawdown"),
                 risk_of_ruin=metrics.get("risk_of_ruin"),
@@ -613,26 +711,76 @@ class PerformanceService:
             
             # Check if dev mode and insufficient trades - generate fallback metrics
             dev_mode = settings.is_dev_mode()
-            if dev_mode and trade_count < 50:
+            degraded_reason = None
+            if trade_count == 0:
+                # No trades executed - use explicit fallback status
+                root_cause = "unknown"
+                if no_trade_diagnostics:
+                    root_cause = no_trade_diagnostics.get("root_cause", "unknown")
+                    logger.info(
+                        "No trades executed during backtest in background backfill",
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "root_cause": root_cause,
+                            "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
+                            "fallback_reason": "no_trades_executed",
+                            "no_trade_root_cause": root_cause,
+                            "no_trade_diagnostics": no_trade_diagnostics,
+                            "metrics_status": "FALLBACK_NO_TRADES",
+                        }),
+                    )
+                else:
+                    logger.info(
+                        "No trades executed during backtest in background backfill, generating fallback metrics",
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "fallback_reason": "no_trades_executed",
+                            "metrics_status": "FALLBACK_NO_TRADES",
+                        }),
+                    )
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                metrics_status = "FALLBACK_NO_TRADES"
+                degraded_reason = f"no_trades_executed_{root_cause}"
+            elif dev_mode and trade_count < 50:
                 logger.info(
                     f"DEV MODE: Insufficient trades ({trade_count} < 50) in background backfill, generating fallback metrics",
-                    extra={"trade_count": trade_count, "dev_mode": True},
+                    extra=sanitize_log_extra({
+                        "trade_count": trade_count,
+                        "dev_mode": True,
+                        "fallback_reason": "insufficient_trades_dev_mode",
+                        "guardrail_threshold": 50,
+                        "metrics_status": "DEV_FALLBACK",
+                    }),
                 )
                 metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                metrics_status = "DEGRADED"
+                metrics_status = "DEV_FALLBACK"
+                degraded_reason = "insufficient_trades_dev_mode"
             elif not guardrail_result.passed:
                 # Check if failure was due to insufficient trades in dev mode
                 if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
                     logger.info(
                         f"DEV MODE: Guardrail bypassed for insufficient trades in background backfill, generating fallback metrics",
-                        extra={"trade_count": trade_count, "dev_mode": True},
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "dev_mode": True,
+                            "fallback_reason": "insufficient_trades_guardrail_bypass",
+                            "guardrail_threshold": 50,
+                            "metrics_status": "DEV_FALLBACK",
+                        }),
                     )
                     metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                    metrics_status = "DEGRADED"
+                    metrics_status = "DEV_FALLBACK"
+                    degraded_reason = "insufficient_trades_guardrail_bypass"
                 else:
                     metrics_status = "FAIL"
+                    degraded_reason = "guardrail_validation_failed"
             else:
                 metrics_status = "PASS"
+            
+            # Store metrics_status and tracking_error_status in metrics dict for persistence
+            metrics["metrics_status"] = metrics_status
+            if degraded_reason:
+                metrics["degraded_reason"] = degraded_reason
             
             # Ensure tracking_error_metrics is always present with required fields
             tracking_error_metrics = result.get("tracking_error_metrics") or {}
@@ -641,9 +789,8 @@ class PerformanceService:
                 tracking_error_metrics = metrics.get("tracking_error_metrics") or {}
             
             # Ensure required fields for transparency service are present
-            # If not available, set to None/empty but structure must exist
-            if not tracking_error_metrics.get("theoretical_max_drawdown") and tracking_error_metrics.get("realistic_max_drawdown") is None:
-                # Try to extract from tracking_error_summary or calculate from equity curves
+            # If not available, try to extract from tracking_error_summary
+            if not tracking_error_metrics.get("theoretical_max_drawdown"):
                 if tracking_error_summary:
                     # Use existing tracking_error_summary if available
                     tracking_error_metrics.setdefault("theoretical_max_drawdown", tracking_error_summary.get("theoretical_max_drawdown"))
@@ -652,6 +799,17 @@ class PerformanceService:
                     tracking_error_metrics.setdefault("rmse", tracking_error_summary.get("rmse"))
                     tracking_error_metrics.setdefault("mean_deviation", tracking_error_summary.get("mean_deviation"))
                     tracking_error_metrics.setdefault("max_divergence", tracking_error_summary.get("max_divergence"))
+                    tracking_error_metrics.setdefault("annualized_tracking_error", tracking_error_summary.get("annualized_tracking_error"))
+            
+            # Determine tracking_error_status
+            tracking_error_status = "available"
+            if not tracking_error_metrics or not tracking_error_metrics.get("theoretical_max_drawdown"):
+                tracking_error_status = "missing"
+            elif not result.get("tracking_error_series"):
+                tracking_error_status = "degraded"
+            
+            # Store tracking_error_status in metrics for persistence
+            metrics["tracking_error_status"] = tracking_error_status
             
             summary = {
                 "status": "success",
@@ -671,6 +829,7 @@ class PerformanceService:
                 "equity_curve": result.get("equity_curve", []),
                 "tracking_error": tracking_error_summary or {},
                 "tracking_error_metrics": tracking_error_metrics,  # Always include, even if empty
+                "tracking_error_status": tracking_error_status,  # Explicit status: "available", "missing", or "degraded"
                 "tracking_error_series": result.get("tracking_error_series", []),
                 "tracking_error_cumulative": result.get("tracking_error_cumulative", []),
                 "has_realistic_data": bool(result.get("equity_curve_realistic") or result.get("equity_realistic")),
@@ -698,6 +857,10 @@ class PerformanceService:
             metrics = cached.metrics or {}
             tracking_error_metrics = metrics.get("tracking_error_metrics")
             
+            # Extract metrics_status from metrics dict (stored there for persistence)
+            metrics_status = metrics.get("metrics_status", "UNKNOWN")
+            degraded_reason = metrics.get("degraded_reason")
+            
             # Try to extract equity data from metrics if available
             equity_theoretical = metrics.get("equity_theoretical", [])
             equity_realistic = metrics.get("equity_realistic", [])
@@ -706,6 +869,15 @@ class PerformanceService:
             # Build response with tracking error fields
             # Always include tracking_error_metrics field (even if empty/None) for consistency
             tracking_error_metrics_dict = tracking_error_metrics or {}
+            
+            # Determine tracking_error_status from cached data
+            # Try to get from metrics first (if stored), otherwise determine from data
+            tracking_error_status = metrics.get("tracking_error_status")
+            if not tracking_error_status:
+                # Fallback: determine from data availability
+                tracking_error_status = "available"
+                if not tracking_error_metrics_dict or not tracking_error_metrics_dict.get("theoretical_max_drawdown"):
+                    tracking_error_status = "missing"
             
             response = {
                 "status": "success",
@@ -724,8 +896,19 @@ class PerformanceService:
                 "equity_curve": equity_curve,
                 # Always include tracking_error_metrics field for consistency (transparency service expects it)
                 "tracking_error_metrics": tracking_error_metrics_dict,
+                "tracking_error_status": tracking_error_status,  # Explicit status
                 "tracking_error": {},
+                # Include metrics_status from cached metrics
+                "metrics_status": metrics_status,
             }
+            
+            # Add degraded/fallback metadata if applicable
+            if metrics_status in ("DEV_FALLBACK", "FALLBACK_NO_TRADES"):
+                response.setdefault("metadata", {})["degraded_mode"] = True
+                response.setdefault("metadata", {})["fallback_mode"] = True
+                if degraded_reason:
+                    response["metadata"]["degraded_reason"] = degraded_reason
+                response["metadata"]["trade_count"] = metrics.get("total_trades", 0)
             
             # Populate tracking_error summary from metrics if available
             if tracking_error_metrics_dict:
@@ -941,22 +1124,30 @@ class PerformanceService:
                 df_rl = pd.DataFrame(curve_rl).rename(columns={"equity": "equity_realistic"})
                 equity_df = pd.merge(df_th, df_rl, on="timestamp", how="outer")
         if not equity_df.empty:
-            # Robust mixed-format ISO8601 parsing with coercion
-            raw_ts = equity_df["timestamp"]
-            parsed_ts = pd.to_datetime(raw_ts, errors="coerce", utc=True)
-            invalid_mask = parsed_ts.isna() & raw_ts.notna()
-            if invalid_mask.any():
-                invalid_examples = raw_ts[invalid_mask].astype(str).unique()[:5]
+            # Robust timestamp parsing using shared utility
+            parsed_timestamps = []
+            invalid_indices = []
+            for idx, raw_ts in enumerate(equity_df["timestamp"]):
+                parsed_ts = parse_timestamp_utc(raw_ts)
+                if parsed_ts is None:
+                    invalid_indices.append(idx)
+                    parsed_timestamps.append(pd.NaT)
+                else:
+                    parsed_timestamps.append(parsed_ts)
+            
+            if invalid_indices:
+                invalid_examples = equity_df["timestamp"].iloc[invalid_indices[:5]].astype(str).tolist()
                 logger.warning(
                     "Dropped equity rows with unparseable timestamps during chart generation",
                     extra=sanitize_log_extra(
                         {
-                            "dropped_rows": int(invalid_mask.sum()),
-                            "sample_values": list(map(str, invalid_examples)),
+                            "dropped_rows": len(invalid_indices),
+                            "sample_values": invalid_examples,
                         }
                     ),
                 )
-            equity_df["timestamp"] = parsed_ts
+            
+            equity_df["timestamp"] = pd.Series(parsed_timestamps, index=equity_df.index)
             equity_df = equity_df.dropna(subset=["timestamp"])
             if equity_df.empty:
                 logger.warning(
@@ -1050,21 +1241,30 @@ class PerformanceService:
         if tracking_error_series:
             te_series_df = pd.DataFrame(tracking_error_series)
             if not te_series_df.empty:
-                raw_ts = te_series_df["timestamp"]
-                parsed_ts = pd.to_datetime(raw_ts, errors="coerce", utc=True)
-                invalid_mask = parsed_ts.isna() & raw_ts.notna()
-                if invalid_mask.any():
-                    invalid_examples = raw_ts[invalid_mask].astype(str).unique()[:5]
+                # Robust timestamp parsing using shared utility
+                parsed_timestamps = []
+                invalid_indices = []
+                for idx, raw_ts in enumerate(te_series_df["timestamp"]):
+                    parsed_ts = parse_timestamp_utc(raw_ts)
+                    if parsed_ts is None:
+                        invalid_indices.append(idx)
+                        parsed_timestamps.append(pd.NaT)
+                    else:
+                        parsed_timestamps.append(parsed_ts)
+                
+                if invalid_indices:
+                    invalid_examples = te_series_df["timestamp"].iloc[invalid_indices[:5]].astype(str).tolist()
                     logger.warning(
                         "Dropped tracking error rows with unparseable timestamps during chart generation",
                         extra=sanitize_log_extra(
                             {
-                                "dropped_rows": int(invalid_mask.sum()),
-                                "sample_values": list(map(str, invalid_examples)),
+                                "dropped_rows": len(invalid_indices),
+                                "sample_values": invalid_examples,
                             }
                         ),
                     )
-                te_series_df["timestamp"] = parsed_ts
+                
+                te_series_df["timestamp"] = pd.Series(parsed_timestamps, index=te_series_df.index)
                 te_series_df = te_series_df.dropna(subset=["timestamp"])
                 if te_series_df.empty:
                     logger.warning(
@@ -1084,21 +1284,30 @@ class PerformanceService:
                         )
                     else:
                         te_cumulative_df = pd.DataFrame(tracking_error_cumulative)
-                        raw_cum_ts = te_cumulative_df["timestamp"]
-                        parsed_cum_ts = pd.to_datetime(raw_cum_ts, errors="coerce", utc=True)
-                        invalid_cum_mask = parsed_cum_ts.isna() & raw_cum_ts.notna()
-                        if invalid_cum_mask.any():
-                            invalid_examples_cum = raw_cum_ts[invalid_cum_mask].astype(str).unique()[:5]
+                        # Robust timestamp parsing using shared utility
+                        parsed_timestamps = []
+                        invalid_indices = []
+                        for idx, raw_ts in enumerate(te_cumulative_df["timestamp"]):
+                            parsed_ts = parse_timestamp_utc(raw_ts)
+                            if parsed_ts is None:
+                                invalid_indices.append(idx)
+                                parsed_timestamps.append(pd.NaT)
+                            else:
+                                parsed_timestamps.append(parsed_ts)
+                        
+                        if invalid_indices:
+                            invalid_examples_cum = te_cumulative_df["timestamp"].iloc[invalid_indices[:5]].astype(str).tolist()
                             logger.warning(
                                 "Dropped cumulative tracking error rows with unparseable timestamps during chart generation",
                                 extra=sanitize_log_extra(
                                     {
-                                        "dropped_rows": int(invalid_cum_mask.sum()),
-                                        "sample_values": list(map(str, invalid_examples_cum)),
+                                        "dropped_rows": len(invalid_indices),
+                                        "sample_values": invalid_examples_cum,
                                     }
                                 ),
                             )
-                        te_cumulative_df["timestamp"] = parsed_cum_ts
+                        
+                        te_cumulative_df["timestamp"] = pd.Series(parsed_timestamps, index=te_cumulative_df.index)
                         te_cumulative_df = te_cumulative_df.dropna(subset=["timestamp"])
                         if te_cumulative_df.empty:
                             logger.warning(

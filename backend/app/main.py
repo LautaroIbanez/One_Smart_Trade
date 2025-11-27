@@ -102,22 +102,36 @@ async def health():
 Base.metadata.create_all(bind=engine)
 
 
-# Configure scheduler with sane defaults to tolerate brief delays and avoid unnecessary misfires.
+# Configure scheduler with defaults tuned for cold start tolerance.
+# On cold start, heavy initialization (preflight, initial pipeline) can cause jobs
+# to miss their scheduled time. These defaults allow jobs to catch up without warnings.
 # Individual jobs can still override these via the decorator parameters.
 scheduler = AsyncIOScheduler(
     timezone=settings.SCHEDULER_TIMEZONE,
     job_defaults={
-        # Allow a few minutes of delay before a run is considered a misfire
-        "misfire_grace_time": 300,
+        # Allow 15 minutes of delay before a run is considered a misfire.
+        # This tolerates cold start delays from heavy initialization work (preflight,
+        # initial pipeline, backtest runs). Jobs scheduled during startup will catch up
+        # without generating misfire warnings.
+        "misfire_grace_time": 900,  # 15 minutes - increased from 5 minutes for cold start tolerance
         # Prevent unbounded overlap; critical jobs may override as needed
         "max_instances": 1,
-        "coalesce": False,
+        # Coalesce missed runs: if a job misses multiple scheduled times, only run once
+        # with the latest scheduled time. This prevents queuing up multiple missed runs
+        # during cold start and reduces redundant work.
+        "coalesce": True,  # Changed from False to prevent queued misfires on startup
     },
 )
 _preflight_task: asyncio.Task | None = None
 
 
-@scheduler.scheduled_job("cron", minute="*/15", id="ingest_klines")
+@scheduler.scheduled_job(
+    "cron",
+    minute="*/15",
+    id="ingest_klines",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_ingest_all() -> None:
     """Scheduled job to ingest data for all timeframes."""
     import time
@@ -156,7 +170,14 @@ async def job_ingest_all() -> None:
         record_ingestion("multiple", duration, False, str(type(exc).__name__))
 
 
-@scheduler.scheduled_job("cron", hour="*", minute=0, id="transparency_checks")
+@scheduler.scheduled_job(
+    "cron",
+    hour="*",
+    minute=0,
+    id="transparency_checks",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_transparency_checks() -> None:
     """Scheduled job to run transparency checks hourly."""
     from app.core.logging import logger, sanitize_log_extra
@@ -394,18 +415,54 @@ async def job_daily_pipeline() -> None:
         
         # Step 2.5: Performance backfill (after ingestion/curation, before signal generation)
         # This ensures performance cache is populated even if signal generation fails
-        # In dev mode, run in background to avoid blocking pipeline startup
+        # Respects STARTUP_BACKTEST_BACKFILL_ENABLED flag to skip or limit backfill in dev
         performance_start = time.time()
         dev_mode = settings.is_dev_mode()
-        if dev_mode and settings.AUTO_RUN_PIPELINE_ON_START:
+        
+        # Check if backtest backfill is enabled/limited for startup
+        backfill_enabled = settings.STARTUP_BACKTEST_BACKFILL_ENABLED
+        lookback_days = None
+        if isinstance(backfill_enabled, bool):
+            if not backfill_enabled:
+                logger.info(f"Pipeline {run_id}: Skipping performance backfill (STARTUP_BACKTEST_BACKFILL_ENABLED=False)")
+                outcome_details["steps"]["performance_backfill"] = {
+                    "status": "skipped",
+                    "duration_seconds": 0,
+                    "cache_populated": False,
+                    "reason": "STARTUP_BACKTEST_BACKFILL_ENABLED=False",
+                }
+                backfill_enabled = False
+            else:
+                # Full backfill enabled
+                lookback_days = None  # Use default (5 years)
+        elif isinstance(backfill_enabled, int) and backfill_enabled > 0:
+            # Limited lookback
+            lookback_days = backfill_enabled
+            logger.info(
+                f"Pipeline {run_id}: Performance backfill limited to {lookback_days} days (STARTUP_BACKTEST_BACKFILL_ENABLED={backfill_enabled})",
+                extra={"lookback_days": lookback_days},
+            )
+            backfill_enabled = True
+        else:
+            # Default: full backfill
+            lookback_days = None
+            backfill_enabled = True
+        
+        if backfill_enabled and dev_mode and settings.AUTO_RUN_PIPELINE_ON_START:
             # In dev mode with auto-run, start backfill as background task to avoid blocking
-            logger.info(f"Pipeline {run_id}: Starting performance backfill in background (dev mode, non-blocking)")
+            logger.info(
+                f"Pipeline {run_id}: Starting performance backfill in background (dev mode, non-blocking)",
+                extra={"lookback_days": lookback_days} if lookback_days else {},
+            )
             from app.services.performance_service import get_performance_service
             perf_service = get_performance_service()
             
             async def background_backfill():
                 try:
-                    backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=True)
+                    backfill_result = await perf_service._run_backtest_and_cache(
+                        allow_stale_inputs=True,
+                        lookback_days=lookback_days,
+                    )
                     if backfill_result:
                         logger.info(f"Pipeline {run_id}: Background performance backfill completed successfully")
                     else:
@@ -419,16 +476,23 @@ async def job_daily_pipeline() -> None:
                 "status": "queued_background",
                 "duration_seconds": 0,
                 "cache_populated": False,
-                "reason": "Started in background (dev mode, non-blocking)",
+                "reason": f"Started in background (dev mode, non-blocking, lookback_days={lookback_days or 'full'})",
+                "lookback_days": lookback_days,
             }
-        else:
+        elif backfill_enabled:
             # Production mode or manual pipeline: run synchronously
             try:
                 from app.services.performance_service import get_performance_service
                 perf_service = get_performance_service()
-                logger.info(f"Pipeline {run_id}: Starting performance backfill (warmup)")
+                logger.info(
+                    f"Pipeline {run_id}: Starting performance backfill (warmup)",
+                    extra={"lookback_days": lookback_days} if lookback_days else {},
+                )
                 # Run backtest in foreground to populate cache
-                backfill_result = await perf_service._run_backtest_and_cache(allow_stale_inputs=dev_mode)
+                backfill_result = await perf_service._run_backtest_and_cache(
+                    allow_stale_inputs=dev_mode,
+                    lookback_days=lookback_days,
+                )
                 performance_duration = time.time() - performance_start
                 if backfill_result:
                     outcome_details["steps"]["performance_backfill"] = {
@@ -637,7 +701,14 @@ async def job_daily_pipeline() -> None:
         db.close()
 
 
-@scheduler.scheduled_job("cron", hour="*/1", minute=0, id="monitor_performance")
+@scheduler.scheduled_job(
+    "cron",
+    hour="*/1",
+    minute=0,
+    id="monitor_performance",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_monitor_performance() -> None:
     """Scheduled job to update performance metrics and check alerts."""
     from app.core.logging import logger, sanitize_log_extra
@@ -659,7 +730,14 @@ async def job_monitor_performance() -> None:
         logger.exception("Performance monitoring failed", extra=sanitize_log_extra({"error": str(exc)}))
 
 
-@scheduler.scheduled_job("cron", hour=1, minute=15, id="analytics_alerts")
+@scheduler.scheduled_job(
+    "cron",
+    hour=1,
+    minute=15,
+    id="analytics_alerts",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_analytics_alerts() -> None:
     """Check survival metrics for recent runs and send alerts if thresholds are breached."""
     from app.core.logging import logger, sanitize_log_extra
@@ -772,7 +850,14 @@ async def job_auto_close_trades() -> None:
     await service.auto_close_open_trade()
 
 
-@scheduler.scheduled_job("cron", hour="*/1", minute=30, id="monitor_tracking_errors")
+@scheduler.scheduled_job(
+    "cron",
+    hour="*/1",
+    minute=30,
+    id="monitor_tracking_errors",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_monitor_tracking_errors() -> None:
     """Scheduled job to monitor and calculate tracking errors for closed recommendations."""
     from app.core.logging import logger, sanitize_log_extra
@@ -795,7 +880,14 @@ async def job_monitor_tracking_errors() -> None:
         logger.error(f"Tracking error monitoring job failed: {exc}", exc_info=True)
 
 
-@scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_daily_kpis_report")
+@scheduler.scheduled_job(
+    "cron",
+    hour=0,
+    minute=0,
+    id="generate_daily_kpis_report",
+    misfire_grace_time=3600,  # Daily job: tolerate up to 1h delay
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_generate_daily_kpis_report() -> None:
     """Scheduled job to generate and archive daily KPI reports."""
     from app.core.logging import logger, sanitize_log_extra
@@ -829,7 +921,14 @@ async def job_generate_daily_kpis_report() -> None:
         logger.error(f"Daily KPI report generation job failed: {exc}", exc_info=True)
 
 
-@scheduler.scheduled_job("cron", hour=0, minute=0, id="generate_risk_reports")
+@scheduler.scheduled_job(
+    "cron",
+    hour=0,
+    minute=0,
+    id="generate_risk_reports",
+    misfire_grace_time=3600,  # Daily job: tolerate up to 1h delay
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_generate_risk_reports() -> None:
     """Scheduled job to generate daily risk reports for all users."""
     from app.core.logging import logger, sanitize_log_extra
@@ -843,7 +942,13 @@ async def job_generate_risk_reports() -> None:
         logger.exception("Failed to generate risk reports", extra=sanitize_log_extra({"error": str(exc)}))
 
 
-@scheduler.scheduled_job("cron", minute="*/15", id="check_exposure_alerts")
+@scheduler.scheduled_job(
+    "cron",
+    minute="*/15",
+    id="check_exposure_alerts",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_check_exposure_alerts() -> None:
     """Scheduled job to check exposure alerts for all users."""
     from app.core.logging import logger, sanitize_log_extra
@@ -868,7 +973,14 @@ async def job_check_exposure_alerts() -> None:
         logger.exception("Failed to check exposure alerts", extra=sanitize_log_extra({"error": str(exc)}))
 
 
-@scheduler.scheduled_job("cron", hour="*/1", minute=0, id="verify_transparency")
+@scheduler.scheduled_job(
+    "cron",
+    hour="*/1",
+    minute=0,
+    id="verify_transparency",
+    misfire_grace_time=900,  # Tolerate up to 15 minutes delay (covers cold start)
+    coalesce=True,  # If multiple runs missed during startup, only run once
+)
 async def job_verify_transparency() -> None:
     """Scheduled job to verify transparency checks and send alerts if needed."""
     from app.core.logging import logger, sanitize_log_extra
@@ -1063,7 +1175,12 @@ async def on_startup():
                 }),
             )
     
-    # Jobs are already scheduled via decorators
+    # Start the scheduler. Jobs are already scheduled via decorators.
+    # Note: On cold start, heavy initialization (preflight, initial pipeline) may cause
+    # jobs to miss their scheduled time. The scheduler is configured with:
+    # - misfire_grace_time=900 (15 minutes) to tolerate startup delays
+    # - coalesce=True to prevent queuing multiple missed runs
+    # Jobs will catch up automatically without generating misfire warnings.
     scheduler.start()
     if settings.PRESTART_MAINTENANCE:
         global _preflight_task

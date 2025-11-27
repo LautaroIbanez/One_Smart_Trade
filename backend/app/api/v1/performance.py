@@ -501,16 +501,59 @@ async def get_performance_summary(
             return response_dict
         
         if metrics_status != "PASS":
-            # For UNKNOWN or other non-PASS statuses, return degraded response with available metrics
+            # For non-PASS statuses, return degraded response with available metrics
             # This allows dashboards to show data with appropriate warnings instead of error banners
             logger.info(
                 "Summary returned in degraded mode: metrics status not PASS",
                 extra={"metrics_status": metrics_status, "has_metrics": metrics is not None}
             )
-            status_message = {
+            
+            # Extract degraded reason from metadata if available
+            metadata = result.get("metadata", {})
+            degraded_reason = metadata.get("degraded_reason") or result.get("metrics", {}).get("degraded_reason")
+            trade_count = metadata.get("trade_count") or result.get("metrics", {}).get("total_trades", 0)
+            
+            # Extract no-trade diagnostics from metadata if available
+            metadata = result.get("metadata", {})
+            no_trade_diagnostics = metadata.get("no_trade_diagnostics")
+            no_trade_root_cause = metadata.get("no_trade_root_cause")
+            no_trade_reason = metadata.get("no_trade_reason")
+            
+            # Build human-readable status messages for explicit statuses
+            status_messages = {
                 "UNKNOWN": "Metrics available but not yet validated. Backtest data may be incomplete or validation is in progress.",
                 "FAIL": "Metrics validation failed. Data shown for informational purposes only.",
-            }.get(metrics_status, f"Metrics status is '{metrics_status}'. Data shown for informational purposes only.")
+                "DEV_FALLBACK": f"Development mode: Fallback metrics generated due to insufficient trades ({trade_count} < 50). Data shown for informational purposes only.",
+                "FALLBACK_NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Fallback metrics shown for informational purposes only.",
+            }
+            
+            # Use explicit message if available, otherwise build from reason
+            if metrics_status in status_messages:
+                status_message = status_messages[metrics_status]
+            elif degraded_reason:
+                # Build message from reason
+                reason_messages = {
+                    "no_trades_executed": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Fallback metrics generated.",
+                    "no_trades_executed_no_signals_generated": "Strategy did not generate any signals during the backtest period. This may indicate strategy conditions were not met or strategy logic is flat.",
+                    "no_trades_executed_no_enter_signals": "Strategy generated signals but none were 'enter' actions. Strategy may be in a hold/wait state.",
+                    "no_trades_executed_enter_signals_zero_size": "Strategy generated enter signals but position sizer calculated zero size. This may indicate insufficient capital, risk limits, or invalid stop loss distances.",
+                    "no_trades_executed_orders_rejected": "Strategy generated enter signals but orders were rejected by execution simulator (insufficient depth, price moved, etc.).",
+                    "no_trades_executed_unknown": "Zero trades despite enter signals. Root cause unknown - check signal counts and execution logs.",
+                    "insufficient_trades_dev_mode": f"Development mode: Insufficient trades ({trade_count} < 50). Fallback metrics generated.",
+                    "insufficient_trades_guardrail_bypass": f"Development mode: Guardrail bypassed due to insufficient trades ({trade_count} < 50). Fallback metrics generated.",
+                    "guardrail_validation_failed": "Guardrail validation failed. Metrics shown for informational purposes only.",
+                }
+                status_message = reason_messages.get(degraded_reason, f"Metrics status: {metrics_status}. {degraded_reason}")
+            else:
+                status_message = f"Metrics status is '{metrics_status}'. Data shown for informational purposes only."
+            
+            # Build chart banner with status info
+            chart_banner = f"Metrics status: {metrics_status}"
+            if degraded_reason:
+                chart_banner += f" ({degraded_reason})"
+            if metrics_status == "FALLBACK_NO_TRADES" and no_trade_root_cause:
+                chart_banner += f" - Root cause: {no_trade_root_cause}"
+            chart_banner += " - data shown for informational purposes"
             
             response = PerformanceSummaryResponse(
                 status="degraded",
@@ -525,7 +568,7 @@ async def get_performance_summary(
                 tracking_error_metrics=result.get("tracking_error_metrics"),
                 tracking_error_series=result.get("tracking_error_series"),
                 tracking_error_cumulative=result.get("tracking_error_cumulative"),
-                chart_banners=result.get("chart_banners", []) + [f"Metrics status: {metrics_status} (not validated)"],
+                chart_banners=result.get("chart_banners", []) + [chart_banner],
             )
             response_dict = response.model_dump()
             response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
@@ -533,8 +576,14 @@ async def get_performance_summary(
             response_dict["equity_curve"] = result.get("equity_curve", [])
             response_dict["equity_curve_theoretical"] = result.get("equity_curve_theoretical", [])
             response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
+            
+            # Include no-trade diagnostics in response if available
+            if metrics_status == "FALLBACK_NO_TRADES" and no_trade_diagnostics:
+                response_dict["no_trade_diagnostics"] = no_trade_diagnostics
+                response_dict["no_trade_root_cause"] = no_trade_root_cause
+            
             return response_dict
-
+        
         response = PerformanceSummaryResponse(
             status="success" if not demo_metrics_used else "degraded",
             metrics=metrics,

@@ -108,17 +108,9 @@ function PerformanceSummary() {
     ? (data?.message || 'Modo desarrollo: Mostrando métricas de respaldo generadas automáticamente.')
     : ((effectiveData as any)?._degradedMessage || data?.message || 'Modo degradado')
 
-  // Auto-refresh when degraded status changes to success
-  useEffect(() => {
-    if (isDegradedStatus && !isLoading) {
-      // Set up a polling interval to check for real metrics
-      const interval = setInterval(() => {
-        refetch()
-      }, 10000) // Poll every 10 seconds
-
-      return () => clearInterval(interval)
-    }
-  }, [isDegradedStatus, isLoading, refetch])
+  // Note: Auto-refresh is now handled by React Query's refetchInterval
+  // in usePerformanceSummary hook, which uses centralized polling logic.
+  // No manual setInterval needed - React Query will handle polling based on status.
 
   const handleCalculate = async () => {
     setIsCalculating(true)

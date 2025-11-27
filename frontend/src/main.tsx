@@ -10,7 +10,10 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
-      staleTime: 30000,
+      staleTime: 300_000, // 5 minutes - increased to reduce unnecessary refetches
+      // Enable request deduplication - React Query will automatically deduplicate
+      // identical queries that are fired in parallel within the same time window
+      gcTime: 600_000, // 10 minutes - cache time (formerly cacheTime)
     },
   },
 })

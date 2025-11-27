@@ -339,6 +339,15 @@ export const useTodayRecommendation = () => {
     // Provide placeholder data to prevent loading spinner lock
     placeholderData: (previousData) => previousData || DEFAULT_RECOMMENDATION,
     retry: false, // We handle retries manually above
+    refetchInterval: (query) => {
+      const data = query.state.data as any
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      // Only poll if status is processing/degraded, otherwise use slow polling
+      return getPollingInterval(status, isStale, cacheAge)
+    },
   })
 }
 
@@ -424,7 +433,15 @@ export const useMarketData = (interval: Interval) => {
       const { data } = await api.get(`/api/v1/market/${interval}`, { signal })
       return data
     },
-    staleTime: 30_000,
+    staleTime: 300_000, // 5 minutes - increased from 30s
+    refetchInterval: (query) => {
+      const data = query.state.data as any
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      return getPollingInterval(status, isStale, cacheAge)
+    },
   })
 }
 
@@ -506,12 +523,13 @@ export const usePerformanceSummary = (enabled: boolean = true, warmup: boolean =
     placeholderData: (previousData) => previousData || DEFAULT_PERFORMANCE,
     retry: false, // We handle retries manually above
     refetchInterval: (query) => {
-      // Auto-refresh if status is degraded (poll every 10 seconds)
       const data = query.state.data as any
-      if (data?.status === 'degraded' || data?.status === 'processing') {
-        return 10_000 // 10 seconds
-      }
-      return false // Don't auto-refresh otherwise
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      // Use centralized polling logic
+      return getPollingInterval(status, isStale, cacheAge)
     },
   })
 }
@@ -539,8 +557,24 @@ export const useMonthlyPerformance = (pollingInterval: number | false = 30000) =
       const { data } = await api.get('/api/v1/performance/monthly', { signal })
       return data
     },
-    refetchInterval: pollingInterval,
-    staleTime: 10000,
+    staleTime: 300_000, // 5 minutes - increased from 10s
+    refetchInterval: (query) => {
+      // If explicit polling interval is provided, use it
+      if (typeof pollingInterval === 'number') {
+        return pollingInterval
+      }
+      if (pollingInterval === false) {
+        return false
+      }
+      
+      // Otherwise use status-based polling
+      const data = query.state.data as any
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      return getPollingInterval(status, isStale, cacheAge)
+    },
   })
 }
 

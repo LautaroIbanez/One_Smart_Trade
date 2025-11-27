@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/hooks'
+import { getPollingInterval } from '../utils/polling'
 import './ObservabilityDashboard.css'
 
 interface MetricValue {
@@ -48,6 +49,8 @@ interface DashboardResponse {
 }
 
 const useObservabilityDashboard = (isPrivate: boolean = false) => {
+  const { getPollingInterval } = require('../utils/polling')
+  
   return useQuery({
     queryKey: ['observability', 'dashboard', isPrivate],
     queryFn: async ({ signal }) => {
@@ -55,8 +58,15 @@ const useObservabilityDashboard = (isPrivate: boolean = false) => {
       const { data } = await api.get<DashboardResponse>(endpoint, { signal })
       return data
     },
-    refetchInterval: 30000, // Poll every 30 seconds
-    staleTime: 10000,
+    staleTime: 300_000, // 5 minutes - increased from 10s
+    refetchInterval: (query) => {
+      const data = query.state.data as DashboardResponse | undefined
+      const status = data?.status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      return getPollingInterval(status, isStale, cacheAge)
+    },
   })
 }
 

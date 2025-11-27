@@ -1019,6 +1019,38 @@ CAPITAL_CALM_MULTIPLIER=1.2
 
 ### Scheduler Jobs
 
+The scheduler is configured with defaults tuned for cold-start tolerance:
+
+- **`misfire_grace_time=900`** (15 minutes): Allows jobs to catch up after startup delays without generating misfire warnings. This tolerates heavy initialization work (preflight maintenance, initial pipeline runs, backtest execution) that may cause jobs to miss their scheduled time on cold start.
+
+- **`coalesce=True`**: If a job misses multiple scheduled times during startup, only the latest run will execute. This prevents queuing up multiple missed runs and reduces redundant work.
+
+- **`max_instances=1`**: Prevents unbounded overlap; critical jobs may override as needed.
+
+Individual jobs can override these defaults via decorator parameters. For example, daily jobs use `misfire_grace_time=3600` (1 hour) to tolerate longer delays.
+
+**Cold Start Behavior:**
+On cold start, the scheduler starts immediately, but heavy initialization tasks (preflight maintenance, initial pipeline) run asynchronously. Jobs scheduled during this window will automatically catch up once the system is ready, without generating misfire warnings, thanks to the configured grace time and coalescing.
+
+### Startup Backtest Backfill Control
+
+To speed up boot times and reduce scheduler misfires in development environments, you can control backtest backfill during startup:
+
+- **`STARTUP_BACKTEST_BACKFILL_ENABLED=True`** (default): Full historical backfill (5 years)
+- **`STARTUP_BACKTEST_BACKFILL_ENABLED=False`**: Skip backtest backfill entirely on startup
+- **`STARTUP_BACKTEST_BACKFILL_ENABLED=30`**: Limit backfill to last 30 days (or any positive integer)
+
+This flag only affects the startup pipeline. Scheduled daily pipelines and manual backtest runs always use full historical data unless explicitly configured otherwise.
+
+**Example configuration for fast dev feedback cycles:**
+```bash
+# .env
+STARTUP_BACKTEST_BACKFILL_ENABLED=30  # Only backfill last 30 days on startup
+AUTO_RUN_PIPELINE_ON_START=True        # Still run pipeline, but with limited backfill
+```
+
+This reduces startup time from minutes to seconds while still populating the performance cache with recent data.
+
 ```python
 # Monitoreo de performance (cada hora)
 @scheduler.scheduled_job("cron", hour="*/1", minute=0)

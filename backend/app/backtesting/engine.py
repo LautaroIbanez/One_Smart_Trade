@@ -23,6 +23,7 @@ from app.observability.execution_metrics import (
     check_orderbook_fallback_alerts,
     update_execution_metrics,
 )
+from app.utils.time import serialize_timestamp_utc
 
 
 class BacktestTemporalError(Exception):
@@ -229,6 +230,21 @@ class BacktestState:
     last_monthly_ts: pd.Timestamp | None = None
     trailing_stop_price: float | None = None  # Current trailing stop price
     trailing_stop_distance: float | None = None  # Distance from peak for trailing stop
+    # Signal generation tracking for no-trade diagnostics
+    signal_counts: dict[str, int] = field(default_factory=lambda: {
+        "enter": 0,
+        "exit": 0,
+        "hold": 0,
+        "none": 0,
+        "stop_loss": 0,
+        "take_profit": 0,
+        "trailing_stop": 0,
+        "adjust": 0,
+        "invalid": 0,
+        "error": 0,
+        "total": 0,
+    })
+    signals_with_zero_size: int = 0  # Count of enter signals that resulted in zero position size
 
     def update_equity(self, theoretical: float, realistic: float, timestamp: pd.Timestamp) -> None:
         """Update equity and track curves with timestamp in DataFrame format."""
@@ -1106,9 +1122,12 @@ class BacktestEngine:
             # Get signal from strategy
             try:
                 signal = request.strategy.on_bar(ctx)
+                state.signal_counts["total"] += 1
             except Exception as exc:
                 logger.warning("Strategy error", extra={"error": str(exc), "bar_date": str(bar_date)})
                 signal = {}
+                state.signal_counts["error"] += 1
+                state.signal_counts["total"] += 1
 
             # Validate signal
             try:
@@ -1116,6 +1135,14 @@ class BacktestEngine:
             except InvalidSignalError as exc:
                 logger.warning("Invalid signal", extra={"error": exc.message, "signal": signal})
                 signal = {}  # Skip invalid signal
+                state.signal_counts["invalid"] += 1
+            
+            # Track signal action for diagnostics
+            action = signal.get("action", "none")
+            if action in state.signal_counts:
+                state.signal_counts[action] += 1
+            else:
+                state.signal_counts["invalid"] += 1
 
             # Process active orders (stops, limits, trailing stops)
             orders_from_active = self._process_active_orders(state, bar, bar_date, request)
@@ -1137,6 +1164,9 @@ class BacktestEngine:
                         timestamp=bar_date,
                     )
                     orders.append(order)
+                else:
+                    # Track enter signals that resulted in zero size
+                    state.signals_with_zero_size += 1
 
             elif signal.get("action") == "exit" and state.position:
                 # Exit order
@@ -1543,6 +1573,36 @@ class BacktestEngine:
         # Build result
         trades = [t.to_dict() for t in state.closed_trades]
         final_capital = state.equity_realistic
+        total_trades = len(trades)
+        
+        # Diagnose no-trade scenarios
+        no_trade_diagnostics: dict[str, Any] = {}
+        if total_trades == 0:
+            # Determine root cause for zero trades
+            total_signals = state.signal_counts["total"]
+            enter_signals = state.signal_counts["enter"]
+            hold_signals = state.signal_counts["hold"] + state.signal_counts["none"]
+            
+            if total_signals == 0:
+                no_trade_diagnostics["root_cause"] = "no_signals_generated"
+                no_trade_diagnostics["reason"] = "Strategy did not generate any signals during the backtest period. This may indicate strategy conditions were not met or strategy logic is flat."
+            elif enter_signals == 0:
+                no_trade_diagnostics["root_cause"] = "no_enter_signals"
+                no_trade_diagnostics["reason"] = f"Strategy generated {total_signals} signals but none were 'enter' actions. All signals were: {dict((k, v) for k, v in state.signal_counts.items() if v > 0)}"
+            elif state.signals_with_zero_size > 0:
+                no_trade_diagnostics["root_cause"] = "enter_signals_zero_size"
+                no_trade_diagnostics["reason"] = f"Strategy generated {enter_signals} enter signals but position sizer calculated zero size for {state.signals_with_zero_size} of them. This may indicate insufficient capital, risk limits, or invalid stop loss distances."
+            elif len(state.rejected_orders) > 0:
+                no_trade_diagnostics["root_cause"] = "orders_rejected"
+                no_trade_diagnostics["reason"] = f"Strategy generated {enter_signals} enter signals but {len(state.rejected_orders)} orders were rejected by execution simulator (insufficient depth, price moved, etc.)"
+            else:
+                no_trade_diagnostics["root_cause"] = "unknown"
+                no_trade_diagnostics["reason"] = f"Zero trades despite {enter_signals} enter signals. Signal breakdown: {dict((k, v) for k, v in state.signal_counts.items() if v > 0)}"
+            
+            no_trade_diagnostics["signal_counts"] = state.signal_counts
+            no_trade_diagnostics["signals_with_zero_size"] = state.signals_with_zero_size
+            no_trade_diagnostics["rejected_orders_count"] = len(state.rejected_orders)
+            no_trade_diagnostics["total_bars"] = total_bars
         
         equity_curve_df = state.equity_curve.copy()
         equity_curve_dict: list[dict[str, Any]] = []
@@ -1555,11 +1615,15 @@ class BacktestEngine:
         
         if not equity_curve_df.empty:
             equity_curve_df["timestamp"] = pd.to_datetime(equity_curve_df["timestamp"])
-            timestamps_list = [pd.Timestamp(ts).tz_localize(None) for ts in equity_curve_df["timestamp"].tolist()]
+            # Ensure timestamps are timezone-aware UTC before serialization
+            if equity_curve_df["timestamp"].dt.tz is None:
+                equity_curve_df["timestamp"] = equity_curve_df["timestamp"].dt.tz_localize("UTC")
+            else:
+                equity_curve_df["timestamp"] = equity_curve_df["timestamp"].dt.tz_convert("UTC")
             
             for idx, row in enumerate(equity_curve_df.itertuples(index=False)):
-                ts = timestamps_list[idx]
-                iso_ts = ts.isoformat()
+                ts = equity_curve_df["timestamp"].iloc[idx]
+                iso_ts = serialize_timestamp_utc(ts)
                 theoretical_val = float(getattr(row, "equity_theoretical"))
                 realistic_val = float(getattr(row, "equity_realistic"))
                 divergence_pct_val = float(getattr(row, "equity_divergence_pct"))
@@ -1614,8 +1678,12 @@ class BacktestEngine:
             
             if tracking_error_series:
                 cumulative_values = np.cumsum(tracking_error_series).tolist()
-                for ts, value, cumulative in zip(timestamps_list, tracking_error_series, cumulative_values):
-                    iso_ts = ts.isoformat()
+                # Use same timestamps as equity curve (already timezone-aware UTC)
+                for idx, (value, cumulative) in enumerate(zip(tracking_error_series, cumulative_values)):
+                    ts = equity_curve_df["timestamp"].iloc[idx] if idx < len(equity_curve_df) else None
+                    if ts is None:
+                        continue
+                    iso_ts = serialize_timestamp_utc(ts)
                     tracking_error_series_records.append(
                         {"timestamp": iso_ts, "tracking_error": float(value)}
                     )
@@ -1717,6 +1785,7 @@ class BacktestEngine:
             "tracking_error_stats": state.tracking_error_stats,
             "tracking_error_series": tracking_error_series_records,
             "tracking_error_cumulative": tracking_error_cumulative_records,
+            "no_trade_diagnostics": no_trade_diagnostics if no_trade_diagnostics else None,
         }
 
         # Final wall-clock profiling log

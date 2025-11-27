@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts'
-import { API_BASE_URL } from '../api/hooks'
+import { api } from '../api/hooks'
+import { getPollingInterval } from '../utils/polling'
 import './TransparencyDashboard.css'
 
 interface HashVerification {
@@ -160,99 +162,67 @@ function getStatusIcon(status: string): string {
 }
 
 export function TransparencyDashboard() {
-  const [data, setData] = useState<TransparencyDashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
   const [autoRefresh, setAutoRefresh] = useState(true)
-  const [statusAlert, setStatusAlert] = useState<DashboardStatusAlert | null>(null)
-
-  const fetchData = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch(`${API_BASE_URL}/api/v1/transparency/dashboard`)
-      if (!response.ok) {
-        let errorPayload: DashboardApiResponse = {
-          status: 'error',
-          message: `Error ${response.status}: no se pudo cargar el dashboard`,
-        }
-        try {
-          const parsed = await response.json()
-          if (parsed && typeof parsed === 'object') {
-            errorPayload = { ...parsed }
-          }
-        } catch {
-          // ignore JSON parse failure; fallback message already set
-        }
-        setStatusAlert(buildStatusAlert(errorPayload))
-        setData(null)
-        return
+  
+  // Use React Query for shared cache and centralized polling
+  const { data: result, isLoading, error, refetch } = useQuery<DashboardApiResponse>({
+    queryKey: ['transparency', 'dashboard'],
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get<DashboardApiResponse>('/api/v1/transparency/dashboard', { signal })
+      return data
+    },
+    staleTime: 300_000, // 5 minutes
+    enabled: autoRefresh,
+    refetchInterval: (query) => {
+      if (!autoRefresh) {
+        return false
       }
-      const result: DashboardApiResponse = await response.json()
-      const missingMetrics = !result.semaphore
-      const fallbackSummary: FallbackSummary | null =
-        result.summary_fallback && typeof result.summary_fallback === 'object'
-          ? (result.summary_fallback as FallbackSummary)
-          : null
-      const hasFallbackMetrics =
-        Boolean(fallbackSummary?.metrics && Object.keys(fallbackSummary.metrics || {}).length > 0) ||
-        Boolean(fallbackSummary?.period)
-      const summaryErrorPayload: DashboardApiResponse | null =
-        result.summary_status === 'error'
-          ? {
-              status: result.summary_status,
-              message: result.summary_message,
-              summary_message: result.summary_message,
-              metadata: result.summary_metadata ?? undefined,
-              details: result.summary_details ?? undefined,
-            }
-          : null
-      const isErrorPayload = result.status === 'error'
-
-      // If summary_status is error but we have fallback_summary, use it to populate minimal data
-      const shouldUseFallback = result.summary_status === 'error' && Boolean(fallbackSummary)
       
-      // Only show alert if we don't have fallback data to work with
-      const alertPayload =
-        summaryErrorPayload && hasFallbackMetrics
-          ? null
-          : summaryErrorPayload ?? (isErrorPayload || (missingMetrics && !shouldUseFallback) ? result : null)
+      const data = query.state.data as DashboardApiResponse | undefined
+      const status = data?.status || data?.summary_status
+      const isStale = query.isStale()
+      const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
+      
+      return getPollingInterval(status, isStale, cacheAge)
+    },
+  })
 
-      if (alertPayload) {
-        setStatusAlert(buildStatusAlert(alertPayload))
-      } else {
-        setStatusAlert(null)
-      }
+  // Process response data similar to original logic
+  const missingMetrics = !result?.semaphore
+  const fallbackSummary: FallbackSummary | null =
+    result?.summary_fallback && typeof result.summary_fallback === 'object'
+      ? (result.summary_fallback as FallbackSummary)
+      : null
+  const hasFallbackMetrics =
+    Boolean(fallbackSummary?.metrics && Object.keys(fallbackSummary.metrics || {}).length > 0) ||
+    Boolean(fallbackSummary?.period)
+  const summaryErrorPayload: DashboardApiResponse | null =
+    result?.summary_status === 'error'
+      ? {
+          status: result.summary_status,
+          message: result.summary_message,
+          summary_message: result.summary_message,
+          metadata: result.summary_metadata ?? undefined,
+          details: result.summary_details ?? undefined,
+        }
+      : null
+  const isErrorPayload = result?.status === 'error'
 
-      // If missing metrics but we have fallback, still populate data with what we have
-      if (missingMetrics && !shouldUseFallback) {
-        setData(null)
-        return
-      }
+  // If summary_status is error but we have fallback_summary, use it to populate minimal data
+  const shouldUseFallback = result?.summary_status === 'error' && Boolean(fallbackSummary)
+  
+  // Only show alert if we don't have fallback data to work with
+  const alertPayload =
+    summaryErrorPayload && hasFallbackMetrics
+      ? null
+      : summaryErrorPayload ?? (isErrorPayload || (missingMetrics && !shouldUseFallback) ? result : null)
 
-      // Always set data if we have semaphore OR if we have fallback data
-      // This ensures the dashboard renders even with degraded data
-      if (result.semaphore || shouldUseFallback) {
-        setData(result as TransparencyDashboardData)
-      } else {
-        setData(null)
-      }
-    } catch (err) {
-      setData(null)
-      setStatusAlert({
-        message: 'No se pudo conectar con el backend de transparencia.',
-        details: err instanceof Error ? err.message : 'Error desconocido',
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    fetchData()
-    if (autoRefresh) {
-      const interval = setInterval(fetchData, 60000) // Refresh every minute
-      return () => clearInterval(interval)
-    }
-  }, [autoRefresh])
+  const statusAlert = alertPayload ? buildStatusAlert(alertPayload) : null
+  const data: TransparencyDashboardData | null = 
+    (result?.semaphore || shouldUseFallback) ? (result as TransparencyDashboardData) : null
+  
+  const loading = isLoading
+  const fetchData = () => refetch()
 
   if (loading && !data) {
     return (
@@ -286,7 +256,7 @@ export function TransparencyDashboard() {
             </div>
           </div>
         </header>
-        <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />
+        <ErrorBanner statusAlert={statusAlert} onRetry={() => refetch()} />
       </section>
     )
   }
@@ -319,14 +289,14 @@ export function TransparencyDashboard() {
               />
               <span>Actualización automática</span>
             </label>
-            <button type="button" className="refresh-button" onClick={fetchData}>
+            <button type="button" className="refresh-button" onClick={() => refetch()}>
               🔄 Actualizar
             </button>
           </div>
         </div>
       </header>
 
-      {statusAlert && <ErrorBanner statusAlert={statusAlert} onRetry={fetchData} />}
+      {statusAlert && <ErrorBanner statusAlert={statusAlert} onRetry={() => refetch()} />}
       {(showingFallbackData || (summary_status === 'error' && summary_fallback)) && (
         <FallbackDataBanner
           message={summary_message}
