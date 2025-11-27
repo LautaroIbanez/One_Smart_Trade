@@ -524,7 +524,8 @@ async def get_performance_summary(
                 "UNKNOWN": "Metrics available but not yet validated. Backtest data may be incomplete or validation is in progress.",
                 "FAIL": "Metrics validation failed. Data shown for informational purposes only.",
                 "DEV_FALLBACK": f"Development mode: Fallback metrics generated due to insufficient trades ({trade_count} < 50). Data shown for informational purposes only.",
-                "FALLBACK_NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Fallback metrics shown for informational purposes only.",
+                "NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Performance metrics unavailable.",
+                "INSUFFICIENT_DATA": f"Fewer trades than minimum guardrail ({trade_count} < 50). Metrics informational only.",
             }
             
             # Use explicit message if available, otherwise build from reason
@@ -547,11 +548,17 @@ async def get_performance_summary(
             else:
                 status_message = f"Metrics status is '{metrics_status}'. Data shown for informational purposes only."
             
+            # Extract dev_bypass from metadata if available
+            dev_bypass = metadata.get("dev_bypass")
+            if not dev_bypass and metrics_status == "DEV_FALLBACK":
+                # Try to extract from guardrail result if available
+                dev_bypass = "min_trades"  # Default for DEV_FALLBACK
+            
             # Build chart banner with status info
             chart_banner = f"Metrics status: {metrics_status}"
             if degraded_reason:
                 chart_banner += f" ({degraded_reason})"
-            if metrics_status == "FALLBACK_NO_TRADES" and no_trade_root_cause:
+            if metrics_status == "NO_TRADES" and no_trade_root_cause:
                 chart_banner += f" - Root cause: {no_trade_root_cause}"
             chart_banner += " - data shown for informational purposes"
             
@@ -569,6 +576,10 @@ async def get_performance_summary(
                 tracking_error_series=result.get("tracking_error_series"),
                 tracking_error_cumulative=result.get("tracking_error_cumulative"),
                 chart_banners=result.get("chart_banners", []) + [chart_banner],
+                metrics_status=metrics_status,
+                dev_bypass=dev_bypass,
+                fallback_reason=degraded_reason,
+                trade_count=trade_count,
             )
             response_dict = response.model_dump()
             response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
@@ -578,11 +589,18 @@ async def get_performance_summary(
             response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
             
             # Include no-trade diagnostics in response if available
-            if metrics_status == "FALLBACK_NO_TRADES" and no_trade_diagnostics:
+            if metrics_status == "NO_TRADES" and no_trade_diagnostics:
                 response_dict["no_trade_diagnostics"] = no_trade_diagnostics
                 response_dict["no_trade_root_cause"] = no_trade_root_cause
             
             return response_dict
+        
+        # Extract metrics_status and related fields from result
+        metrics_status = result.get("metrics_status", "PASS")
+        metadata = result.get("metadata", {})
+        dev_bypass = metadata.get("dev_bypass")
+        fallback_reason = metadata.get("degraded_reason") or result.get("metrics", {}).get("degraded_reason")
+        trade_count = metrics.total_trades if metrics else None
         
         response = PerformanceSummaryResponse(
             status="success" if not demo_metrics_used else "degraded",
@@ -598,6 +616,10 @@ async def get_performance_summary(
             tracking_error_series=result.get("tracking_error_series"),
             tracking_error_cumulative=result.get("tracking_error_cumulative"),
             chart_banners=result.get("chart_banners", []) + (["Empty metrics dict - showing demo metrics"] if demo_metrics_used else []),
+            metrics_status=metrics_status if metrics_status != "PASS" or demo_metrics_used else None,  # Only include if not PASS
+            dev_bypass=dev_bypass,
+            fallback_reason=fallback_reason,
+            trade_count=trade_count,
         )
         
         # Add equity data to response model (will be in response body but not in schema)

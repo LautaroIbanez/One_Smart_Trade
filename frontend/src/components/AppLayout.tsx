@@ -8,6 +8,17 @@ export default function AppLayout({ children }: Props) {
   return (
     <div className="app-layout">
       <OnboardingPoliciesModal />
+      <div className="decision-support-banner" role="banner" aria-live="polite" style={{
+        backgroundColor: '#f59e0b',
+        color: '#1f2937',
+        padding: '0.5rem 1rem',
+        textAlign: 'center',
+        fontSize: '0.875rem',
+        fontWeight: 500,
+        borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
+      }}>
+        ⚠️ Research / decision-support only. No live trades are executed from this app.
+      </div>
       <header className="app-header">
         <h1>One Smart Trade</h1>
       </header>

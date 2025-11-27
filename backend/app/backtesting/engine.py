@@ -1164,9 +1164,28 @@ class BacktestEngine:
                         timestamp=bar_date,
                     )
                     orders.append(order)
+                    logger.debug(
+                        "Enter signal -> order created",
+                        extra={
+                            "action": "enter",
+                            "order_qty": size,
+                            "order_side": side.value,
+                            "timestamp": bar_date.isoformat(),
+                        },
+                    )
                 else:
                     # Track enter signals that resulted in zero size
                     state.signals_with_zero_size += 1
+                    logger.debug(
+                        "Enter signal -> zero size (order not created)",
+                        extra={
+                            "action": "enter",
+                            "rejection_reason": "zero_position_size",
+                            "equity": state.equity_realistic,
+                            "stop_loss_distance": stop_loss_distance,
+                            "timestamp": bar_date.isoformat(),
+                        },
+                    )
 
             elif signal.get("action") == "exit" and state.position:
                 # Exit order
@@ -1574,6 +1593,25 @@ class BacktestEngine:
         trades = [t.to_dict() for t in state.closed_trades]
         final_capital = state.equity_realistic
         total_trades = len(trades)
+        
+        # Log end-of-backtest summary for debugging
+        logger.info(
+            "Backtest execution summary",
+            extra=sanitize_log_extra({
+                "total_trades": total_trades,
+                "signal_counts": state.signal_counts,
+                "signals_with_zero_size": state.signals_with_zero_size,
+                "orders_created": total_trades + len(state.open_trades),  # Approximate
+                "orders_rejected": len(state.rejected_orders),
+                "rejected_order_reasons": [
+                    {"status": o.get("status"), "timestamp": o.get("timestamp")}
+                    for o in state.rejected_orders[:10]  # Sample first 10
+                ] if state.rejected_orders else [],
+                "trades_closed": total_trades,
+                "partial_fills": len(state.partial_fills),
+                "total_bars": total_bars,
+            }),
+        )
         
         # Diagnose no-trade scenarios
         no_trade_diagnostics: dict[str, Any] = {}

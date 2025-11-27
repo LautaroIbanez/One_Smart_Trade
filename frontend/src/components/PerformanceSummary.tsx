@@ -10,6 +10,15 @@ function PerformanceSummary() {
   // Check if status is degraded
   const isDegradedStatus = data?.status === 'degraded'
   const isDemoMetrics = data?.has_realistic_data === false && isDegradedStatus
+  
+  // Extract metrics_status and related fields from API response
+  const metricsStatus = (data as any)?.metrics_status
+  const devBypass = (data as any)?.dev_bypass
+  const fallbackReason = (data as any)?.fallback_reason
+  const tradeCount = (data as any)?.trade_count ?? data?.metrics?.total_trades
+  
+  // Determine if metrics should be de-emphasized
+  const shouldDeemphasizeKPIs = metricsStatus && metricsStatus !== 'PASS'
 
   // Extract data from main payload or fallback_summary
   // Always attempt to extract partial/fallback data
@@ -100,13 +109,33 @@ function PerformanceSummary() {
     }
   }, [data])
 
-  const isDegraded = (effectiveData as any)?._isDegraded === true || isDegradedStatus
-  const isDevFallback = (effectiveData as any)?._isDevFallback === true || (data as any)?.dev_fallback === true
-  const degradedMessage = isDemoMetrics 
-    ? (data?.message || 'Mostrando métricas demo. Los datos reales se están calculando en segundo plano.')
-    : isDevFallback
-    ? (data?.message || 'Modo desarrollo: Mostrando métricas de respaldo generadas automáticamente.')
-    : ((effectiveData as any)?._degradedMessage || data?.message || 'Modo degradado')
+  const isDegraded = (effectiveData as any)?._isDegraded === true || isDegradedStatus || shouldDeemphasizeKPIs
+  const isDevFallback = (effectiveData as any)?._isDevFallback === true || (data as any)?.dev_fallback === true || metricsStatus === 'DEV_FALLBACK'
+  
+  // Build degraded message based on metrics_status
+  const getDegradedMessage = () => {
+    if (metricsStatus === 'NO_TRADES') {
+      return 'Backtest invalid or incomplete (0 trades). Use this dashboard only as research, NOT as trading advice.'
+    }
+    if (metricsStatus === 'INSUFFICIENT_DATA') {
+      return `Backtest invalid or incomplete (${tradeCount || 0} trades, below minimum). Use this dashboard only as research, NOT as trading advice.`
+    }
+    if (metricsStatus === 'DEV_FALLBACK') {
+      return `Development mode: Fallback metrics (${tradeCount || 0} trades < 50). Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.`
+    }
+    if (metricsStatus === 'FAIL') {
+      return 'Backtest validation failed. Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.'
+    }
+    if (isDemoMetrics) {
+      return 'Mostrando métricas demo. Los datos reales se están calculando en segundo plano.'
+    }
+    if (isDevFallback) {
+      return 'Modo desarrollo: Mostrando métricas de respaldo generadas automáticamente.'
+    }
+    return (effectiveData as any)?._degradedMessage || data?.message || fallbackReason || 'Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.'
+  }
+  
+  const degradedMessage = getDegradedMessage()
 
   // Note: Auto-refresh is now handled by React Query's refetchInterval
   // in usePerformanceSummary hook, which uses centralized polling logic.
@@ -173,7 +202,7 @@ function PerformanceSummary() {
   return (
     <div className="performance-summary">
       <h2>Resumen de Performance (Backtesting)</h2>
-      {isDegraded && (
+          {(isDegraded || shouldDeemphasizeKPIs) && (
         <div className="degraded-mode-banner" role="status" aria-live="polite" style={{
           padding: '1rem',
           backgroundColor: isDevFallback ? 'rgba(147, 51, 234, 0.1)' : 'rgba(245, 158, 11, 0.1)',
@@ -223,7 +252,36 @@ function PerformanceSummary() {
       )}
       {hasMetrics ? (
         <>
-          <div className="metrics-grid">
+          {shouldDeemphasizeKPIs && (
+            <div className="metrics-degraded-warning" role="alert" aria-live="assertive" style={{
+              padding: '1rem',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              borderRadius: '0.5rem',
+              marginBottom: '1rem',
+            }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', fontSize: '0.875rem' }}>
+                ⚠️ Backtest Invalid or Incomplete
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.9)' }}>
+                {degradedMessage}
+              </p>
+              {fallbackReason && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
+                  Reason: {fallbackReason}
+                </p>
+              )}
+              {devBypass && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
+                  Dev bypass: {devBypass}
+                </p>
+              )}
+            </div>
+          )}
+          <div className="metrics-grid" style={shouldDeemphasizeKPIs ? {
+            opacity: 0.6,
+            filter: 'grayscale(20%)',
+          } : undefined}>
             <div className="metric-item">
               <span className="metric-label">CAGR</span>
               <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>

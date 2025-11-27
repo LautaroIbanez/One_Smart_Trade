@@ -3296,6 +3296,20 @@ class RecommendationService:
 
     async def auto_close_open_trade(self) -> None:
         """Check if the open trade hit TP/SL and close it automatically."""
+        from app.core.config import settings
+        from app.core.logging import logger
+        
+        # Check if live execution is disabled
+        if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+            logger.info(
+                "Live execution disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION, skipping auto_close_open_trade",
+                extra={
+                    "DECISION_SUPPORT_ONLY": settings.DECISION_SUPPORT_ONLY,
+                    "DISABLE_LIVE_EXECUTION": settings.DISABLE_LIVE_EXECUTION,
+                }
+            )
+            return
+        
         updated_rec = None
         exit_price = exit_reason = None
         exit_at = None

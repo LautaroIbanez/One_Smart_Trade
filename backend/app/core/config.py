@@ -180,7 +180,13 @@ class Settings(BaseSettings):
     # When enabled, if today's signal is HOLD (due to guardrails like insufficient_history),
     # the API will return the last valid BUY/SELL signal with is_stale=true for paper trading
     HOLD_FALLBACK_TO_LAST_SIGNAL: bool = True  # Default True for dev/paper trading
-
+    
+    # Decision-support mode: Disable live trading execution
+    # When enabled, the app operates as a research/decision-support dashboard only
+    # No live trades will be executed, and all signals are informational only
+    DECISION_SUPPORT_ONLY: bool = True  # Default True - app is research-only by default
+    DISABLE_LIVE_EXECUTION: bool = True  # Default True - disable any live order execution
+    
     def is_dev_mode(self) -> bool:
         """
         Unified check for development mode.

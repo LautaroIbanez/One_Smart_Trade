@@ -340,12 +340,12 @@ class PerformanceService:
             dev_mode = settings.is_dev_mode()
             degraded_reason = None
             if trade_count == 0:
-                # No trades executed - use explicit fallback status
+                # No trades executed - return NO_TRADES status without synthetic metrics
                 root_cause = "unknown"
                 if no_trade_diagnostics:
                     root_cause = no_trade_diagnostics.get("root_cause", "unknown")
                     logger.info(
-                        "No trades executed during backtest",
+                        "No trades executed during backtest - returning NO_TRADES status",
                         extra={
                             "trade_count": trade_count,
                             "root_cause": root_cause,
@@ -355,11 +355,16 @@ class PerformanceService:
                     )
                 else:
                     logger.info(
-                        "No trades executed during backtest, generating fallback metrics",
+                        "No trades executed during backtest - returning NO_TRADES status",
                         extra={"trade_count": trade_count},
                     )
-                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                metrics_status = "FALLBACK_NO_TRADES"
+                # Set minimal metrics structure (no synthetic values)
+                metrics = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+                metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
                 logger.info(
@@ -427,7 +432,8 @@ class PerformanceService:
                 tracking_error_status = "degraded"
             
             # In dev mode with fallback metrics, ensure equity curves are populated
-            if metrics_status in ("DEV_FALLBACK", "FALLBACK_NO_TRADES") and not equity_curve:
+            # For NO_TRADES, don't generate synthetic equity curves
+            if metrics_status == "DEV_FALLBACK" and not equity_curve:
                 initial_capital = metrics.get("initial_capital", 10000.0)
                 equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
                 equity_theoretical = equity_curve.copy()
@@ -463,7 +469,7 @@ class PerformanceService:
             }
             
             # Add degraded/fallback mode metadata if applicable
-            if metrics_status in ("DEV_FALLBACK", "FALLBACK_NO_TRADES"):
+            if metrics_status in ("DEV_FALLBACK", "NO_TRADES", "INSUFFICIENT_DATA"):
                 summary.setdefault("metadata", {})["degraded_mode"] = True
                 summary.setdefault("metadata", {})["fallback_mode"] = True
                 if degraded_reason:
@@ -471,7 +477,7 @@ class PerformanceService:
                 summary["metadata"]["trade_count"] = trade_count
                 
                 # Include no-trade diagnostics if available
-                if metrics_status == "FALLBACK_NO_TRADES" and no_trade_diagnostics:
+                if metrics_status == "NO_TRADES" and no_trade_diagnostics:
                     summary["metadata"]["no_trade_diagnostics"] = no_trade_diagnostics
                     summary["metadata"]["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
                     summary["metadata"]["no_trade_reason"] = no_trade_diagnostics.get("reason", "")
@@ -713,33 +719,36 @@ class PerformanceService:
             dev_mode = settings.is_dev_mode()
             degraded_reason = None
             if trade_count == 0:
-                # No trades executed - use explicit fallback status
+                # No trades executed - return NO_TRADES status without synthetic metrics
                 root_cause = "unknown"
                 if no_trade_diagnostics:
                     root_cause = no_trade_diagnostics.get("root_cause", "unknown")
                     logger.info(
-                        "No trades executed during backtest in background backfill",
+                        "No trades executed during backtest in background backfill - returning NO_TRADES status",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "root_cause": root_cause,
                             "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
-                            "fallback_reason": "no_trades_executed",
                             "no_trade_root_cause": root_cause,
                             "no_trade_diagnostics": no_trade_diagnostics,
-                            "metrics_status": "FALLBACK_NO_TRADES",
+                            "metrics_status": "NO_TRADES",
                         }),
                     )
                 else:
                     logger.info(
-                        "No trades executed during backtest in background backfill, generating fallback metrics",
+                        "No trades executed during backtest in background backfill - returning NO_TRADES status",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
-                            "fallback_reason": "no_trades_executed",
-                            "metrics_status": "FALLBACK_NO_TRADES",
+                            "metrics_status": "NO_TRADES",
                         }),
                     )
-                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
-                metrics_status = "FALLBACK_NO_TRADES"
+                # Set minimal metrics structure (no synthetic values)
+                metrics = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+                metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
                 logger.info(

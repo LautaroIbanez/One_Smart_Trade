@@ -765,6 +765,20 @@ function RecommendationCard() {
         <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
       
+      {/* Decision-support label */}
+      <div className="decision-support-label" role="note" aria-label="Disclaimer" style={{
+        margin: '0.5rem 0',
+        padding: '0.5rem',
+        backgroundColor: 'rgba(147, 51, 234, 0.1)',
+        border: '1px solid rgba(147, 51, 234, 0.3)',
+        borderRadius: '0.375rem',
+        fontSize: '0.75rem',
+        color: '#a855f7',
+        fontStyle: 'italic',
+      }}>
+        ⚠️ Experimental signal – decision-support only, NOT trading advice.
+      </div>
+      
       {/* Dev fallback / Degraded mode banner */}
       {(isDevFallback || isDegradedMode || isManualGeneration) && (
         <div className="manual-generation-banner" role="alert" aria-live="polite" style={{ 

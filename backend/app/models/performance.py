@@ -63,11 +63,11 @@ class PerformancePeriod(BaseModel):
 class PerformanceSummaryResponse(BaseModel):
     """Performance summary API response."""
 
-    status: str = Field(..., description="Status: success or error")
+    status: str = Field(..., description="Status: success, error, or degraded")
     metrics: Optional[PerformanceMetrics] = Field(None, description="Performance metrics")
     period: Optional[PerformancePeriod] = Field(None, description="Backtest period")
     report_path: Optional[str] = Field(None, description="Path to generated report")
-    message: Optional[str] = Field(None, description="Error message if status is error")
+    message: Optional[str] = Field(None, description="Error message if status is error or degraded")
     tracking_error_rmse: Optional[float] = Field(None, description="Tracking error RMSE")
     tracking_error_max: Optional[float] = Field(None, description="Maximum tracking error (bps)")
     orderbook_fallback_events: Optional[int] = Field(None, description="Number of orderbook fallback events")
@@ -76,6 +76,10 @@ class PerformanceSummaryResponse(BaseModel):
     tracking_error_series: Optional[list[dict]] = Field(None, description="Tracking error time series")
     tracking_error_cumulative: Optional[list[dict]] = Field(None, description="Cumulative tracking error series")
     chart_banners: Optional[list[str]] = Field(None, description="Warnings shown on performance charts")
+    metrics_status: Optional[str] = Field(None, description="Metrics validation status: PASS, NO_TRADES, INSUFFICIENT_DATA, DEV_FALLBACK, FAIL")
+    dev_bypass: Optional[str] = Field(None, description="Which guardrail was bypassed in dev mode")
+    fallback_reason: Optional[str] = Field(None, description="Human-readable reason for degraded/fallback mode")
+    trade_count: Optional[int] = Field(None, description="Number of trades in the backtest")
     disclaimer: str = Field(
         default="This is not financial advice. Backtesting results do not guarantee future performance. Trading cryptocurrencies involves significant risk.",
         description="Legal disclaimer",

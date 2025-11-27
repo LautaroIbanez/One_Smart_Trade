@@ -825,6 +825,18 @@ async def job_auto_close_trades() -> None:
     from datetime import datetime, timedelta
     from app.core.logging import logger, sanitize_log_extra
     from app.services.recommendation_service import RecommendationService
+    from app.core.config import settings
+
+    # Check if live execution is disabled
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        logger.info(
+            "Live execution disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION, skipping job_auto_close_trades",
+            extra=sanitize_log_extra({
+                "DECISION_SUPPORT_ONLY": settings.DECISION_SUPPORT_ONLY,
+                "DISABLE_LIVE_EXECUTION": settings.DISABLE_LIVE_EXECUTION,
+            })
+        )
+        return
 
     # Compute how far from the ideal 5-minute boundary this execution is
     now = datetime.utcnow()
