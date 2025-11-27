@@ -11,9 +11,29 @@ interface ChartDataPoint {
 
 interface ReturnsHistogramProps {
   data: ChartDataPoint[]
+  tradeCount?: number
 }
 
-export function ReturnsHistogram({ data }: ReturnsHistogramProps) {
+export function ReturnsHistogram({ data, tradeCount }: ReturnsHistogramProps) {
+  // Show message if no trades
+  if (tradeCount === 0 || (data.length === 0 && tradeCount !== undefined)) {
+    return (
+      <div className="chart-empty" style={{
+        padding: '2rem',
+        textAlign: 'center',
+        color: 'rgba(255, 255, 255, 0.7)',
+        fontSize: '0.875rem',
+      }}>
+        <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', marginBottom: '0.5rem' }}>
+          Sin trades simulados
+        </p>
+        <p style={{ margin: 0 }}>
+          Revise diagnóstico para entender por qué no se ejecutaron trades durante el backtest.
+        </p>
+      </div>
+    )
+  }
+  
   const histogramData = useMemo(() => {
     const bins: Record<string, number> = {}
     const binSize = 5
@@ -49,7 +69,21 @@ export function ReturnsHistogram({ data }: ReturnsHistogramProps) {
   }, [data])
 
   if (histogramData.length === 0) {
-    return <div className="chart-empty">No hay datos suficientes para mostrar el histograma</div>
+    return (
+      <div className="chart-empty" style={{
+        padding: '2rem',
+        textAlign: 'center',
+        color: 'rgba(255, 255, 255, 0.7)',
+        fontSize: '0.875rem',
+      }}>
+        <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', marginBottom: '0.5rem' }}>
+          Sin trades simulados
+        </p>
+        <p style={{ margin: 0 }}>
+          Revise diagnóstico para entender por qué no se ejecutaron trades durante el backtest.
+        </p>
+      </div>
+    )
   }
 
   const getColor = (value: number) => {

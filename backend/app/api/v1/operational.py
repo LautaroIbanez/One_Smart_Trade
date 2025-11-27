@@ -9,6 +9,8 @@ from app.backtesting.execution_simulator import ExecutionSimulator
 from app.backtesting.operational_flow import OperationalFlow, generate_operational_report
 from app.backtesting.order_types import LimitOrder, MarketOrder, OrderConfig, OrderSide
 from app.backtesting.position import Position, PositionConfig, PositionSide as PosSide
+from app.data.curation import DataCuration
+from app.data.ingestion import DataIngestion
 from app.data.orderbook import OrderBookRepository
 from app.core.config import settings
 from app.core.logging import logger
@@ -267,6 +269,134 @@ async def get_operational_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/backfill-to-today")
+async def backfill_to_today(
+    interval: str = Query(..., description="Timeframe to backfill (e.g., '1h', '1d')"),
+    symbol: str = Query("BTCUSDT", description="Trading symbol"),
+    venue: str = Query("binance", description="Trading venue"),
+    x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
+) -> dict[str, Any]:
+    """
+    Backfill data from latest available timestamp to today (now).
+    
+    This endpoint computes end=datetime.utcnow() and ensures fetched_at metadata
+    is stored for tracking when data was last updated.
+    
+    If not executed, the frontend can check the status endpoint to know if there's recent data.
+    
+    This endpoint is protected by ADMIN_API_KEY if configured.
+    
+    Returns:
+        Backfill result with status, rows ingested, and fetched_at timestamp
+    """
+    _verify_admin_key(x_admin_api_key)
+    
+    try:
+        ingestion = DataIngestion()
+        result = await ingestion.backfill_to_today(
+            interval=interval,
+            symbol=symbol,
+            venue=venue,
+        )
+        
+        # Also trigger curation after ingestion
+        if result.get("status") == "success":
+            try:
+                curation = DataCuration()
+                curation.curate_interval(interval, venue=venue, symbol=symbol)
+            except Exception as curation_exc:
+                logger.warning(f"Curation failed after backfill: {curation_exc}")
+        
+        return {
+            "status": "ok",
+            "backfill_result": result,
+            "fetched_at": result.get("fetched_at"),
+            "message": f"Backfill completed for {interval}. {result.get('rows', 0)} rows ingested.",
+        }
+    except Exception as e:
+        logger.error(f"Backfill to today failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backfill failed: {str(e)}")
 
 
+@router.get("/data-status")
+async def get_data_status(
+    interval: str = Query("1d", description="Timeframe to check (e.g., '1h', '1d')"),
+    symbol: str = Query("BTCUSDT", description="Trading symbol"),
+    venue: str = Query("binance", description="Trading venue"),
+) -> dict[str, Any]:
+    """
+    Get status of latest data, including latest_open_time and freshness.
+    
+    This allows the frontend to know if there's recent data and display
+    "última vela: YYYY-MM-DD" and block graphs if data is stale (>threshold).
+    
+    Returns:
+        Status with latest_open_time, age, and whether data is recent
+    """
+    try:
+        curation = DataCuration()
+        metadata = curation.get_curated_metadata(interval, venue=venue, symbol=symbol)
+        
+        if not metadata:
+            return {
+                "status": "missing",
+                "latest_open_time": None,
+                "has_recent_data": False,
+                "message": "No curated data found",
+            }
+        
+        latest_open_time = metadata.get("latest_open_time")
+        if not latest_open_time:
+            return {
+                "status": "unknown",
+                "latest_open_time": None,
+                "has_recent_data": False,
+                "message": "latest_open_time not available in metadata",
+            }
+        
+        # Parse latest_open_time and calculate age
+        from datetime import datetime, timezone
+        try:
+            latest_dt = datetime.fromisoformat(latest_open_time.replace("Z", "+00:00"))
+            if latest_dt.tzinfo is None:
+                latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            age_hours = (now - latest_dt).total_seconds() / 3600.0
+            age_days = age_hours / 24.0
+            
+            # Determine if data is recent based on interval
+            # For 1d interval, consider stale if > 2 days old
+            # For 1h interval, consider stale if > 2 hours old
+            if interval == "1d":
+                threshold_days = 2.0
+                is_recent = age_days <= threshold_days
+            elif interval == "1h":
+                threshold_hours = 2.0
+                is_recent = age_hours <= threshold_hours
+            else:
+                # Default: 2 days
+                is_recent = age_days <= 2.0
+            
+            return {
+                "status": "ok",
+                "latest_open_time": latest_open_time,
+                "latest_open_time_date": latest_dt.date().isoformat(),
+                "age_hours": round(age_hours, 2),
+                "age_days": round(age_days, 2),
+                "has_recent_data": is_recent,
+                "interval": interval,
+                "venue": venue,
+                "symbol": symbol,
+            }
+        except Exception as parse_exc:
+            logger.warning(f"Failed to parse latest_open_time: {parse_exc}")
+            return {
+                "status": "error",
+                "latest_open_time": latest_open_time,
+                "has_recent_data": False,
+                "message": f"Failed to parse latest_open_time: {str(parse_exc)}",
+            }
+    except Exception as e:
+        logger.error(f"Failed to get data status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get data status: {str(e)}")
 

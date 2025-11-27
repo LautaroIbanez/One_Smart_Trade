@@ -551,6 +551,40 @@ export const useCalculatePerformanceSummary = () => {
   })
 }
 
+export interface DataStatusResponse {
+  status: string
+  latest_open_time: string | null
+  latest_open_time_date: string | null
+  age_hours: number | null
+  age_days: number | null
+  has_recent_data: boolean
+  interval?: string
+  venue?: string
+  symbol?: string
+  message?: string
+}
+
+export const useDataStatus = (
+  interval: string = '1d',
+  symbol: string = 'BTCUSDT',
+  venue: string = 'binance',
+  enabled: boolean = true
+) => {
+  return useQuery({
+    queryKey: ['data-status', interval, symbol, venue],
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get<DataStatusResponse>('/api/v1/operational/data-status', {
+        params: { interval, symbol, venue },
+        signal,
+      })
+      return data
+    },
+    staleTime: 60_000, // 1 minute
+    enabled,
+    refetchInterval: 300_000, // Refetch every 5 minutes
+  })
+}
+
 export const useMonthlyPerformance = (pollingInterval: number | false = 30000) => {
   return useQuery({
     queryKey: ['performance', 'monthly'],

@@ -50,6 +50,7 @@ function buildEquitySeries(
 
 export function RealVsTheoretical() {
   const { data, isLoading, isError } = usePerformanceSummary()
+  const tradeCount = (data as any)?.trade_count ?? data?.metrics?.total_trades
 
   // Extract data from main payload or fallback_summary
   const effectiveData = useMemo(() => {
@@ -187,8 +188,30 @@ export function RealVsTheoretical() {
     )
   }
 
-  // If no equity series available, show metrics only
+  // If no equity series available, show metrics only or message if no trades
   if (equitySeries.length === 0) {
+    if (tradeCount === 0) {
+      return (
+        <section className="real-vs-theoretical">
+          <header>
+            <h2>Ejecución Real vs. Teórica</h2>
+          </header>
+          <div className="no-data-placeholder" style={{
+            padding: '2rem',
+            textAlign: 'center',
+            color: 'rgba(255, 255, 255, 0.7)',
+          }}>
+            <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', marginBottom: '0.5rem', fontSize: '1rem' }}>
+              Sin trades simulados
+            </p>
+            <p style={{ margin: 0, fontSize: '0.875rem' }}>
+              Revise diagnóstico para entender por qué no se ejecutaron trades durante el backtest.
+            </p>
+          </div>
+        </section>
+      )
+    }
+    
     return (
       <section className="real-vs-theoretical">
         <header>

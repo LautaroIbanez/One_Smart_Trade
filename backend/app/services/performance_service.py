@@ -165,6 +165,7 @@ class PerformanceService:
                 df_1h=inputs.df_1h,
                 df_1d=inputs.df_1d,
                 symbol=inputs.symbol,
+                data_metadata=inputs.metadata,
             )
 
         raise StrategyConfigurationError(
@@ -481,6 +482,11 @@ class PerformanceService:
                     summary["metadata"]["no_trade_diagnostics"] = no_trade_diagnostics
                     summary["metadata"]["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
                     summary["metadata"]["no_trade_reason"] = no_trade_diagnostics.get("reason", "")
+            
+            # Include signal_counts and rejected_orders_count when metrics_status ≠ PASS (for observability dashboard)
+            if metrics_status != "PASS" and no_trade_diagnostics:
+                summary.setdefault("metadata", {})["signal_counts"] = no_trade_diagnostics.get("signal_counts", {})
+                summary.setdefault("metadata", {})["rejected_orders_count"] = no_trade_diagnostics.get("rejected_orders_count", 0)
             
             # Add metadata indicating this was freshly generated
             summary = self._enrich_with_cache_metadata(summary, served_from_cache=False)
@@ -843,6 +849,14 @@ class PerformanceService:
                 "tracking_error_cumulative": result.get("tracking_error_cumulative", []),
                 "has_realistic_data": bool(result.get("equity_curve_realistic") or result.get("equity_realistic")),
             }
+            
+            # Include no_trade_diagnostics.signal_counts and rejected_orders_count when metrics_status ≠ PASS
+            if metrics_status != "PASS" and no_trade_diagnostics:
+                summary["signal_counts"] = no_trade_diagnostics.get("signal_counts", {})
+                summary["rejected_orders_count"] = no_trade_diagnostics.get("rejected_orders_count", 0)
+                summary["no_trade_diagnostics"] = no_trade_diagnostics
+                summary["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+            
             return self._enrich_with_cache_metadata(summary, served_from_cache=False)
             
         except Exception as e:

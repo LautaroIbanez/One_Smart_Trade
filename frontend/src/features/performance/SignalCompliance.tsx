@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { LineChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts'
-import { useSignalPerformance } from '../../api/hooks'
+import { useSignalPerformance, usePerformanceSummary } from '../../api/hooks'
 import './SignalCompliance.css'
 
 const formatPercent = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
@@ -39,6 +39,8 @@ function buildTrackingSeries(
 
 export function SignalCompliance() {
   const { data, isLoading, isError } = useSignalPerformance()
+  const { data: performanceData } = usePerformanceSummary()
+  const tradeCount = (performanceData as any)?.trade_count ?? performanceData?.metrics?.total_trades
 
   const metrics = useMemo(() => {
     if (!data) {
@@ -114,6 +116,29 @@ export function SignalCompliance() {
     )
   }
 
+  // Show message if no trades
+  if (tradeCount === 0) {
+    return (
+      <section className="signal-compliance" aria-live="polite">
+        <header>
+          <h2>Seguimiento de Señales</h2>
+        </header>
+        <div className="no-data-placeholder" style={{
+          padding: '2rem',
+          textAlign: 'center',
+          color: 'rgba(255, 255, 255, 0.7)',
+        }}>
+          <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', marginBottom: '0.5rem', fontSize: '1rem' }}>
+            Sin trades simulados
+          </p>
+          <p style={{ margin: 0, fontSize: '0.875rem' }}>
+            Revise diagnóstico para entender por qué no se ejecutaron trades durante el backtest.
+          </p>
+        </div>
+      </section>
+    )
+  }
+  
   if (!hasTimeline) {
     return (
       <section className="signal-compliance" aria-live="polite">

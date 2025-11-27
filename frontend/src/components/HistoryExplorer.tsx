@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import { format, subDays, startOfDay, endOfDay, isWithinInterval, parseISO } from 'date-fns'
-import { useRecommendationHistory } from '../api/hooks'
+import { useRecommendationHistory, usePerformanceSummary } from '../api/hooks'
 import { ErrorState } from './shared/ErrorState'
 import { LoadingState } from './shared/LoadingState'
 import { DegradedDataBanner } from './shared/DegradedDataBanner'
@@ -46,6 +46,10 @@ function HistoryExplorer({
   })
 
   const { data, isLoading, error, refetch } = useRecommendationHistory({ limit: 1000 })
+  
+  // Get trade count from performance summary for charts
+  const { data: performanceData } = usePerformanceSummary()
+  const tradeCount = (performanceData as any)?.trade_count ?? performanceData?.metrics?.total_trades
 
   const recommendations = data?.items || []
 
@@ -313,11 +317,11 @@ function HistoryExplorer({
       <div className="history-explorer-charts">
         <div className="chart-container">
           <h3>Heatmap Semanal de Aciertos</h3>
-          <WeeklyHeatmap data={chartData} />
+          <WeeklyHeatmap data={chartData} tradeCount={tradeCount} />
         </div>
         <div className="chart-container">
           <h3>Histograma de Retornos</h3>
-          <ReturnsHistogram data={chartData} />
+          <ReturnsHistogram data={chartData} tradeCount={tradeCount} />
         </div>
       </div>
 

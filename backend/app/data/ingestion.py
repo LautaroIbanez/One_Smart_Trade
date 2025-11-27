@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import pandas as pd
@@ -9,6 +9,7 @@ import pandas as pd
 # Filter FutureWarnings about deprecated fillna(method=...) to reduce noise
 warnings.filterwarnings("ignore", message=".*fillna with 'method' is deprecated.*", category=FutureWarning)
 
+from app.core.logging import logger
 from .binance_client import BinanceClient
 from .storage import RAW_ROOT, ensure_partition_dirs, get_raw_path, write_parquet
 from .universe import AssetSpec
@@ -237,6 +238,78 @@ class DataIngestion:
             venue=asset.venue,
             limit=limit,
         )
+    
+    async def backfill_to_today(
+        self,
+        interval: str,
+        *,
+        symbol: str = "BTCUSDT",
+        venue: str = "binance",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """
+        Backfill data from the latest available timestamp to today (now).
+        
+        This method computes end=datetime.utcnow() and ensures the fetched_at
+        metadata is stored for tracking when data was last updated.
+        
+        Args:
+            interval: Timeframe to backfill (e.g., '1h', '1d')
+            symbol: Trading symbol (default: "BTCUSDT")
+            venue: Trading venue (default: "binance")
+            limit: Maximum number of candles to fetch per request (default: 1000)
+            
+        Returns:
+            Dict with status, rows ingested, and metadata including fetched_at
+        """
+        # Get latest available timestamp from curated data
+        try:
+            from app.data.curation import DataCuration
+            curator = DataCuration()
+            try:
+                df_latest = curator.get_latest_curated(interval, venue=venue, symbol=symbol)
+                if not df_latest.empty and "open_time" in df_latest.columns:
+                    latest_timestamp = df_latest["open_time"].max()
+                    # Ensure timestamp is timezone-aware UTC
+                    if isinstance(latest_timestamp, pd.Timestamp):
+                        if latest_timestamp.tz is None:
+                            latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                        else:
+                            latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                        start = latest_timestamp.to_pydatetime()
+                    else:
+                        start = pd.to_datetime(latest_timestamp).to_pydatetime()
+                        if start.tzinfo is None:
+                            start = start.replace(tzinfo=timezone.utc)
+                else:
+                    start = None
+            except FileNotFoundError:
+                # No curated data exists, start from None (will fetch from beginning)
+                start = None
+        except Exception as exc:
+            logger.warning(f"Could not determine latest timestamp, starting from beginning: {exc}")
+            start = None
+        
+        # Compute end as current UTC time
+        end = datetime.now(timezone.utc)
+        
+        # Ingest data up to now
+        result = await self.ingest_timeframe(
+            interval,
+            start=start,
+            end=end,
+            symbol=symbol,
+            venue=venue,
+            limit=limit,
+        )
+        
+        # Ensure fetched_at is in the result
+        if "meta" in result and "fetched_at" in result["meta"]:
+            result["fetched_at"] = result["meta"]["fetched_at"]
+        else:
+            result["fetched_at"] = end.isoformat()
+        
+        return result
 
     def _klines_to_dataframe(self, klines: Iterable[Iterable[Any]]) -> pd.DataFrame:
         columns = [

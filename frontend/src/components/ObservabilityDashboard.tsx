@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../api/hooks'
+import { api, usePerformanceSummary } from '../api/hooks'
 import { getPollingInterval } from '../utils/polling'
 import './ObservabilityDashboard.css'
 
@@ -71,6 +71,7 @@ const useObservabilityDashboard = (isPrivate: boolean = false) => {
 export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: boolean }) {
   const [showThresholds, setShowThresholds] = useState(true)
   const { data, isLoading, isError } = useObservabilityDashboard(isPrivate)
+  const { data: performanceData } = usePerformanceSummary()
 
   // Normalize response data to handle partial responses safely
   const normalizedData = useMemo(() => {
@@ -420,6 +421,139 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
           )}
         </div>
       </div>
+
+      {/* Backtest Diagnostics Section */}
+      {performanceData && (performanceData as any)?.metrics_status && (performanceData as any).metrics_status !== 'PASS' && (
+        <div className="backtest-diagnostics-section" style={{
+          marginTop: '2rem',
+          padding: '1.5rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '0.5rem',
+        }}>
+          <h3 style={{ margin: '0 0 1rem 0', color: '#ef4444', fontSize: '1.125rem' }}>
+            🔍 Diagnóstico de Backtest
+          </h3>
+          {(() => {
+            const metricsStatus = (performanceData as any).metrics_status
+            const signalCounts = (performanceData as any).signal_counts || {}
+            const rejectedOrdersCount = (performanceData as any).rejected_orders_count || 0
+            const tradeCount = (performanceData as any).metrics?.total_trades || (performanceData as any).trade_count || 0
+            const enterSignals = signalCounts.enter || 0
+            const rootCause = (performanceData as any).no_trade_root_cause || (performanceData as any).no_trade_diagnostics?.root_cause
+            const noTradeDiagnostics = (performanceData as any).no_trade_diagnostics
+
+            // Determine the issue type
+            let issueType = 'unknown'
+            let issueMessage = ''
+            
+            if (enterSignals === 0) {
+              issueType = 'sin_señales'
+              issueMessage = 'No se generaron señales de entrada durante el backtest'
+            } else if (rejectedOrdersCount > 0) {
+              issueType = 'órdenes_rechazadas'
+              issueMessage = `${rejectedOrdersCount} órdenes fueron rechazadas por el simulador de ejecución`
+            } else if (enterSignals > 0 && tradeCount === 0) {
+              issueType = 'tamaño_cero'
+              issueMessage = `${enterSignals} señales de entrada generadas pero tamaño de posición = 0`
+            } else if (enterSignals > tradeCount) {
+              issueType = 'conversión_parcial'
+              issueMessage = `${enterSignals} señales de entrada generadas, ${tradeCount} trades ejecutados`
+            }
+
+            return (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                  <div style={{ padding: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.2)', borderRadius: '0.375rem' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>Señales de Entrada</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#fff' }}>{enterSignals}</div>
+                  </div>
+                  <div style={{ padding: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.2)', borderRadius: '0.375rem' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>Trades Generados</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#fff' }}>{tradeCount}</div>
+                  </div>
+                  {rejectedOrdersCount > 0 && (
+                    <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.2)', borderRadius: '0.375rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>Órdenes Rechazadas</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#ef4444' }}>{rejectedOrdersCount}</div>
+                    </div>
+                  )}
+                </div>
+                
+                {issueMessage && (
+                  <div style={{ 
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)', 
+                    borderRadius: '0.375rem',
+                    marginBottom: '0.75rem',
+                  }}>
+                    <div style={{ fontSize: '0.875rem', color: '#ef4444', fontWeight: 500 }}>
+                      ⚠️ {issueMessage}
+                    </div>
+                  </div>
+                )}
+
+                {rootCause && (
+                  <div style={{ 
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(0, 0, 0, 0.2)', 
+                    borderRadius: '0.375rem',
+                    marginBottom: '0.75rem',
+                  }}>
+                    <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>Causa Raíz</div>
+                    <div style={{ fontSize: '0.875rem', color: '#fff', fontWeight: 500 }}>
+                      {rootCause === 'no_signals_generated' && '❌ No se generaron señales'}
+                      {rootCause === 'no_enter_signals' && '❌ No se generaron señales de entrada'}
+                      {rootCause === 'invalid_stop_loss' && '❌ Stop loss inválido (distancia = 0 o faltante)'}
+                      {rootCause === 'enter_signals_zero_size' && '⚠️ Señales de entrada con tamaño cero'}
+                      {rootCause === 'orders_rejected' && '⚠️ Órdenes rechazadas por simulador'}
+                      {rootCause === 'unknown' && '❓ Causa desconocida'}
+                      {!['no_signals_generated', 'no_enter_signals', 'invalid_stop_loss', 'enter_signals_zero_size', 'orders_rejected', 'unknown'].includes(rootCause) && rootCause}
+                    </div>
+                  </div>
+                )}
+
+                {noTradeDiagnostics?.reason && (
+                  <div style={{ 
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(0, 0, 0, 0.2)', 
+                    borderRadius: '0.375rem',
+                    fontSize: '0.875rem',
+                    color: 'rgba(255, 255, 255, 0.9)',
+                  }}>
+                    <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>Detalles</div>
+                    <div>{noTradeDiagnostics.reason}</div>
+                  </div>
+                )}
+
+                {signalCounts.total > 0 && (
+                  <div style={{ 
+                    marginTop: '0.75rem',
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(0, 0, 0, 0.2)', 
+                    borderRadius: '0.375rem',
+                    fontSize: '0.75rem',
+                    color: 'rgba(255, 255, 255, 0.7)',
+                  }}>
+                    <div style={{ marginBottom: '0.5rem', fontWeight: 500 }}>Desglose de Señales:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      {Object.entries(signalCounts).filter(([key, value]) => key !== 'total' && (value as number) > 0).map(([key, value]) => (
+                        <span key={key} style={{ 
+                          padding: '0.25rem 0.5rem', 
+                          backgroundColor: 'rgba(255, 255, 255, 0.1)', 
+                          borderRadius: '0.25rem',
+                        }}>
+                          {key}: {value as number}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
     </section>
   )
 }

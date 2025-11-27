@@ -285,7 +285,26 @@ class DataCuration:
             "quality_pass": True,
         }
         
-        # Update metadata with quality flags
+        # Calculate latest_open_time from the dataframe
+        latest_open_time = None
+        if not df.empty and "open_time" in df.columns:
+            latest_timestamp = df["open_time"].max()
+            # Ensure timestamp is timezone-aware UTC
+            if isinstance(latest_timestamp, pd.Timestamp):
+                if latest_timestamp.tz is None:
+                    latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                else:
+                    latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                latest_open_time = latest_timestamp.isoformat()
+            else:
+                latest_dt = pd.to_datetime(latest_timestamp)
+                if latest_dt.tz is None:
+                    latest_dt = latest_dt.tz_localize(timezone.utc)
+                else:
+                    latest_dt = latest_dt.tz_convert(timezone.utc)
+                latest_open_time = latest_dt.isoformat()
+        
+        # Update metadata with quality flags and latest_open_time
         metadata = {
             "interval": interval,
             "rows": len(df),
@@ -296,6 +315,8 @@ class DataCuration:
             "reconciler_applied": self.apply_reconciler,
             "quality_pass": True,
         }
+        if latest_open_time:
+            metadata["latest_open_time"] = latest_open_time
         if quality_stats:
             metadata["quality_stats"] = quality_stats
         if discrepancies:
@@ -333,6 +354,42 @@ class DataCuration:
         if not path.exists():
             raise FileNotFoundError(f"Curated dataset not found for {interval} (venue={venue}, symbol={symbol})")
         return read_parquet(path)
+    
+    def get_curated_metadata(
+        self,
+        interval: str,
+        *,
+        venue: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Get metadata from curated dataset, including latest_open_time.
+        
+        Args:
+            interval: Timeframe (e.g., '1h', '1d')
+            venue: Optional venue filter
+            symbol: Optional symbol filter
+            
+        Returns:
+            Metadata dict with latest_open_time, or None if not found
+        """
+        import json
+        
+        if venue and symbol:
+            path = get_curated_path(venue, symbol, interval)
+        else:
+            path = CURATED_ROOT / interval / "latest.parquet"
+        
+        meta_path = path.with_suffix(".meta.json")
+        if not meta_path.exists():
+            return None
+        
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.warning(f"Failed to read metadata from {meta_path}: {exc}")
+            return None
 
     @staticmethod
     def _get_freshness_threshold_minutes(interval: str, threshold_minutes: int | None = None) -> int:

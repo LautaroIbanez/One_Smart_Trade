@@ -635,6 +635,15 @@ async def get_performance_summary(
             response_dict["demo_metrics"] = True
             response_dict["demo_metrics_cause"] = demo_metrics_cause
         
+        # Include signal_counts and rejected_orders_count when metrics_status ≠ PASS (for observability dashboard)
+        if metrics_status and metrics_status != "PASS":
+            no_trade_diagnostics = result.get("no_trade_diagnostics") or metadata.get("no_trade_diagnostics")
+            if no_trade_diagnostics:
+                response_dict["signal_counts"] = no_trade_diagnostics.get("signal_counts", {})
+                response_dict["rejected_orders_count"] = no_trade_diagnostics.get("rejected_orders_count", 0)
+                response_dict["no_trade_diagnostics"] = no_trade_diagnostics
+                response_dict["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+        
         return response_dict
     except HTTPException:
         raise

@@ -21,6 +21,7 @@ class SignalDataInputs:
     df_1d: pd.DataFrame
     venue: str
     symbol: str
+    metadata: dict[str, Any] | None = None  # Optional metadata about data freshness, staleness, etc.
     
     def __post_init__(self) -> None:
         """Validate inputs after initialization."""
@@ -62,6 +63,7 @@ class SignalDataProvider:
         self.venue = venue
         self.symbol = symbol
         self._cached_inputs: SignalDataInputs | None = None
+        self._last_metadata: dict[str, Any] | None = None  # Cache last metadata for inspection
     
     def get_validated_inputs(
         self,
@@ -93,15 +95,64 @@ class SignalDataProvider:
             FileNotFoundError: If curated data files are not found
             ValueError: If dataframes are empty or invalid
         """
-        # Return cached inputs if available and not forcing refresh
+        # Check if cache should be invalidated based on latest_open_time
+        should_invalidate_cache = False
         if self._cached_inputs is not None and not force_refresh:
+            # Check if latest_open_time is stale (for 1d interval, check if < today-2d)
+            try:
+                metadata_1d = self.curation.get_curated_metadata("1d", venue=self.venue, symbol=self.symbol)
+                if metadata_1d and "latest_open_time" in metadata_1d:
+                    latest_open_time_str = metadata_1d["latest_open_time"]
+                    latest_dt = self._normalize_open_time(latest_open_time_str)
+                    if latest_dt:
+                        now = datetime.now(timezone.utc)
+                        days_old = (now - latest_dt).days
+                        # If 1d data is older than 2 days, invalidate cache and trigger ingestion
+                        if days_old >= 2:
+                            should_invalidate_cache = True
+                            logger.warning(
+                                "Cache invalidated: latest_open_time is stale",
+                                extra={
+                                    "interval": "1d",
+                                    "latest_open_time": latest_open_time_str,
+                                    "days_old": days_old,
+                                    "threshold_days": 2,
+                                },
+                            )
+                            # Log that ingestion should be triggered (actual triggering should be done by scheduled job or API)
+                            logger.info(
+                                "Data is stale - ingestion should be triggered",
+                                extra={
+                                    "interval": "1d",
+                                    "latest_open_time": latest_open_time_str,
+                                    "days_old": days_old,
+                                    "should_trigger_ingestion": True,
+                                },
+                            )
+            except Exception as exc:
+                logger.debug(f"Could not check cache invalidation: {exc}")
+        
+        # Return cached inputs if available and not forcing refresh and cache is still valid
+        if self._cached_inputs is not None and not force_refresh and not should_invalidate_cache:
             logger.debug("Returning cached signal data inputs")
             return self._cached_inputs
+        
+        # Clear cache if invalidated
+        if should_invalidate_cache:
+            self._cached_inputs = None
         
         logger.info("Loading validated signal data inputs", extra={"venue": self.venue, "symbol": self.symbol})
         
         # Check if dev mode is enabled (unified check)
         dev_mode = settings.is_dev_mode()
+        
+        # Initialize metadata tracking
+        metadata: dict[str, Any] = {
+            "status": "ok",
+            "dev_mode": dev_mode,
+            "used_legacy_fallback": False,
+            "intervals": {},
+        }
         
         # Validate data freshness if requested
         # In dev mode, validation will be skipped by curation.validate_data_freshness() but status is still logged
@@ -117,13 +168,41 @@ class SignalDataProvider:
             except DataFreshnessError as exc:
                 if dev_mode:
                     # In dev mode, log the failure but don't raise - allow stale data to proceed
+                    # Extract freshness metadata
+                    latest_timestamp = exc.latest_timestamp
+                    threshold_minutes = exc.threshold_minutes
+                    context_data = getattr(exc, "context_data", {}) or {}
+                    age_minutes = context_data.get("age_minutes")
+                    
+                    # Calculate stale_minutes if not provided
+                    if age_minutes is None and latest_timestamp:
+                        try:
+                            latest_dt = pd.to_datetime(latest_timestamp)
+                            if latest_dt.tz is None:
+                                latest_dt = latest_dt.tz_localize(timezone.utc)
+                            else:
+                                latest_dt = latest_dt.tz_convert(timezone.utc)
+                            now = datetime.now(timezone.utc)
+                            age_minutes = (now - latest_dt.to_pydatetime()).total_seconds() / 60.0
+                        except Exception:
+                            age_minutes = None
+                    
+                    # Store metadata for this interval
+                    metadata["intervals"][exc.interval] = {
+                        "latest_timestamp": latest_timestamp,
+                        "stale_minutes": age_minutes,
+                        "threshold_minutes": threshold_minutes,
+                        "status": "stale",
+                    }
+                    
                     self._record_data_freshness_failure(exc)
                     logger.info(
                         "DEV MODE: Data freshness validation failed but continuing with stale data",
                         extra={
                             "interval": exc.interval,
-                            "latest_timestamp": exc.latest_timestamp,
-                            "threshold_minutes": exc.threshold_minutes,
+                            "latest_timestamp": latest_timestamp,
+                            "stale_minutes": age_minutes,
+                            "threshold_minutes": threshold_minutes,
                             "dev_mode": True,
                         },
                     )
@@ -158,6 +237,9 @@ class SignalDataProvider:
                     raise
         
         # Load curated datasets with verification and fallback
+        used_legacy_fallback_1d = False
+        used_legacy_fallback_1h = False
+        
         try:
             df_1d = self.curation.get_latest_curated("1d", venue=self.venue, symbol=self.symbol)
         except FileNotFoundError:
@@ -185,6 +267,7 @@ class SignalDataProvider:
             
             # Fallback to legacy path structure
             logger.warning("Partitioned 1d data not found, falling back to legacy path")
+            used_legacy_fallback_1d = True
             try:
                 df_1d = self.curation.get_latest_curated("1d")
             except FileNotFoundError:
@@ -204,15 +287,65 @@ class SignalDataProvider:
         except FileNotFoundError:
             # Fallback to legacy path structure
             logger.warning("Partitioned 1h data not found, falling back to legacy path")
+            used_legacy_fallback_1h = True
             df_1h = self.curation.get_latest_curated("1h")
+        
+        # Track if legacy fallback was used
+        metadata["used_legacy_fallback"] = used_legacy_fallback_1d or used_legacy_fallback_1h
         
         # Validate dataframes are not empty
         if df_1d is None or df_1d.empty:
+            metadata["status"] = "stale_or_missing"
             raise ValueError("1d curated dataset is empty")
         
         if df_1h is None or df_1h.empty:
             logger.warning("1h dataset empty, using 1d as fallback")
             df_1h = df_1d.copy()
+            metadata["status"] = "stale_or_missing"
+        
+        # Mark as stale_or_missing if legacy fallback was used
+        if metadata["used_legacy_fallback"]:
+            metadata["status"] = "stale_or_missing"
+        
+        # Calculate latest timestamps and stale_minutes for metadata if not already set
+        if "1d" not in metadata.get("intervals", {}):
+            try:
+                if "open_time" in df_1d.columns:
+                    latest_1d = df_1d["open_time"].max()
+                    latest_1d_dt = self._normalize_open_time(latest_1d)
+                    if latest_1d_dt:
+                        now = datetime.now(timezone.utc)
+                        stale_minutes_1d = (now - latest_1d_dt).total_seconds() / 60.0
+                        if "intervals" not in metadata:
+                            metadata["intervals"] = {}
+                        metadata["intervals"]["1d"] = {
+                            "latest_timestamp": latest_1d_dt.isoformat(),
+                            "stale_minutes": round(stale_minutes_1d, 2),
+                            "status": "ok" if metadata["status"] == "ok" else metadata["status"],
+                        }
+            except Exception:
+                pass
+        
+        if "1h" not in metadata.get("intervals", {}):
+            try:
+                if "open_time" in df_1h.columns:
+                    latest_1h = df_1h["open_time"].max()
+                    latest_1h_dt = self._normalize_open_time(latest_1h)
+                    if latest_1h_dt:
+                        now = datetime.now(timezone.utc)
+                        stale_minutes_1h = (now - latest_1h_dt).total_seconds() / 60.0
+                        if "intervals" not in metadata:
+                            metadata["intervals"] = {}
+                        metadata["intervals"]["1h"] = {
+                            "latest_timestamp": latest_1h_dt.isoformat(),
+                            "stale_minutes": round(stale_minutes_1h, 2),
+                            "status": "ok" if metadata["status"] == "ok" else metadata["status"],
+                        }
+            except Exception:
+                pass
+        
+        # Store metadata for external access
+        self._last_metadata = metadata
         
         # Create immutable inputs container
         inputs = SignalDataInputs(
@@ -220,6 +353,7 @@ class SignalDataProvider:
             df_1d=df_1d.copy(),  # Copy to prevent external modifications
             venue=self.venue,
             symbol=self.symbol,
+            metadata=metadata,
         )
         
         # Cache inputs for subsequent calls
@@ -245,6 +379,10 @@ class SignalDataProvider:
     def has_cached_inputs(self) -> bool:
         """Return True if validated inputs are cached in memory."""
         return self._cached_inputs is not None
+    
+    def get_last_metadata(self) -> dict[str, Any] | None:
+        """Return last metadata from get_validated_inputs call."""
+        return self._last_metadata
 
     def describe_dataset_freshness(self, intervals: list[str] | None = None) -> dict[str, Any]:
         """Return latest timestamps and freshness metadata for curated datasets."""
@@ -262,6 +400,12 @@ class SignalDataProvider:
     def _build_interval_freshness(self, interval: str) -> dict[str, Any]:
         """Inspect curated dataset for interval and compute freshness metrics."""
         try:
+            # Try to get latest_open_time from metadata first
+            metadata = self.curation.get_curated_metadata(interval, venue=self.venue, symbol=self.symbol)
+            latest_open_time_from_meta = None
+            if metadata and "latest_open_time" in metadata:
+                latest_open_time_from_meta = metadata["latest_open_time"]
+            
             df = self.curation.get_latest_curated(interval, venue=self.venue, symbol=self.symbol)
         except FileNotFoundError:
             return {"status": "missing", "latest_open_time": None, "age_minutes": None, "rows": 0}
@@ -269,8 +413,17 @@ class SignalDataProvider:
             return {"status": "empty", "latest_open_time": None, "age_minutes": None, "rows": 0}
         if "open_time" not in df.columns:
             return {"status": "invalid", "latest_open_time": None, "age_minutes": None, "rows": len(df)}
-        latest_value = df["open_time"].max()
-        latest_dt = self._normalize_open_time(latest_value)
+        
+        # Use metadata latest_open_time if available, otherwise compute from dataframe
+        if latest_open_time_from_meta:
+            try:
+                latest_dt = self._normalize_open_time(latest_open_time_from_meta)
+            except Exception:
+                latest_dt = None
+        else:
+            latest_value = df["open_time"].max()
+            latest_dt = self._normalize_open_time(latest_value)
+        
         if latest_dt is None:
             return {"status": "unknown", "latest_open_time": None, "age_minutes": None, "rows": len(df)}
         age_minutes = (datetime.now(timezone.utc) - latest_dt).total_seconds() / 60.0

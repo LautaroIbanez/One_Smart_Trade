@@ -1,11 +1,15 @@
 import { useMemo, useEffect, useState } from 'react'
-import { usePerformanceSummary, useCalculatePerformanceSummary, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
+import { usePerformanceSummary, useCalculatePerformanceSummary, useDataStatus, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
   const { data, isLoading, error, refetch } = usePerformanceSummary()
   const calculatePerformance = useCalculatePerformanceSummary()
   const [isCalculating, setIsCalculating] = useState(false)
+  const [showWarningModal, setShowWarningModal] = useState(false)
+  
+  // Fetch data status to check latest_open_time
+  const { data: dataStatus } = useDataStatus('1d', 'BTCUSDT', 'binance', true)
 
   // Check if status is degraded
   const isDegradedStatus = data?.status === 'degraded'
@@ -19,6 +23,39 @@ function PerformanceSummary() {
   
   // Determine if metrics should be de-emphasized
   const shouldDeemphasizeKPIs = metricsStatus && metricsStatus !== 'PASS'
+  
+  // Check if we should show warning modal based on latest_open_time or metrics_status
+  useEffect(() => {
+    if (!dataStatus || !data) return
+    
+    const shouldShowWarning = 
+      // Check if latest_open_time is older than 2 days
+      (dataStatus.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) ||
+      // Check if metrics_status indicates problems
+      (metricsStatus && ['NO_TRADES', 'DEV_FALLBACK'].includes(metricsStatus))
+    
+    if (shouldShowWarning && !showWarningModal) {
+      setShowWarningModal(true)
+    }
+  }, [dataStatus, metricsStatus, data, showWarningModal])
+  
+  // Build warning message
+  const warningMessage = useMemo(() => {
+    const messages: string[] = []
+    
+    if (dataStatus?.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) {
+      const dateStr = dataStatus.latest_open_time_date || new Date(dataStatus.latest_open_time).toISOString().split('T')[0]
+      messages.push(`Datos desactualizados: última vela ${dateStr} (hace ${Math.round(dataStatus.age_days)} días)`)
+    }
+    
+    if (metricsStatus === 'NO_TRADES') {
+      messages.push('Sin trades simulados; revise diagnóstico')
+    } else if (metricsStatus === 'DEV_FALLBACK') {
+      messages.push('Modo desarrollo: métricas de respaldo')
+    }
+    
+    return messages.join('. ')
+  }, [dataStatus, metricsStatus])
 
   // Extract data from main payload or fallback_summary
   // Always attempt to extract partial/fallback data
@@ -202,6 +239,76 @@ function PerformanceSummary() {
   return (
     <div className="performance-summary">
       <h2>Resumen de Performance (Backtesting)</h2>
+      
+      {/* Warning Modal */}
+      {showWarningModal && warningMessage && (
+        <div 
+          className="warning-modal-overlay" 
+          onClick={() => setShowWarningModal(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div 
+            className="warning-modal" 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#1f2937',
+              border: '2px solid #ef4444',
+              borderRadius: '0.5rem',
+              padding: '1.5rem',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
+            }}
+          >
+            <h3 style={{ margin: '0 0 1rem 0', color: '#ef4444', fontSize: '1.25rem' }}>
+              ⚠️ Advertencia
+            </h3>
+            <p style={{ margin: '0 0 1rem 0', color: 'rgba(255, 255, 255, 0.9)', lineHeight: '1.5' }}>
+              {warningMessage}
+            </p>
+            {dataStatus?.latest_open_time && (
+              <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.7)' }}>
+                Última vela: {dataStatus.latest_open_time_date || new Date(dataStatus.latest_open_time).toISOString().split('T')[0]}
+              </p>
+            )}
+            {(data as any)?.no_trade_diagnostics && (
+              <div style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.7)' }}>
+                <p style={{ margin: '0 0 0.5rem 0', fontWeight: 600 }}>Diagnóstico:</p>
+                <p style={{ margin: 0 }}>
+                  {(data as any).no_trade_diagnostics.reason || 'Sin trades ejecutados durante el backtest'}
+                </p>
+              </div>
+            )}
+            <button
+              onClick={() => setShowWarningModal(false)}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: '#ef4444',
+                color: 'white',
+                border: 'none',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+                fontWeight: 500,
+                fontSize: '0.875rem',
+              }}
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
+      
           {(isDegraded || shouldDeemphasizeKPIs) && (
         <div className="degraded-mode-banner" role="status" aria-live="polite" style={{
           padding: '1rem',

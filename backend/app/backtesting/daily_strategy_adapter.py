@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from app.backtesting.engine import StrategyProtocol
+from app.core.logging import logger
 from app.quant.signal_engine import DailySignalEngine
 from app.utils.seeding import generate_deterministic_seed
 
@@ -25,6 +26,7 @@ class DailyStrategyAdapter:
         df_1d: pd.DataFrame,
         seed: int | None = None,
         symbol: str = "BTCUSDT",
+        data_metadata: dict[str, Any] | None = None,
     ):
         """
         Initialize the adapter.
@@ -36,12 +38,14 @@ class DailyStrategyAdapter:
             seed: Optional fallback seed (only used if date-based seed cannot be derived).
                   If None, seed will be derived from timestamp in on_bar().
             symbol: Trading symbol for seed generation (default: "BTCUSDT")
+            data_metadata: Optional metadata about data freshness/staleness from SignalDataProvider
         """
         self.signal_engine = signal_engine
         self.df_1h_full = df_1h.copy()
         self.df_1d_full = df_1d.copy()
         self.fallback_seed = seed  # Renamed to clarify it's only a fallback
         self.symbol = symbol
+        self.data_metadata = data_metadata  # Store metadata about data freshness/staleness
         
         # Ensure dataframes have timestamp index
         if not isinstance(self.df_1h_full.index, pd.DatetimeIndex):
@@ -108,9 +112,70 @@ class DailyStrategyAdapter:
         df_1h = self.df_1h_full[self.df_1h_full.index <= timestamp].copy()
         df_1d = self.df_1d_full[self.df_1d_full.index <= timestamp].copy()
         
+        # Check if data is stale based on metadata
+        if self.data_metadata and self.data_metadata.get("status") == "stale_or_missing":
+            reason = "stale_data"
+            logger.warning(
+                "Stale data detected in DailyStrategyAdapter",
+                extra={
+                    "reason": reason,
+                    "current_timestamp": timestamp.isoformat() if isinstance(timestamp, pd.Timestamp) else str(timestamp),
+                    "metadata": self.data_metadata,
+                    "data_status": self.data_metadata.get("status"),
+                },
+            )
+            return {
+                "action": "hold",
+                "reason": reason,
+                "data_status": self.data_metadata.get("status"),
+                "metadata": self.data_metadata,
+            }
+        
         # Need at least some data to generate signal
         if df_1h.empty or df_1d.empty:
-            return {"action": "hold"}  # HOLD - no action
+            # Determine which dataset is empty and get last available date
+            reason = None
+            empty_dataset = None
+            last_available_date = None
+            
+            if df_1h.empty and df_1d.empty:
+                reason = "empty_df_1h_and_df_1d"
+                empty_dataset = "both"
+                # Get last available date from full dataframes
+                if not self.df_1h_full.empty:
+                    last_available_date = self.df_1h_full.index.max()
+                elif not self.df_1d_full.empty:
+                    last_available_date = self.df_1d_full.index.max()
+            elif df_1h.empty:
+                reason = "empty_df_1h"
+                empty_dataset = "df_1h"
+                last_available_date = self.df_1h_full.index.max() if not self.df_1h_full.empty else None
+            elif df_1d.empty:
+                reason = "empty_df_1d"
+                empty_dataset = "df_1d"
+                last_available_date = self.df_1d_full.index.max() if not self.df_1d_full.empty else None
+            
+            # Log the empty dataset condition
+            logger.warning(
+                "Empty dataset detected in DailyStrategyAdapter",
+                extra={
+                    "empty_dataset": empty_dataset,
+                    "reason": reason,
+                    "current_timestamp": timestamp.isoformat() if isinstance(timestamp, pd.Timestamp) else str(timestamp),
+                    "last_available_date": last_available_date.isoformat() if last_available_date is not None and hasattr(last_available_date, "isoformat") else str(last_available_date),
+                    "df_1h_empty": df_1h.empty,
+                    "df_1d_empty": df_1d.empty,
+                    "df_1h_full_rows": len(self.df_1h_full),
+                    "df_1d_full_rows": len(self.df_1d_full),
+                },
+            )
+            
+            return {
+                "action": "hold",
+                "reason": reason,
+                "empty_dataset": empty_dataset,
+                "last_available_date": last_available_date.isoformat() if last_available_date is not None and hasattr(last_available_date, "isoformat") else str(last_available_date),
+            }
         
         # Generate signal using DailySignalEngine with date-based seed
         # This ensures same confidence for same date in both backtest and production

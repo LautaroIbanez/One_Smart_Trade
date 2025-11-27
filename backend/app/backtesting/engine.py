@@ -245,6 +245,7 @@ class BacktestState:
         "total": 0,
     })
     signals_with_zero_size: int = 0  # Count of enter signals that resulted in zero position size
+    signals_with_zero_size_details: list[dict[str, Any]] = field(default_factory=list)  # Detailed records of zero-size signals with timestamps
 
     def update_equity(self, theoretical: float, realistic: float, timestamp: pd.Timestamp) -> None:
         """Update equity and track curves with timestamp in DataFrame format."""
@@ -306,7 +307,7 @@ class RiskManagedPositionSizer:
         self.max_risk_pct = max_risk_pct
         self.dd_curve = dd_curve or []
 
-    def size(self, equity: float, signal: dict[str, Any], drawdown: float) -> float:
+    def size(self, equity: float, signal: dict[str, Any], drawdown: float) -> tuple[float, str | None]:
         """
         Calculate position size based on risk and drawdown.
 
@@ -316,7 +317,7 @@ class RiskManagedPositionSizer:
             drawdown: Current drawdown (0.0 to 1.0)
 
         Returns:
-            Position size in units
+            Tuple of (position size in units, rejection_reason if size=0)
         """
         # Reduce risk as drawdown increases (min 20% of base risk)
         risk_multiplier = max(0.2, 1.0 - (drawdown / 0.5))  # Linear reduction to 50% DD
@@ -324,11 +325,33 @@ class RiskManagedPositionSizer:
         dollars_risked = equity * risk_pct
 
         stop_loss_distance = signal.get("stop_loss_distance", 0.0)
+        entry_price = signal.get("entry_price", 0.0)
+        stop_loss = signal.get("stop_loss", 0.0)
+        
+        # Validate stop loss configuration
         if stop_loss_distance <= 0:
-            return 0.0
+            rejection_reason = "invalid_stop_loss"
+            if entry_price <= 0:
+                rejection_reason = "invalid_stop_loss_missing_entry_price"
+            elif stop_loss <= 0:
+                rejection_reason = "invalid_stop_loss_missing_stop_loss"
+            elif stop_loss_distance == 0:
+                rejection_reason = "invalid_stop_loss_zero_distance"
+            logger.error(
+                "RiskManagedPositionSizer: Invalid stop loss configuration",
+                extra={
+                    "rejection_reason": rejection_reason,
+                    "stop_loss_distance": stop_loss_distance,
+                    "entry_price": entry_price,
+                    "stop_loss": stop_loss,
+                    "equity": equity,
+                    "drawdown": drawdown,
+                },
+            )
+            return (0.0, rejection_reason)
         
         size = dollars_risked / stop_loss_distance
-        return size
+        return (size, None)
 
 
 class BacktestEngine:
@@ -1151,10 +1174,12 @@ class BacktestEngine:
             # Generate orders from signal
             if signal.get("action") == "enter" and not state.position:
                 # Calculate position size
-                stop_loss_distance = abs(signal.get("entry_price", 0.0) - signal.get("stop_loss", 0.0))
+                entry_price = signal.get("entry_price", 0.0)
+                stop_loss = signal.get("stop_loss", 0.0)
+                stop_loss_distance = abs(entry_price - stop_loss)
                 signal["stop_loss_distance"] = stop_loss_distance
 
-                size = position_sizer.size(state.equity_realistic, signal, state.current_drawdown)
+                size, rejection_reason = position_sizer.size(state.equity_realistic, signal, state.current_drawdown)
                 if size > 0:
                     side = OrderSide.BUY if signal.get("side", "BUY") == "BUY" else OrderSide.SELL
                     order = MarketOrder(
@@ -1164,25 +1189,43 @@ class BacktestEngine:
                         timestamp=bar_date,
                     )
                     orders.append(order)
-                    logger.debug(
+                    logger.info(
                         "Enter signal -> order created",
                         extra={
                             "action": "enter",
                             "order_qty": size,
                             "order_side": side.value,
+                            "entry_price": entry_price,
+                            "stop_loss": stop_loss,
+                            "stop_loss_distance": stop_loss_distance,
+                            "equity": state.equity_realistic,
+                            "drawdown": state.current_drawdown,
                             "timestamp": bar_date.isoformat(),
                         },
                     )
                 else:
                     # Track enter signals that resulted in zero size
                     state.signals_with_zero_size += 1
-                    logger.debug(
+                    zero_size_detail = {
+                        "timestamp": bar_date.isoformat(),
+                        "entry_price": entry_price,
+                        "stop_loss": stop_loss,
+                        "stop_loss_distance": stop_loss_distance,
+                        "equity": state.equity_realistic,
+                        "drawdown": state.current_drawdown,
+                        "rejection_reason": rejection_reason or "zero_position_size",
+                    }
+                    state.signals_with_zero_size_details.append(zero_size_detail)
+                    logger.warning(
                         "Enter signal -> zero size (order not created)",
                         extra={
                             "action": "enter",
-                            "rejection_reason": "zero_position_size",
-                            "equity": state.equity_realistic,
+                            "rejection_reason": rejection_reason or "zero_position_size",
+                            "entry_price": entry_price,
+                            "stop_loss": stop_loss,
                             "stop_loss_distance": stop_loss_distance,
+                            "equity": state.equity_realistic,
+                            "drawdown": state.current_drawdown,
                             "timestamp": bar_date.isoformat(),
                         },
                     )
@@ -1204,6 +1247,17 @@ class BacktestEngine:
                         timestamp=bar_date,
                     )
                 orders.append(order)
+                logger.info(
+                    "Exit signal -> order created",
+                    extra={
+                        "action": "exit",
+                        "order_qty": state.position.size,
+                        "order_side": order.side.value,
+                        "equity": state.equity_realistic,
+                        "drawdown": state.current_drawdown,
+                        "timestamp": bar_date.isoformat(),
+                    },
+                )
             
             elif signal.get("action") == "stop_loss" and state.position:
                 # Stop loss order
@@ -1324,23 +1378,29 @@ class BacktestEngine:
                     
                     if exec_result.status != OrderStatus.FILLED:
                         # Order not filled - log and track
-                        logger.warning(
-                            "Order not filled",
-                            extra={
-                                "order_side": order.side.value,
-                                "order_qty": order.qty,
-                                "status": exec_result.status.value if hasattr(exec_result.status, "value") else str(exec_result.status),
-                                "fill_ratio": exec_result.fill_ratio,
-                                "timestamp": bar_date.isoformat(),
-                            },
-                        )
-                        state.rejected_orders.append({
+                        rejection_detail = {
                             "timestamp": bar_date.isoformat(),
                             "order_side": order.side.value,
                             "order_qty": order.qty,
                             "status": exec_result.status.value if hasattr(exec_result.status, "value") else str(exec_result.status),
                             "fill_ratio": exec_result.fill_ratio,
-                        })
+                            "equity": state.equity_realistic,
+                            "drawdown": state.current_drawdown,
+                        }
+                        state.rejected_orders.append(rejection_detail)
+                        logger.warning(
+                            "Order rejected by execution simulator",
+                            extra={
+                                "order_side": order.side.value,
+                                "order_qty": order.qty,
+                                "status": exec_result.status.value if hasattr(exec_result.status, "value") else str(exec_result.status),
+                                "fill_ratio": exec_result.fill_ratio,
+                                "equity": state.equity_realistic,
+                                "drawdown": state.current_drawdown,
+                                "timestamp": bar_date.isoformat(),
+                                "rejection_reason": "execution_simulator_rejected",
+                            },
+                        )
                         continue  # Skip this order
                     
                     fill_price = exec_result.avg_fill_price
@@ -1621,12 +1681,18 @@ class BacktestEngine:
             enter_signals = state.signal_counts["enter"]
             hold_signals = state.signal_counts["hold"] + state.signal_counts["none"]
             
+            # Check for invalid_stop_loss in zero-size signals
+            invalid_stop_loss_count = sum(1 for detail in state.signals_with_zero_size_details if detail.get("rejection_reason", "").startswith("invalid_stop_loss"))
+            
             if total_signals == 0:
                 no_trade_diagnostics["root_cause"] = "no_signals_generated"
                 no_trade_diagnostics["reason"] = "Strategy did not generate any signals during the backtest period. This may indicate strategy conditions were not met or strategy logic is flat."
             elif enter_signals == 0:
                 no_trade_diagnostics["root_cause"] = "no_enter_signals"
                 no_trade_diagnostics["reason"] = f"Strategy generated {total_signals} signals but none were 'enter' actions. All signals were: {dict((k, v) for k, v in state.signal_counts.items() if v > 0)}"
+            elif invalid_stop_loss_count > 0:
+                no_trade_diagnostics["root_cause"] = "invalid_stop_loss"
+                no_trade_diagnostics["reason"] = f"Strategy generated {enter_signals} enter signals but {invalid_stop_loss_count} had invalid stop loss configuration (stop_loss_distance=0, missing entry_price, or missing stop_loss)."
             elif state.signals_with_zero_size > 0:
                 no_trade_diagnostics["root_cause"] = "enter_signals_zero_size"
                 no_trade_diagnostics["reason"] = f"Strategy generated {enter_signals} enter signals but position sizer calculated zero size for {state.signals_with_zero_size} of them. This may indicate insufficient capital, risk limits, or invalid stop loss distances."
@@ -1639,8 +1705,11 @@ class BacktestEngine:
             
             no_trade_diagnostics["signal_counts"] = state.signal_counts
             no_trade_diagnostics["signals_with_zero_size"] = state.signals_with_zero_size
+            no_trade_diagnostics["signals_with_zero_size_details"] = state.signals_with_zero_size_details
             no_trade_diagnostics["rejected_orders_count"] = len(state.rejected_orders)
+            no_trade_diagnostics["rejected_orders"] = state.rejected_orders
             no_trade_diagnostics["total_bars"] = total_bars
+            no_trade_diagnostics["invalid_stop_loss_count"] = invalid_stop_loss_count
         
         equity_curve_df = state.equity_curve.copy()
         equity_curve_dict: list[dict[str, Any]] = []
