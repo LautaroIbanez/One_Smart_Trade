@@ -163,3 +163,4 @@ def test_parse_timestamp_utc_preserves_no_nat_rows():
         assert isinstance(result, pd.Timestamp)
         assert result.tz is not None
 
+

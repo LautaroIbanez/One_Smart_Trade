@@ -822,6 +822,10 @@ El sistema cumple con **todos los requisitos** del checklist global y está **co
 - **Determinismo**: Seed determinista asegura reproducibilidad
 - **Bloqueo automático**: Cualquier check fallido bloquea la publicación
 
+## Ajustar cadencia de polling del dashboard
+- Todas las consultas del dashboard toman sus intervalos desde `frontend/src/utils/polling.ts`. Ajusta `pollingConfig` (multiplicador por entorno, mínimos y máximos) para modificar la cadencia sin tocar múltiples componentes.
+- Usa siempre `getPollingInterval`/`addJitter` al crear nuevos paneles para mantener el comportamiento consistente entre entornos (dev/test/prod) y evitar duplicar lógica.
+
 **El sistema está listo para producción en paper trading diario.** 🚀
 
 ---

@@ -49,8 +49,6 @@ interface UserRiskPanelProps {
 }
 
 export function UserRiskPanel({ userId = '00000000-0000-0000-0000-000000000001', pollingInterval = 30000 }: UserRiskPanelProps) {
-  const { getPollingInterval } = require('../utils/polling')
-  
   const { data, isLoading, error } = useQuery<UserRiskState>({
     queryKey: ['user-risk-state', userId],
     queryFn: async ({ signal }) => {

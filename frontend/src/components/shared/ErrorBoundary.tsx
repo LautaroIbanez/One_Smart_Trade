@@ -2,6 +2,24 @@ import React, { Component, ReactNode, ErrorInfo } from 'react'
 import { ErrorState } from './ErrorState'
 import './ErrorBoundary.css'
 
+const CONFIG_ERROR_PATTERNS: Array<{ test: RegExp; hint: string }> = [
+  {
+    test: /getPollingInterval/i,
+    hint: 'El helper getPollingInterval no está disponible. Verifica importaciones desde src/utils/polling.ts.',
+  },
+  {
+    test: /polling/i,
+    hint: 'Hay un problema con la configuración de polling. Revisa src/utils/polling.ts o cualquier override local.',
+  },
+]
+
+function getConfigurationHint(error: Error | null): string | null {
+  if (!error) return null
+  const message = `${error.name ?? ''} ${error.message ?? ''}`
+  const match = CONFIG_ERROR_PATTERNS.find(({ test }) => test.test(message))
+  return match?.hint ?? null
+}
+
 interface ErrorBoundaryProps {
   children: ReactNode
   fallback?: ReactNode
@@ -31,6 +49,10 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     // Log error details for debugging
     console.error('ErrorBoundary caught an error:', error, errorInfo)
+    const hint = process.env.NODE_ENV === 'development' ? getConfigurationHint(error) : null
+    if (hint) {
+      console.info('[ErrorBoundary] Hint:', hint)
+    }
     
     // Store error info in state for potential reporting
     this.setState({
@@ -63,6 +85,9 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
       }
 
       // Default fallback UI
+      const isDev = process.env.NODE_ENV === 'development'
+      const configHint = isDev ? getConfigurationHint(this.state.error) : null
+
       return (
         <div className="error-boundary-container">
           <div className="error-boundary-content">
@@ -72,7 +97,12 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
               onRetry={this.handleReset}
               showRetry={true}
             />
-            {process.env.NODE_ENV === 'development' && this.state.error && (
+            {isDev && configHint && (
+              <div className="error-boundary-hint" role="note">
+                🔧 {configHint}
+              </div>
+            )}
+            {isDev && this.state.error && (
               <details className="error-boundary-details">
                 <summary className="error-boundary-summary">Detalles técnicos (solo en desarrollo)</summary>
                 <div className="error-boundary-stack">

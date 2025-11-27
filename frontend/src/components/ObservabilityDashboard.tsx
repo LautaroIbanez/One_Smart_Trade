@@ -49,8 +49,6 @@ interface DashboardResponse {
 }
 
 const useObservabilityDashboard = (isPrivate: boolean = false) => {
-  const { getPollingInterval } = require('../utils/polling')
-  
   return useQuery({
     queryKey: ['observability', 'dashboard', isPrivate],
     queryFn: async ({ signal }) => {

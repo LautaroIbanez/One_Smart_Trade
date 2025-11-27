@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import axios, { AxiosError } from 'axios'
 import { getApiBaseUrl } from '../utils/apiConfig'
+import { getPollingInterval } from '../utils/polling'
 import type { RecommendationHistoryResponse, SignalPerformanceResponse } from '../services/api'
 
 export const API_BASE_URL = getApiBaseUrl()
