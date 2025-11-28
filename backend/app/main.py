@@ -258,8 +258,10 @@ async def job_daily_pipeline() -> None:
             venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
             symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
 
+            # Ensure ingestion includes data up to the most recent close
+            ingestion_end = datetime.now(timezone.utc)
             ingestion_results = await ingestion.ingest_all_timeframes(
-                venue=venue, symbol=symbol
+                venue=venue, symbol=symbol, end=ingestion_end
             )
             
             # Step 1.5: Verify 1d data exists, force reingestion if missing (especially critical for dev)

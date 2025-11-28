@@ -283,17 +283,47 @@ class RecommendationService:
         signal["trade_efficiency"] = evaluation.to_dict()
         return evaluation.accepted, evaluation
 
-    def _get_open_recommendation(self):
+    def _get_open_recommendation(self, *, max_age_days: int = 0):
+        """
+        Get the currently open recommendation, if any.
+        
+        Args:
+            max_age_days: Maximum age in days. If > 0, only return recommendations
+                         created within the last max_age_days. If 0, return any open recommendation.
+        
+        Returns:
+            RecommendationORM | None: The open recommendation, or None if not found or too old.
+        """
+        from datetime import date, timedelta
+        
         if self.session is not None:
-            return get_open_recommendation(self.session)
-        with SessionLocal() as db:
-            try:
-                rec = get_open_recommendation(db)
-                if rec:
-                    db.expunge(rec)
-                return rec
-            finally:
-                db.close()
+            rec = get_open_recommendation(self.session)
+        else:
+            with SessionLocal() as db:
+                try:
+                    rec = get_open_recommendation(db)
+                    if rec:
+                        db.expunge(rec)
+                finally:
+                    db.close()
+        
+        if rec and max_age_days > 0:
+            rec_date = rec.created_at.date() if rec.created_at else rec.date
+            today = date.today()
+            age_days = (today - rec_date).days
+            if age_days > max_age_days:
+                logger.warning(
+                    f"Open recommendation from {rec_date} is {age_days} days old (max_age={max_age_days}), ignoring",
+                    extra={
+                        "rec_date": rec_date.isoformat(),
+                        "today": today.isoformat(),
+                        "age_days": age_days,
+                        "max_age_days": max_age_days,
+                    }
+                )
+                return None
+        
+        return rec
 
     def _cache_result(self, rec, include_sizing: bool = True, user_id: str | None = None) -> dict[str, Any]:
         """Convert RecommendationORM to dict, including ID and metadata."""
@@ -385,19 +415,36 @@ class RecommendationService:
         
         return result
     
-    def _apply_recency_metadata(self, payload: dict[str, Any], *, as_of: date, today: date) -> dict[str, Any]:
+    def _apply_recency_metadata(self, payload: dict[str, Any], *, as_of: date, today: date, cause: str | None = None) -> dict[str, Any]:
+        """
+        Apply recency metadata to payload.
+        
+        Args:
+            payload: The recommendation payload to enrich
+            as_of: The date when the recommendation was created
+            today: Today's date
+            cause: Optional cause for stale status (e.g., "reused_open_rec", "no_data", etc.)
+        """
         if not isinstance(payload, dict):
             return payload
+        
+        is_fresh = as_of == today
         recency = {
-            "status": "fresh" if as_of == today else "stale",
+            "status": "fresh" if is_fresh else "stale",
             "as_of": as_of.isoformat(),
         }
+        
         try:
             delta = today - as_of
             if delta.days >= 0:
                 recency["days_since_release"] = delta.days
         except TypeError:
             pass
+        
+        # Add cause if status is stale
+        if not is_fresh and cause:
+            recency["cause"] = cause
+        
         payload["data_recency"] = recency
         return payload
     
@@ -1631,10 +1678,38 @@ class RecommendationService:
             if not self.session:
                 db.close()
 
-        open_rec = self._get_open_recommendation()
+        # Check for open recommendation, but only reuse if it's from today (max_age_days=0 means today only)
+        from datetime import date
+        today = date.today()
+        open_rec = self._get_open_recommendation(max_age_days=0)
         if open_rec:
-            logger.info("Reusing open recommendation with status=%s for consensus", open_rec.status)
-            return self._from_orm(open_rec)
+            rec_date = open_rec.created_at.date() if open_rec.created_at else open_rec.date
+            if rec_date == today:
+                logger.info("Reusing open recommendation with status=%s for consensus (date=%s)", open_rec.status, rec_date)
+                return self._from_orm(open_rec)
+            else:
+                logger.warning(
+                    f"Open recommendation from {rec_date} is not from today ({today}), will generate new recommendation",
+                    extra={
+                        "rec_date": rec_date.isoformat(),
+                        "today": today.isoformat(),
+                        "rec_status": open_rec.status,
+                    }
+                )
+                # Close the old open recommendation to allow new one to be created
+                if self.session:
+                    open_rec.status = "closed"
+                    open_rec.closed_at = datetime.utcnow()
+                    self.session.commit()
+                else:
+                    with SessionLocal() as db:
+                        try:
+                            db_rec = db.merge(open_rec)
+                            db_rec.status = "closed"
+                            db_rec.closed_at = datetime.utcnow()
+                            db.commit()
+                        finally:
+                            db.close()
 
         try:
             latest_daily = self.curation.get_latest_curated("1d")
@@ -1931,27 +2006,59 @@ class RecommendationService:
                 sharpe = metrics.get("sharpe", 0.0)
                 max_dd = metrics.get("max_drawdown", 0.0)
                 
+                # Check for NO_TRADES status
+                metrics_status = backtest_result.get("metrics_status") or backtest_result.get("no_trade_diagnostics", {}).get("root_cause")
+                no_trade_diagnostics = backtest_result.get("no_trade_diagnostics", {})
+                trade_count = metrics.get("total_trades", 0)
+                
+                if trade_count == 0:
+                    logger.warning(
+                        f"Backtest returned NO_TRADES (root_cause: {no_trade_diagnostics.get('root_cause', 'unknown')}). "
+                        f"Will persist HOLD recommendation for today.",
+                        extra={
+                            "root_cause": no_trade_diagnostics.get("root_cause", "unknown"),
+                            "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
+                            "rejected_orders_count": no_trade_diagnostics.get("rejected_orders_count", 0),
+                        }
+                    )
+                    # Degrade signal to HOLD but continue to persist recommendation
+                    signal["signal"] = "HOLD"
+                    risk_metrics = signal.setdefault("risk_metrics", {})
+                    risk_metrics["backtest_no_trades"] = True
+                    risk_metrics["backtest_no_trades_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+                    risk_metrics["backtest_no_trades_reason"] = no_trade_diagnostics.get("reason", "No trades executed during backtest")
+                    signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
+                    logger.info("Signal degraded to HOLD due to NO_TRADES, but recommendation will be persisted for today")
+                
                 if sharpe < settings.BACKTEST_MIN_SHARPE:
                     logger.warning(
-                        f"Backtest validation failed: Sharpe {sharpe:.2f} < {settings.BACKTEST_MIN_SHARPE}",
+                        f"Backtest validation failed: Sharpe {sharpe:.2f} < {settings.BACKTEST_MIN_SHARPE}. "
+                        f"Degrading to HOLD but persisting recommendation for today.",
                         extra={"sharpe": sharpe, "max_drawdown": max_dd, "metrics": metrics},
                     )
-                    return {
-                        "status": "backtest_failed",
-                        "reason": f"Backtest Sharpe ratio {sharpe:.2f} below minimum {settings.BACKTEST_MIN_SHARPE}",
-                        "backtest_metrics": metrics,
-                    }
+                    # Degrade signal to HOLD but continue to persist recommendation
+                    signal["signal"] = "HOLD"
+                    risk_metrics = signal.setdefault("risk_metrics", {})
+                    risk_metrics["backtest_sharpe_failed"] = True
+                    risk_metrics["backtest_sharpe"] = sharpe
+                    risk_metrics["backtest_min_sharpe"] = settings.BACKTEST_MIN_SHARPE
+                    signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
+                    logger.info("Signal degraded to HOLD due to low Sharpe, but recommendation will be persisted for today")
                 
                 if max_dd > settings.BACKTEST_MAX_DRAWDOWN_PCT:
                     logger.warning(
-                        f"Backtest validation failed: Max DD {max_dd:.2f}% > {settings.BACKTEST_MAX_DRAWDOWN_PCT}%",
+                        f"Backtest validation failed: Max DD {max_dd:.2f}% > {settings.BACKTEST_MAX_DRAWDOWN_PCT}%. "
+                        f"Degrading to HOLD but persisting recommendation for today.",
                         extra={"sharpe": sharpe, "max_drawdown": max_dd, "metrics": metrics},
                     )
-                    return {
-                        "status": "backtest_failed",
-                        "reason": f"Backtest max drawdown {max_dd:.2f}% exceeds limit {settings.BACKTEST_MAX_DRAWDOWN_PCT}%",
-                        "backtest_metrics": metrics,
-                    }
+                    # Degrade signal to HOLD but continue to persist recommendation
+                    signal["signal"] = "HOLD"
+                    risk_metrics = signal.setdefault("risk_metrics", {})
+                    risk_metrics["backtest_max_dd_failed"] = True
+                    risk_metrics["backtest_max_dd"] = max_dd
+                    risk_metrics["backtest_max_dd_limit"] = settings.BACKTEST_MAX_DRAWDOWN_PCT
+                    signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
+                    logger.info("Signal degraded to HOLD due to high drawdown, but recommendation will be persisted for today")
                 
                 # Save backtest result and get run_id
                 saved_result = save_backtest_result(backtest_result)
@@ -2151,19 +2258,37 @@ class RecommendationService:
 
         self._ensure_champion_context(run_alerts=False)
 
-        open_rec = self._get_open_recommendation()
+        open_rec = self._get_open_recommendation(max_age_days=0)
         if open_rec:
-            logger.info(
-                "Serving open recommendation from %s with status=%s",
-                open_rec.date,
-                open_rec.status,
-            )
-            result = self._cache_result(open_rec, user_id=user_id)
-            return self._apply_recency_metadata(
-                result,
-                as_of=open_rec.created_at.date(),
-                today=today,
-            )
+            rec_date = open_rec.created_at.date() if open_rec.created_at else open_rec.date
+            if rec_date == today:
+                logger.info(
+                    "Serving open recommendation from %s with status=%s",
+                    rec_date,
+                    open_rec.status,
+                )
+                result = self._cache_result(open_rec, user_id=user_id)
+                return self._apply_recency_metadata(
+                    result,
+                    as_of=rec_date,
+                    today=today,
+                )
+            else:
+                logger.warning(
+                    f"Open recommendation from {rec_date} is not from today ({today}), marking as stale",
+                    extra={
+                        "rec_date": rec_date.isoformat(),
+                        "today": today.isoformat(),
+                        "rec_status": open_rec.status,
+                    }
+                )
+                result = self._cache_result(open_rec, user_id=user_id)
+                return self._apply_recency_metadata(
+                    result,
+                    as_of=rec_date,
+                    today=today,
+                    cause="reused_open_rec",
+                )
 
         # Check cache first
         if self._cache and self._cache_timestamp:

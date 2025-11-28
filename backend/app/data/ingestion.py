@@ -142,15 +142,25 @@ class DataIngestion:
         return gaps
 
     async def ingest_all_timeframes(
-        self, *, symbol: str = "BTCUSDT", venue: str = "binance"
+        self, *, symbol: str = "BTCUSDT", venue: str = "binance", end: datetime | None = None
     ) -> list[dict[str, Any]]:
-        """Ingest all supported timeframes for a specific venue/symbol."""
-
+        """
+        Ingest all supported timeframes for a specific venue/symbol.
+        
+        Args:
+            symbol: Trading symbol (default: "BTCUSDT")
+            venue: Trading venue (default: "binance")
+            end: End datetime for ingestion. If None, uses datetime.now(timezone.utc) to ensure
+                 latest data is included up to the most recent close.
+        """
+        if end is None:
+            end = datetime.now(timezone.utc)
+        
         results: list[dict[str, Any]] = []
         for interval in INTERVALS:
             try:
                 result = await self.ingest_timeframe(
-                    interval, symbol=symbol, venue=venue
+                    interval, symbol=symbol, venue=venue, end=end
                 )
             except Exception as exc:  # pragma: no cover - bubbled to caller
                 result = {
