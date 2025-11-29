@@ -558,6 +558,10 @@ export interface DataStatusResponse {
   age_hours: number | null
   age_days: number | null
   has_recent_data: boolean
+  dev_mode?: boolean
+  allow_stale_inputs?: boolean
+  freshness_policy?: string
+  has_seed_data?: boolean
   interval?: string
   venue?: string
   symbol?: string

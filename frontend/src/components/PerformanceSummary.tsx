@@ -28,7 +28,7 @@ function PerformanceSummary() {
   // Determine if metrics should be de-emphasized
   const shouldDeemphasizeKPIs = metricsStatus && metricsStatus !== 'PASS'
   
-  // Check if we should show warning modal based on latest_open_time or metrics_status
+  // Check if we should show warning modal based on backend freshness flags and metrics_status
   // Don't show if pipeline is running (data is being updated)
   useEffect(() => {
     if (!dataStatus || !data) return
@@ -42,20 +42,27 @@ function PerformanceSummary() {
       return
     }
     
-    // Only show warning if pipeline is NOT running AND conditions are met
+    // Use backend freshness flags instead of manual age_days calculation
+    const freshnessPolicy = dataStatus?.freshness_policy || 'strict'
+    const hasRecentData = dataStatus?.has_recent_data === true
+    const allowsStaleInputs = dataStatus?.allow_stale_inputs === true || freshnessPolicy === 'dev_allow_stale'
+    
+    // Only show warning if:
+    // 1. Backend explicitly marks data as stale (has_recent_data=false AND freshness_policy=strict)
+    // 2. OR metrics_status indicates problems (always show these warnings)
     const shouldShowWarning = 
-      // Check if latest_open_time is older than 2 days
-      (dataStatus.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) ||
-      // Check if metrics_status indicates problems
+      // Backend explicitly says data is stale (production mode with real stale data)
+      (!hasRecentData && freshnessPolicy === 'strict') ||
+      // Check if metrics_status indicates problems (always show these warnings)
       (metricsStatus && ['NO_TRADES', 'DEV_FALLBACK'].includes(metricsStatus))
     
-    // Close modal automatically if data is now fresh (age_days <= 2 and metrics_status is PASS)
+    // Close modal automatically if data is now fresh according to backend
     const isDataFresh = 
-      (dataStatus.age_days === null || dataStatus.age_days <= 2) &&
+      hasRecentData &&
       (metricsStatus === 'PASS' || !metricsStatus || !['NO_TRADES', 'DEV_FALLBACK'].includes(metricsStatus))
     
     if (isDataFresh && showWarningModal) {
-      // Data is fresh, close modal
+      // Data is fresh according to backend, close modal
       setShowWarningModal(false)
     } else if (shouldShowWarning && !isPipelineRunning && !showWarningModal) {
       // Show modal only if pipeline is NOT running and conditions are met
@@ -72,9 +79,16 @@ function PerformanceSummary() {
       return 'El pipeline está corriendo; los datos se actualizarán automáticamente'
     }
     
-    if (dataStatus?.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) {
+    // Use backend freshness flags instead of manual age calculation
+    const freshnessPolicy = dataStatus?.freshness_policy || 'strict'
+    const hasRecentData = dataStatus?.has_recent_data === true
+    
+    // Only show age warning if backend explicitly marks data as stale (production mode)
+    // In dev mode (freshness_policy='dev_allow_stale'), the modal won't show, so this message won't appear
+    if (!hasRecentData && freshnessPolicy === 'strict' && dataStatus?.latest_open_time) {
       const dateStr = dataStatus.latest_open_time_date || new Date(dataStatus.latest_open_time).toISOString().split('T')[0]
-      messages.push(`Datos desactualizados: última vela ${dateStr} (hace ${Math.round(dataStatus.age_days)} días)`)
+      const ageDays = dataStatus.age_days !== null ? Math.round(dataStatus.age_days) : 'N/A'
+      messages.push(`Datos desactualizados: última vela ${dateStr} (hace ${ageDays} días)`)
     }
     
     if (metricsStatus === 'NO_TRADES') {

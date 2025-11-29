@@ -29,6 +29,9 @@ window.fetch = async function(...args) {
       age_hours: 720, // 30 days
       age_days: 30,
       has_recent_data: false,
+      dev_mode: false,
+      allow_stale_inputs: false,
+      freshness_policy: "strict", // Modo producción
       interval: "1d",
       venue: "binance",
       symbol: "BTCUSDT",
@@ -113,6 +116,9 @@ window.fetch = async function(...args) {
       age_hours: 720,
       age_days: 30,
       has_recent_data: false,
+      dev_mode: false,
+      allow_stale_inputs: false,
+      freshness_policy: "strict",
     }), {
       headers: { 'Content-Type': 'application/json' }
     });
@@ -152,6 +158,176 @@ window.fetch = async function(...args) {
 3. **Verificar**:
    - Debe aparecer el warning modal con "Modo desarrollo: métricas de respaldo"
    - Debe mostrar "Datos desactualizados: última vela 2024-11-11"
+   - El modal aparece porque `freshness_policy="strict"` y `has_recent_data=false`
+
+## Test 4: Modo dev permite datos antiguos sin modal (NUEVO)
+
+Este test verifica que en modo dev, el modal NO aparece aunque los datos sean antiguos, pero el banner degradado SÍ aparece si `metrics_status` lo requiere.
+
+### Pasos:
+
+1. **Interceptar llamadas** con este mock que simula modo dev:
+
+```javascript
+const originalFetch = window.fetch;
+window.fetch = async function(...args) {
+  const url = args[0];
+  
+  // Mock /api/v1/operational/data-status con modo dev
+  if (url.includes('/api/v1/operational/data-status')) {
+    return new Response(JSON.stringify({
+      status: "ok",
+      latest_open_time: "2024-11-11T00:00:00Z",
+      latest_open_time_date: "2024-11-11",
+      age_hours: 720, // 30 días
+      age_days: 30, // Datos antiguos
+      has_recent_data: true, // TRUE en modo dev aunque age_days > 2
+      dev_mode: true,
+      allow_stale_inputs: true,
+      freshness_policy: "dev_allow_stale", // Política de dev
+      has_seed_data: true,
+      interval: "1d",
+      venue: "binance",
+      symbol: "BTCUSDT",
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  // Mock /api/v1/performance/summary con metrics_status que requiere banner
+  if (url.includes('/api/v1/performance/summary')) {
+    return new Response(JSON.stringify({
+      status: "degraded",
+      metrics_status: "DEV_FALLBACK", // Requiere banner degradado
+      trade_count: 10,
+      dev_bypass: "trade_count_guardrail",
+      fallback_reason: "Development mode: Fallback metrics (10 trades < 50)",
+      metrics: {
+        total_trades: 10,
+        winning_trades: 5,
+        losing_trades: 5,
+        win_rate: 50,
+        profit_factor: 1.2,
+        sharpe_ratio: 0.5,
+        calmar_ratio: 0.3,
+        max_drawdown: 5.0,
+        cagr: 10.0,
+        expectancy_r: 0.1,
+        avg_rr: 1.5,
+      },
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  // Mock /health para pipeline status
+  if (url.includes('/health')) {
+    return new Response(JSON.stringify({
+      status: "healthy",
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  return originalFetch.apply(this, args);
+};
+```
+
+2. **Recargar la página** (F5 o Ctrl+R)
+
+3. **Verificar que el modal NO aparece**:
+   - ✅ NO debe aparecer el modal rojo de advertencia
+   - ✅ Aunque `age_days=30` (datos antiguos), el modal no se muestra porque:
+     - `freshness_policy="dev_allow_stale"`
+     - `has_recent_data=true` (backend marca como reciente en modo dev)
+
+4. **Verificar que el banner degradado SÍ aparece**:
+   - ✅ Debe aparecer el banner degradado (amarillo/morado) en PerformanceSummary
+   - ✅ El banner debe mostrar: "🔧 Modo Desarrollo" o "⚠️ Modo Degradado"
+   - ✅ El mensaje debe incluir: "Modo desarrollo: métricas de respaldo"
+   - ✅ El banner debe explicar que las métricas son de respaldo generadas automáticamente
+
+5. **Verificar en la consola del navegador**:
+   - Abre DevTools (F12) → Console
+   - No debe haber errores relacionados con `age_days` o `has_recent_data`
+   - Verifica que `dataStatus.freshness_policy === "dev_allow_stale"`
+
+## Test 5: Modo dev con datos antiguos y NO_TRADES (NUEVO)
+
+Este test verifica que el modal NO aparece por datos antiguos, pero SÍ aparece por `metrics_status=NO_TRADES`.
+
+### Pasos:
+
+1. **Interceptar llamadas** con este mock:
+
+```javascript
+const originalFetch = window.fetch;
+window.fetch = async function(...args) {
+  const url = args[0];
+  
+  if (url.includes('/api/v1/operational/data-status')) {
+    return new Response(JSON.stringify({
+      status: "ok",
+      latest_open_time: "2024-11-11T00:00:00Z",
+      latest_open_time_date: "2024-11-11",
+      age_hours: 720,
+      age_days: 30, // Datos antiguos
+      has_recent_data: true, // TRUE en modo dev
+      dev_mode: true,
+      allow_stale_inputs: true,
+      freshness_policy: "dev_allow_stale",
+      has_seed_data: true,
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  if (url.includes('/api/v1/performance/summary')) {
+    return new Response(JSON.stringify({
+      status: "degraded",
+      metrics_status: "NO_TRADES", // Requiere modal
+      trade_count: 0,
+      metrics: {
+        total_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        win_rate: 0,
+        profit_factor: 1.0,
+        sharpe_ratio: 0.0,
+        calmar_ratio: 0.0,
+        max_drawdown: 0.0,
+        cagr: 0.0,
+        expectancy_r: 0.0,
+        avg_rr: 1.0,
+      },
+      no_trade_diagnostics: {
+        root_cause: "enter_signals_zero_size",
+        reason: "Strategy generated signals but position sizer calculated zero size.",
+      },
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  if (url.includes('/health')) {
+    return new Response(JSON.stringify({
+      status: "healthy",
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  return originalFetch.apply(this, args);
+};
+```
+
+2. **Recargar la página**
+
+3. **Verificar**:
+   - ✅ El modal SÍ aparece, pero SOLO por `metrics_status=NO_TRADES`
+   - ✅ El modal NO menciona "Datos desactualizados" (porque `freshness_policy="dev_allow_stale"`)
+   - ✅ El modal SÍ menciona "Sin trades simulados; revise diagnóstico"
+   - ✅ El banner degradado también aparece explicando el problema de NO_TRADES
 
 ## Test 3: Verificar que el banner rojo explica correctamente
 

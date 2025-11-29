@@ -330,18 +330,39 @@ async def get_data_status(
     This allows the frontend to know if there's recent data and display
     "última vela: YYYY-MM-DD" and block graphs if data is stale (>threshold).
     
+    In dev mode or when stale inputs are allowed, freshness checks are relaxed
+    to prevent false alerts during development/testing with seed data.
+    
     Returns:
-        Status with latest_open_time, age, and whether data is recent
+        Status with latest_open_time, age, and whether data is recent.
+        Includes dev_mode, allow_stale_inputs, and freshness_policy flags.
     """
     try:
         curation = DataCuration()
         metadata = curation.get_curated_metadata(interval, venue=venue, symbol=symbol)
+        
+        # Detect dev mode and stale input allowance
+        is_dev_mode = settings.is_dev_mode()
+        allow_stale_inputs = is_dev_mode or settings.DEV_FAKE_DATA
+        
+        # Check if we have seed/demo data (indicates stale inputs are acceptable)
+        has_seed_data = False
+        if allow_stale_inputs:
+            try:
+                from app.data.dev_seeding import has_local_raw_data
+                has_seed_data = has_local_raw_data(venue=venue, symbol=symbol)
+            except Exception:
+                # If dev_seeding module not available, assume seed data if in dev mode
+                has_seed_data = is_dev_mode
         
         if not metadata:
             return {
                 "status": "missing",
                 "latest_open_time": None,
                 "has_recent_data": False,
+                "dev_mode": is_dev_mode,
+                "allow_stale_inputs": allow_stale_inputs,
+                "freshness_policy": "dev_allow_stale" if allow_stale_inputs else "strict",
                 "message": "No curated data found",
             }
         
@@ -351,6 +372,9 @@ async def get_data_status(
                 "status": "unknown",
                 "latest_open_time": None,
                 "has_recent_data": False,
+                "dev_mode": is_dev_mode,
+                "allow_stale_inputs": allow_stale_inputs,
+                "freshness_policy": "dev_allow_stale" if allow_stale_inputs else "strict",
                 "message": "latest_open_time not available in metadata",
             }
         
@@ -369,21 +393,34 @@ async def get_data_status(
             # For 1h interval, consider stale if > 2 hours old
             if interval == "1d":
                 threshold_days = 2.0
-                is_recent = age_days <= threshold_days
+                is_recent_by_age = age_days <= threshold_days
             elif interval == "1h":
                 threshold_hours = 2.0
-                is_recent = age_hours <= threshold_hours
+                is_recent_by_age = age_hours <= threshold_hours
             else:
                 # Default: 2 days
-                is_recent = age_days <= 2.0
+                is_recent_by_age = age_days <= 2.0
+            
+            # In dev mode or when stale inputs are allowed, override freshness check
+            # This prevents false alerts when using seed/demo data
+            if allow_stale_inputs:
+                is_recent = True  # Always consider data "recent" in dev mode
+                freshness_policy = "dev_allow_stale"
+            else:
+                is_recent = is_recent_by_age
+                freshness_policy = "strict"
             
             return {
                 "status": "ok",
                 "latest_open_time": latest_open_time,
                 "latest_open_time_date": latest_dt.date().isoformat(),
                 "age_hours": round(age_hours, 2),
-                "age_days": round(age_days, 2),
-                "has_recent_data": is_recent,
+                "age_days": round(age_days, 2),  # Keep real age for diagnostics
+                "has_recent_data": is_recent,  # Overridden in dev mode
+                "dev_mode": is_dev_mode,
+                "allow_stale_inputs": allow_stale_inputs,
+                "freshness_policy": freshness_policy,
+                "has_seed_data": has_seed_data,
                 "interval": interval,
                 "venue": venue,
                 "symbol": symbol,
@@ -394,6 +431,9 @@ async def get_data_status(
                 "status": "error",
                 "latest_open_time": latest_open_time,
                 "has_recent_data": False,
+                "dev_mode": is_dev_mode,
+                "allow_stale_inputs": allow_stale_inputs,
+                "freshness_policy": "dev_allow_stale" if allow_stale_inputs else "strict",
                 "message": f"Failed to parse latest_open_time: {str(parse_exc)}",
             }
     except Exception as e:
