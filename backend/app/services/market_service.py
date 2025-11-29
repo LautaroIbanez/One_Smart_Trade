@@ -79,9 +79,11 @@ class MarketService:
                 data_stale = True
         
         # Use configurable window (default 200, but can be overridden)
+        # FE-DATA-01: Provide full OHLC structure for chart compatibility
+        # Note: Full OHLC will be added by the endpoint, but we provide timestamp and price for backward compatibility
         chart_points = [
             {
-                "timestamp": row["open_time"].isoformat(),
+                "timestamp": row["open_time"].isoformat() if hasattr(row["open_time"], "isoformat") else str(row["open_time"]),
                 "price": float(row["close"]),
             }
             for _, row in df.tail(window).iterrows()

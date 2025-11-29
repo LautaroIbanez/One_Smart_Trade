@@ -418,12 +418,28 @@ class PerformanceService:
                 metrics_status = "PASS"
             
             # Ensure metrics_status is never None or UNKNOWN - map to deterministic fallback
+            # ROOT CAUSE FIX BE-METRICS-01: When metrics_status is missing, distinguish between:
+            # - NO_TRADES: Minimal metrics only (just total_trades=0, winning_trades=0, losing_trades=0)
+            # - FALLBACK_NO_TRADES: Fallback/synthetic metrics exist (has CAGR, Sharpe, etc. even if trade_count=0)
             if not metrics_status or metrics_status == "UNKNOWN":
-                # Determine fallback based on trade count
                 if trade_count == 0:
-                    metrics_status = "FALLBACK_NO_TRADES"
-                    if not degraded_reason:
-                        degraded_reason = "no_trades_executed_unknown"
+                    # Check if metrics contain fallback/synthetic values vs minimal structure only
+                    has_fallback_metrics = bool(
+                        metrics.get("cagr") is not None
+                        or metrics.get("sharpe_ratio") is not None
+                        or metrics.get("max_drawdown") is not None
+                        or len(metrics) > 3  # More than just total_trades, winning_trades, losing_trades
+                    )
+                    if has_fallback_metrics:
+                        # Fallback metrics were generated despite zero trades
+                        metrics_status = "FALLBACK_NO_TRADES"
+                        if not degraded_reason:
+                            degraded_reason = "no_trades_executed_with_fallback_metrics"
+                    else:
+                        # Minimal metrics only - no fallback/synthetic values
+                        metrics_status = "NO_TRADES"
+                        if not degraded_reason:
+                            degraded_reason = "no_trades_executed_unknown"
                 else:
                     # For non-zero trades but missing status, use conservative fallback
                     metrics_status = "FALLBACK_NO_TRADES"
@@ -963,14 +979,29 @@ class PerformanceService:
             tracking_error_metrics = metrics.get("tracking_error_metrics")
             
             # Extract metrics_status from metrics dict (stored there for persistence)
-            # Map missing metrics_status to deterministic fallback instead of UNKNOWN
+            # ROOT CAUSE FIX BE-METRICS-01: When metrics_status is missing from cache, distinguish between:
+            # - NO_TRADES: Minimal metrics only (just total_trades=0, winning_trades=0, losing_trades=0)
+            # - FALLBACK_NO_TRADES: Fallback/synthetic metrics exist (has CAGR, Sharpe, etc. even if trade_count=0)
             metrics_status = metrics.get("metrics_status")
+            degraded_reason = None
             if not metrics_status or metrics_status == "UNKNOWN":
-                # Determine fallback status based on trade count
                 trade_count = metrics.get("total_trades", 0)
                 if trade_count == 0:
-                    metrics_status = "FALLBACK_NO_TRADES"
-                    degraded_reason = "no_trades_executed_unknown"
+                    # Check if metrics contain fallback/synthetic values vs minimal structure only
+                    has_fallback_metrics = bool(
+                        metrics.get("cagr") is not None
+                        or metrics.get("sharpe_ratio") is not None
+                        or metrics.get("max_drawdown") is not None
+                        or len(metrics) > 3  # More than just total_trades, winning_trades, losing_trades
+                    )
+                    if has_fallback_metrics:
+                        # Fallback metrics were generated despite zero trades
+                        metrics_status = "FALLBACK_NO_TRADES"
+                        degraded_reason = "no_trades_executed_with_fallback_metrics"
+                    else:
+                        # Minimal metrics only - no fallback/synthetic values
+                        metrics_status = "NO_TRADES"
+                        degraded_reason = "no_trades_executed_unknown"
                 else:
                     # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
                     dev_mode = settings.is_dev_mode()

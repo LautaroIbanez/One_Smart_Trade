@@ -472,13 +472,28 @@ async def get_performance_summary(
 
         # Deployment guardrails: handle non-PASS statuses gracefully
         oos_days = result.get("oos_days")
-        # Map missing metrics_status to deterministic fallback instead of UNKNOWN
+        # ROOT CAUSE FIX BE-METRICS-01: When metrics_status is missing, distinguish between:
+        # - NO_TRADES: Minimal metrics only (just total_trades=0, winning_trades=0, losing_trades=0)
+        # - FALLBACK_NO_TRADES: Fallback/synthetic metrics exist (has CAGR, Sharpe, etc. even if trade_count=0)
         metrics_status = result.get("metrics_status")
         if not metrics_status or metrics_status == "UNKNOWN":
-            # Determine fallback status based on trade count
-            trade_count = result.get("metrics", {}).get("total_trades", 0) or result.get("trade_count", 0)
+            # Determine fallback status based on trade count and metrics content
+            metrics_dict = result.get("metrics", {})
+            trade_count = metrics_dict.get("total_trades", 0) or result.get("trade_count", 0)
             if trade_count == 0:
-                metrics_status = "FALLBACK_NO_TRADES"
+                # Check if metrics contain fallback/synthetic values vs minimal structure only
+                has_fallback_metrics = bool(
+                    metrics_dict.get("cagr") is not None
+                    or metrics_dict.get("sharpe_ratio") is not None
+                    or metrics_dict.get("max_drawdown") is not None
+                    or len(metrics_dict) > 3  # More than just total_trades, winning_trades, losing_trades
+                )
+                if has_fallback_metrics:
+                    # Fallback metrics were generated despite zero trades
+                    metrics_status = "FALLBACK_NO_TRADES"
+                else:
+                    # Minimal metrics only - no fallback/synthetic values
+                    metrics_status = "NO_TRADES"
             else:
                 # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
                 from app.core.config import settings

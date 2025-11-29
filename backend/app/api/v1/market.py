@@ -9,6 +9,7 @@ from app.services.market_service import MarketService
 from app.utils.cache import get_cached, set_cached
 from app.observability.metrics import ENDPOINT_RESPONSE_TIME
 from app.core import pipeline_state
+from app.core.logging import logger
 
 router = APIRouter()
 market_service = MarketService()
@@ -85,13 +86,16 @@ async def get_market_data(
         df = market_service.curation.get_latest_curated(interval)
         if df is not None and not df.empty:
             recent = df.tail(window).copy()  # Use configurable window
+            # FE-DATA-01: Ensure data structure matches frontend MarketPoint interface expectations
+            # Frontend expects: timestamp, open, high, low, close, volume
             data["data"] = [
                 {
                     "open_time": row["open_time"].isoformat() if hasattr(row["open_time"], "isoformat") else str(row["open_time"]),
                     "timestamp": row["open_time"].isoformat() if hasattr(row["open_time"], "isoformat") else str(row["open_time"]),
-                    "close": float(row["close"]),
+                    "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
+                    "close": float(row["close"]),
                     "volume": float(row["volume"]),
                 }
                 for _, row in recent.iterrows()

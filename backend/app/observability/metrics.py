@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.logging import logger
+
 REQUEST_COUNT = Counter(
     "ost_http_requests_total", "Total HTTP requests", ["method", "path", "status"]
 )
@@ -95,8 +97,6 @@ def record_ingestion(interval: str, latency_s: float, success: bool, error: str 
     except (ValueError, Exception) as e:
         # Log warning but don't raise - metrics are optional observability
         # This allows callers to continue even if metrics fail
-        import logging
-        logger = logging.getLogger(__name__)
         logger.warning(
             f"Failed to record ingestion metric: {e}",
             extra={"interval": interval, "success": success, "error": error, "error_type": type(e).__name__, "error_message": str(e)},
@@ -125,8 +125,6 @@ def record_data_gap(timeframe: str) -> None:
     except (ValueError, Exception) as e:
         # Log warning but don't raise - metrics are optional observability
         # This allows callers to continue even if metrics fail
-        import logging
-        logger = logging.getLogger(__name__)
         logger.warning(
             f"Failed to record data gap metric for {timeframe}: {e}",
             extra={"timeframe": timeframe, "error_type": type(e).__name__, "error": str(e)},

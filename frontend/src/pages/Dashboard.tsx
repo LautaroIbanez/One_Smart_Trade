@@ -10,6 +10,7 @@ import { useTodayRecommendation, useMarketData } from '../api/hooks'
 import { ErrorState } from '../components/shared/ErrorState'
 import { LoadingState } from '../components/shared/LoadingState'
 import { DegradedDataBanner } from '../components/shared/DegradedDataBanner'
+import { isProcessingError } from '../api/hooks'
 import { isTradableRecommendation, getNonTradableMessage } from '../utils/recommendation'
 import type { MarketPoint } from '@/types'
 import './Dashboard.css'
@@ -172,8 +173,16 @@ function Dashboard() {
   
   const chartData = useMemo<MarketPoint[]>(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
-    // Accept both timestamp and open_time, sort by timestamp
-    const sortedData = [...marketData.data].sort((a, b) => {
+    // FE-DATA-01: Accept both timestamp and open_time, sort by timestamp
+    // Filter out invalid entries before sorting
+    const validData = marketData.data.filter((item: any) => {
+      const hasTimestamp = item?.timestamp || item?.open_time
+      const hasPrice = item?.close !== undefined || item?.price !== undefined
+      return hasTimestamp && hasPrice
+    })
+    if (validData.length === 0) return []
+    
+    const sortedData = [...validData].sort((a, b) => {
       const timeA = a.timestamp ?? a.open_time ?? ''
       const timeB = b.timestamp ?? b.open_time ?? ''
       return new Date(timeA).getTime() - new Date(timeB).getTime()
@@ -187,6 +196,7 @@ function Dashboard() {
           ? rawTime.toISOString()
           : String(rawTime ?? '')
 
+      // FE-DATA-01: Backend now provides open, high, low, close - use direct values with safe fallbacks
       const open = Number(item.open ?? item.o ?? item.price ?? 0)
       const high = Number(item.high ?? item.h ?? open)
       const low = Number(item.low ?? item.l ?? open)
@@ -280,7 +290,7 @@ function Dashboard() {
             <h2>Precio vs Niveles Recomendados</h2>
             {isRecommendationLoading || isMarketLoading ? (
               <LoadingState message="Cargando datos de mercado y recomendación..." />
-            ) : recommendationError || marketError ? (
+            ) : (recommendationError || marketError) && !isProcessingError(recommendationError || marketError) ? (
               <ErrorState 
                 error={recommendationError || marketError} 
                 title="Error al cargar gráfico de precios"
@@ -291,6 +301,25 @@ function Dashboard() {
                   }
                 }}
               />
+            ) : isProcessingError(recommendationError || marketError) ? (
+              <div className="processing-state">
+                <LoadingState message="El pipeline de datos se está ejecutando. Los datos del gráfico estarán disponibles en unos momentos..." />
+                <DegradedDataBanner 
+                  message="El backend está procesando datos. Esta página se actualizará automáticamente cuando los datos estén listos."
+                />
+                <button 
+                  type="button"
+                  onClick={() => {
+                    if (recommendationError) refetchRecommendation()
+                    if (marketError) {
+                      queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
+                    }
+                  }}
+                  style={{ marginTop: '1rem' }}
+                >
+                  🔄 Reintentar ahora
+                </button>
+              </div>
             ) : data && isTradableRecommendation(data) && chartData.length > 0 ? (
               <>
                 {data.metadata?.served_from_cache && (
@@ -337,10 +366,56 @@ function Dashboard() {
                   </p>
                 )}
               </div>
+            ) : marketData?.status === 'no_data' ? (
+              <div className="empty-state">
+                <p>⚠️ <strong>Datos de mercado no disponibles</strong></p>
+                <p>No hay datos de mercado disponibles para el intervalo seleccionado. Esto puede ocurrir si:</p>
+                <ul style={{ textAlign: 'left', marginTop: '0.5rem' }}>
+                  <li>El pipeline de datos aún está ejecutándose</li>
+                  <li>No hay datos históricos para este intervalo</li>
+                  <li>Ocurrió un error al cargar los datos</li>
+                </ul>
+                <button 
+                  type="button"
+                  onClick={() => refetchMarket()}
+                  style={{ marginTop: '1rem' }}
+                >
+                  🔄 Reintentar
+                </button>
+              </div>
+            ) : chartData.length === 0 && marketData ? (
+              <div className="empty-state">
+                <p>⚠️ <strong>No hay datos de velas disponibles</strong></p>
+                <p>Los datos de mercado fueron cargados pero no contienen velas para renderizar el gráfico.</p>
+                {marketData.metadata?.age_minutes && (
+                  <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
+                    Última actualización: hace {Math.round(marketData.metadata.age_minutes)} minutos
+                  </p>
+                )}
+                <button 
+                  type="button"
+                  onClick={() => refetchMarket()}
+                  style={{ marginTop: '1rem' }}
+                >
+                  🔄 Reintentar
+                </button>
+              </div>
             ) : (
               <div className="empty-state">
-                <p>⚠️ No hay datos suficientes para renderizar el gráfico.</p>
+                <p>⚠️ <strong>No hay datos suficientes para renderizar el gráfico</strong></p>
                 <p>Esperando datos de mercado y recomendación...</p>
+                {!isRecommendationLoading && !isMarketLoading && (
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      refetchRecommendation()
+                      refetchMarket()
+                    }}
+                    style={{ marginTop: '1rem' }}
+                  >
+                    🔄 Reintentar
+                  </button>
+                )}
               </div>
             )}
           </section>

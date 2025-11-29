@@ -248,3 +248,102 @@ async def test_fallback_no_trades_status_with_explanatory_message(performance_se
             metadata = summary.get("metadata", {})
             assert metadata.get("no_trade_reason") or metadata.get("degraded_reason"), \
                 "FALLBACK_NO_TRADES status should have explanatory message in metadata"
+
+
+@pytest.mark.asyncio
+async def test_no_trades_vs_fallback_no_trades_distinction(performance_service):
+    """
+    Test BE-METRICS-01: Distinguish between NO_TRADES and FALLBACK_NO_TRADES.
+    
+    ROOT CAUSE: Performance summary was returning FALLBACK_NO_TRADES despite has_metrics=true
+    when metrics_status was missing from cache, even though only minimal metrics existed.
+    
+    Acceptance:
+    - NO_TRADES: When only minimal metrics exist (total_trades=0, winning_trades=0, losing_trades=0)
+    - FALLBACK_NO_TRADES: When fallback/synthetic metrics exist (has CAGR, Sharpe, etc.)
+    """
+    # Test case 1: Minimal metrics only (should be NO_TRADES)
+    minimal_metrics = {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        # No metrics_status, no fallback metrics
+    }
+    
+    # Mock cached summary with minimal metrics and missing metrics_status
+    with patch.object(performance_service, "_get_db_cached_success_summary", return_value={
+        "status": "success",
+        "metrics": minimal_metrics,
+        "period": {"start": "2020-01-01T00:00:00Z", "end": "2024-01-01T00:00:00Z"},
+        "cached_at": datetime.utcnow().isoformat(),
+        "metrics_status": None,  # Simulating missing status from cache
+    }):
+        summary = await performance_service.get_summary(allow_stale_inputs=True)
+        
+        # Should be NO_TRADES, not FALLBACK_NO_TRADES
+        metrics_status = summary.get("metrics_status")
+        assert metrics_status == "NO_TRADES", \
+            f"Minimal metrics should map to NO_TRADES, got {metrics_status}"
+        
+        # Verify metrics are truly minimal (only trade counts)
+        metrics = summary.get("metrics", {})
+        assert metrics.get("total_trades") == 0
+        assert "cagr" not in metrics or metrics.get("cagr") is None, \
+            "Minimal metrics should not have synthetic values like CAGR"
+        assert "sharpe_ratio" not in metrics or metrics.get("sharpe_ratio") is None, \
+            "Minimal metrics should not have synthetic values like Sharpe ratio"
+    
+    # Test case 2: Fallback metrics exist (should be FALLBACK_NO_TRADES)
+    fallback_metrics = {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "cagr": 0.0,  # Fallback metric
+        "sharpe_ratio": 0.0,  # Fallback metric
+        "max_drawdown": 0.0,  # Fallback metric
+        # No metrics_status - simulating missing status from cache
+    }
+    
+    # Mock cached summary with fallback metrics and missing metrics_status
+    with patch.object(performance_service, "_get_db_cached_success_summary", return_value={
+        "status": "success",
+        "metrics": fallback_metrics,
+        "period": {"start": "2020-01-01T00:00:00Z", "end": "2024-01-01T00:00:00Z"},
+        "cached_at": datetime.utcnow().isoformat(),
+        "metrics_status": None,  # Simulating missing status from cache
+    }):
+        summary = await performance_service.get_summary(allow_stale_inputs=True)
+        
+        # Should be FALLBACK_NO_TRADES, not NO_TRADES
+        metrics_status = summary.get("metrics_status")
+        assert metrics_status == "FALLBACK_NO_TRADES", \
+            f"Fallback metrics should map to FALLBACK_NO_TRADES, got {metrics_status}"
+        
+        # Verify fallback metrics are present
+        metrics = summary.get("metrics", {})
+        assert metrics.get("cagr") is not None, \
+            "Fallback metrics should have synthetic values like CAGR"
+        assert metrics.get("sharpe_ratio") is not None, \
+            "Fallback metrics should have synthetic values like Sharpe ratio"
+    
+    # Test case 3: Explicitly set NO_TRADES status should be preserved
+    minimal_metrics_with_status = {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "metrics_status": "NO_TRADES",  # Explicitly set
+    }
+    
+    with patch.object(performance_service, "_get_db_cached_success_summary", return_value={
+        "status": "success",
+        "metrics": minimal_metrics_with_status,
+        "period": {"start": "2020-01-01T00:00:00Z", "end": "2024-01-01T00:00:00Z"},
+        "cached_at": datetime.utcnow().isoformat(),
+        "metrics_status": "NO_TRADES",  # Explicitly set
+    }):
+        summary = await performance_service.get_summary(allow_stale_inputs=True)
+        
+        # Should preserve NO_TRADES status
+        metrics_status = summary.get("metrics_status")
+        assert metrics_status == "NO_TRADES", \
+            f"Explicit NO_TRADES status should be preserved, got {metrics_status}"
