@@ -14,7 +14,7 @@ class MarketService:
     def __init__(self):
         self.curation = DataCuration()
 
-    async def get_market_data(self, interval: str) -> dict[str, Any]:
+    async def get_market_data(self, interval: str, window: int = 200) -> dict[str, Any]:
         """Get market data for interval with chart-ready data."""
         try:
             df = self.curation.get_latest_curated(interval)
@@ -78,12 +78,13 @@ class MarketService:
             if not dev_mode and age_minutes > threshold_minutes:
                 data_stale = True
         
+        # Use configurable window (default 200, but can be overridden)
         chart_points = [
             {
                 "timestamp": row["open_time"].isoformat(),
                 "price": float(row["close"]),
             }
-            for _, row in df.tail(200).iterrows()
+            for _, row in df.tail(window).iterrows()
         ]
         # Calculate support/resistance from recent data (last 100 candles)
         recent = df.tail(100) if len(df) >= 100 else df
@@ -110,6 +111,10 @@ class MarketService:
                 "latest_timestamp": latest_open_time.isoformat() if latest_open_time else None,
                 "age_minutes": round(age_minutes, 2) if age_minutes is not None else None,
                 "source": "curated_parquet",
+                "window": window,
+                # Include as_of timestamp matching parquet metadata
+                "as_of": metadata.get("latest_open_time") if metadata else None,
+                "generated_at": metadata.get("generated_at") if metadata else None,
             },
         }
         

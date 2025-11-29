@@ -422,6 +422,87 @@ export function ObservabilityDashboard({ isPrivate = false }: { isPrivate?: bool
         </div>
       </div>
 
+      {/* Freshness Status Section */}
+      {normalizedData && (normalizedData as any).freshness_status && (
+        <div className="freshness-status-section" style={{
+          marginTop: '2rem',
+          padding: '1.5rem',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          border: '1px solid rgba(59, 130, 246, 0.3)',
+          borderRadius: '0.5rem',
+        }}>
+          <h3 style={{ margin: '0 0 1rem 0', color: '#3b82f6', fontSize: '1.125rem' }}>
+            📊 Estado de Frescura de Datos
+          </h3>
+          {(() => {
+            const freshness = (normalizedData as any).freshness_status
+            const intervals = freshness?.intervals || {}
+            const staleCounts = freshness?.stale_counts || {}
+            const noTradesCounts = (normalizedData as any).no_trades_counts || {}
+            const totalNoTrades = (normalizedData as any).total_no_trades || 0
+            
+            return (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                  {Object.entries(intervals).map(([interval, status]: [string, any]) => (
+                    <div key={interval} style={{ 
+                      padding: '0.75rem', 
+                      backgroundColor: status.is_stale ? 'rgba(239, 68, 68, 0.2)' : 'rgba(0, 0, 0, 0.2)', 
+                      borderRadius: '0.375rem',
+                      border: status.is_stale ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
+                    }}>
+                      <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '0.25rem' }}>
+                        {interval.toUpperCase()}
+                      </div>
+                      <div style={{ fontSize: '1rem', fontWeight: 600, color: status.is_stale ? '#ef4444' : '#22c55e' }}>
+                        {status.is_stale ? '⚠️ Stale' : '✓ Fresh'}
+                      </div>
+                      {status.age_minutes !== undefined && (
+                        <div style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.7)', marginTop: '0.25rem' }}>
+                          {status.age_minutes.toFixed(1)} min old
+                        </div>
+                      )}
+                      {staleCounts[interval] !== undefined && (
+                        <div style={{ fontSize: '0.75rem', color: '#f97316', marginTop: '0.25rem' }}>
+                          {staleCounts[interval]} stale warnings
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                
+                {totalNoTrades > 0 && (
+                  <div style={{ 
+                    marginTop: '1rem',
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)', 
+                    borderRadius: '0.375rem',
+                  }}>
+                    <div style={{ fontSize: '0.875rem', fontWeight: 500, color: '#ef4444', marginBottom: '0.5rem' }}>
+                      ⚠️ NO_TRADES Events: {totalNoTrades} total
+                    </div>
+                    {Object.entries(noTradesCounts).length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {Object.entries(noTradesCounts).map(([cause, count]: [string, any]) => (
+                          <span key={cause} style={{ 
+                            padding: '0.25rem 0.5rem', 
+                            backgroundColor: 'rgba(239, 68, 68, 0.2)', 
+                            borderRadius: '0.25rem',
+                            fontSize: '0.75rem',
+                          }}>
+                            {cause}: {count}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       {/* Backtest Diagnostics Section */}
       {performanceData && (performanceData as any)?.metrics_status && (performanceData as any).metrics_status !== 'PASS' && (
         <div className="backtest-diagnostics-section" style={{

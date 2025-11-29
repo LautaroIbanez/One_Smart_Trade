@@ -304,6 +304,10 @@ async def backfill_to_today(
             try:
                 curation = DataCuration()
                 curation.curate_interval(interval, venue=venue, symbol=symbol)
+                # Record ingestion time for observability
+                from app.services.freshness_tracking_service import get_freshness_tracker
+                tracker = get_freshness_tracker()
+                tracker.record_ingestion(interval, result.get("fetched_at"))
             except Exception as curation_exc:
                 logger.warning(f"Curation failed after backfill: {curation_exc}")
         

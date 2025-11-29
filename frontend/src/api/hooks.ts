@@ -428,11 +428,14 @@ export const useSignalPerformance = (lookaheadDays: number = 5, limit: number = 
   })
 }
 
-export const useMarketData = (interval: Interval) => {
+export const useMarketData = (interval: Interval, recommendationTimestamp?: string | null, window: number = 200) => {
   return useQuery({
-    queryKey: ['market', interval],
+    queryKey: ['market', interval, recommendationTimestamp || 'no-rec', window],
     queryFn: async ({ signal }) => {
-      const { data } = await api.get(`/api/v1/market/${interval}`, { signal })
+      const { data } = await api.get(`/api/v1/market/${interval}`, { 
+        params: { window },
+        signal 
+      })
       return data
     },
     staleTime: 300_000, // 5 minutes - increased from 30s

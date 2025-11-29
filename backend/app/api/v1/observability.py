@@ -358,6 +358,116 @@ def _calculate_degradation_alerts(
     return alerts
 
 
+@router.get("/freshness/status")
+async def get_freshness_status(
+    intervals: str | None = Query(None, description="Comma-separated list of intervals (e.g., '1h,1d')"),
+) -> dict[str, Any]:
+    """
+    Get freshness status per interval and last ingestion times.
+    
+    Returns:
+        Dict with freshness status per interval, last ingestion times, and aggregated counts
+    """
+    from app.services.freshness_tracking_service import get_freshness_tracker
+    
+    interval_list = [i.strip() for i in intervals.split(",")] if intervals else None
+    tracker = get_freshness_tracker()
+    status = tracker.get_freshness_status(intervals=interval_list)
+    
+    # Add ingestion alerts based on freshness metadata
+    alerts = []
+    for interval, interval_status in status.get("intervals", {}).items():
+        if interval_status.get("is_stale"):
+            age_minutes = interval_status.get("age_minutes", 0)
+            threshold_minutes = interval_status.get("threshold_minutes", 90)
+            alerts.append({
+                "type": "ingestion_required",
+                "interval": interval,
+                "severity": "warning" if age_minutes < threshold_minutes * 2 else "critical",
+                "message": f"Data for {interval} is stale ({age_minutes:.1f} min old, threshold: {threshold_minutes} min). Ingestion should be triggered.",
+                "latest_open_time": interval_status.get("latest_open_time"),
+                "age_minutes": age_minutes,
+                "threshold_minutes": threshold_minutes,
+            })
+    
+    status["ingestion_alerts"] = alerts
+    status["ingestion_alerts_count"] = len(alerts)
+    
+    return status
+
+
+@router.get("/private/dashboard")
+async def get_private_dashboard(
+    include_alerts: bool = Query(True, description="Include degradation alerts"),
+    threshold_override: str | None = Query(None, description="Override default thresholds as JSON object"),
+    degradation_threshold_pct: float = Query(DEGRADATION_THRESHOLD_PCT, description="Degradation threshold percentage"),
+) -> dict[str, Any]:
+    """
+    Private observability dashboard with enhanced details and alerts.
+    
+    Includes:
+    - All metrics from public dashboard
+    - Enhanced alerting with degradation detection
+    - Detailed tracking error metrics
+    - Execution metrics
+    - Risk metrics
+    - Freshness status and NO_TRADES counts
+    """
+    try:
+        thresholds = {**DEFAULT_THRESHOLDS}
+        override_dict = _parse_threshold_override(threshold_override)
+        if override_dict:
+            thresholds.update(override_dict)
+        
+        # Get comprehensive metrics
+        metrics = _collect_prometheus_metrics()
+        enhanced_metrics = _collect_enhanced_metrics()
+        
+        with SessionLocal() as db:
+            dd_info = calculate_production_drawdown(db)
+            recs = get_recommendation_history(db, limit=500)
+        
+        # Calculate current metrics
+        current_metrics = {
+            **metrics,
+            **enhanced_metrics,
+            "current_drawdown_pct": dd_info.get("current_drawdown_pct", 0.0),
+            "peak_equity": dd_info.get("peak_equity", 0.0),
+            "current_equity": dd_info.get("current_equity", 0.0),
+            "total_trades": len([r for r in recs if r.status == "closed"]),
+        }
+        
+        # Calculate degradation alerts
+        alerts = []
+        if include_alerts:
+            alerts = _calculate_degradation_alerts(current_metrics, thresholds, degradation_threshold_pct)
+        
+        # Get monitoring service alerts
+        monitoring_alerts = monitoring_service.check_alerts() if hasattr(monitoring_service, "check_alerts") else []
+        
+        # Get freshness status and NO_TRADES counts
+        from app.services.freshness_tracking_service import get_freshness_tracker
+        freshness_tracker = get_freshness_tracker()
+        freshness_status = freshness_tracker.get_freshness_status()
+        aggregated_counts = freshness_tracker.get_aggregated_counts()
+        
+        return {
+            "status": "ok",
+            "metrics": current_metrics,
+            "thresholds": thresholds,
+            "degradation_threshold_pct": degradation_threshold_pct,
+            "alerts": alerts,
+            "monitoring_alerts": monitoring_alerts,
+            "alerts_count": len(alerts) + len(monitoring_alerts),
+            "freshness_status": freshness_status,
+            "no_trades_counts": aggregated_counts.get("no_trades_by_cause", {}),
+            "total_no_trades": aggregated_counts.get("total_no_trades", 0),
+            "stale_dataset_counts": freshness_status.get("stale_counts", {}),
+            "timestamp": str(__import__("datetime").datetime.utcnow().isoformat()),
+        }
+    except Exception as e:
+        logger.error(f"Error generating private dashboard: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 

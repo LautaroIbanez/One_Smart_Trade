@@ -56,6 +56,17 @@ export interface Recommendation {
   is_stale?: boolean
   fallback_cause?: string | null
   original_signal_date?: string | null
+  data_recency?: {
+    status: 'fresh' | 'stale'
+    as_of: string
+    days_since_release?: number
+    cause?: string
+  }
+  metadata?: {
+    served_from_cache?: boolean
+    generated_at?: string
+    source?: string
+  }
 }
 
 export interface HistorySparklinePoint {

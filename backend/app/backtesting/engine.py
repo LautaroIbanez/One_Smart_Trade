@@ -829,6 +829,46 @@ class BacktestEngine:
             # Don't raise exception in production, but log error
             # In tests, this will be caught by validation
 
+    def _get_guardrail_bypass_metadata(self, trade_count: int) -> dict[str, Any] | None:
+        """
+        Get guardrail bypass metadata if any guardrails were bypassed in dev mode.
+        
+        Args:
+            trade_count: Number of trades executed
+            
+        Returns:
+            Dict with bypass metadata or None if no bypasses occurred
+        """
+        from app.core.config import settings
+        from app.backtesting.guardrails import GuardrailConfig
+        
+        dev_mode = settings.is_dev_mode()
+        if not dev_mode:
+            return None
+        
+        guardrail_config = GuardrailConfig()
+        bypasses = []
+        
+        # Check if min_trades guardrail would have been bypassed
+        if trade_count < guardrail_config.min_trades:
+            bypasses.append({
+                "guardrail": "min_trades",
+                "threshold": guardrail_config.min_trades,
+                "actual": trade_count,
+                "reason": f"DEV MODE: Trade count ({trade_count}) below minimum ({guardrail_config.min_trades})",
+            })
+        
+        if not bypasses:
+            return None
+        
+        return {
+            "dev_mode": True,
+            "bypasses": bypasses,
+            "warning": "This backtest result includes guardrail bypasses enabled in dev mode. "
+                      "Production always requires guardrails to pass. "
+                      "Metrics may not be reliable without meeting guardrail thresholds.",
+        }
+
     def _estimate_slippage(
         self,
         order: BaseOrder,
@@ -1364,6 +1404,20 @@ class BacktestEngine:
 
             # Execute orders
             for order in orders:
+                # Log order creation for lifecycle tracking
+                logger.debug(
+                    "Order created",
+                    extra={
+                        "order_id": order.order_id,
+                        "order_side": order.side.value,
+                        "order_qty": order.qty,
+                        "order_type": type(order).__name__,
+                        "timestamp": bar_date.isoformat(),
+                        "equity": state.equity_realistic,
+                        "position_exists": state.position is not None,
+                    },
+                )
+                
                 if self.use_orderbook:
                     # Use execution simulator with order book
                     exec_result = await self.execution_simulator.simulate_execution(
@@ -1377,28 +1431,63 @@ class BacktestEngine:
                     from app.backtesting.order_types import OrderStatus
                     
                     if exec_result.status != OrderStatus.FILLED:
-                        # Order not filled - log and track
+                        # Order not filled - enhanced diagnostics
+                        current_price = float(bar.get("close", 0.0))
+                        rejection_reason = "execution_simulator_rejected"
+                        root_cause = "unknown"
+                        
+                        # Determine root cause
+                        if exec_result.status == OrderStatus.CANCELLED:
+                            if order.age >= order.config.max_wait_bars:
+                                root_cause = "timeout"
+                                rejection_reason = f"Order timeout after {order.age} bars (max_wait_bars={order.config.max_wait_bars})"
+                            else:
+                                root_cause = "cancelled"
+                                rejection_reason = "Order cancelled by execution simulator"
+                        elif exec_result.status == OrderStatus.REJECTED:
+                            root_cause = "rejected"
+                            rejection_reason = "Order rejected by execution simulator (insufficient depth, price moved, etc.)"
+                        elif exec_result.fill_ratio == 0.0:
+                            root_cause = "no_fill"
+                            rejection_reason = "Order received zero fill (no liquidity available)"
+                        elif exec_result.fill_ratio < 1.0:
+                            root_cause = "partial_fill_only"
+                            rejection_reason = f"Order only partially filled ({exec_result.fill_ratio:.2%})"
+                        
                         rejection_detail = {
                             "timestamp": bar_date.isoformat(),
+                            "order_id": order.order_id,
                             "order_side": order.side.value,
                             "order_qty": order.qty,
+                            "order_type": type(order).__name__,
                             "status": exec_result.status.value if hasattr(exec_result.status, "value") else str(exec_result.status),
                             "fill_ratio": exec_result.fill_ratio,
+                            "filled_qty": exec_result.filled_qty,
                             "equity": state.equity_realistic,
                             "drawdown": state.current_drawdown,
+                            "current_price": current_price,
+                            "rejection_reason": rejection_reason,
+                            "root_cause": root_cause,
+                            "order_age_bars": order.age,
+                            "max_wait_bars": order.config.max_wait_bars,
                         }
                         state.rejected_orders.append(rejection_detail)
                         logger.warning(
-                            "Order rejected by execution simulator",
+                            "Order rejected/unfilled - lifecycle transition: CREATED → REJECTED",
                             extra={
+                                "order_id": order.order_id,
                                 "order_side": order.side.value,
                                 "order_qty": order.qty,
+                                "order_type": type(order).__name__,
                                 "status": exec_result.status.value if hasattr(exec_result.status, "value") else str(exec_result.status),
                                 "fill_ratio": exec_result.fill_ratio,
+                                "filled_qty": exec_result.filled_qty,
                                 "equity": state.equity_realistic,
                                 "drawdown": state.current_drawdown,
                                 "timestamp": bar_date.isoformat(),
-                                "rejection_reason": "execution_simulator_rejected",
+                                "rejection_reason": rejection_reason,
+                                "root_cause": root_cause,
+                                "order_age_bars": order.age,
                             },
                         )
                         continue  # Skip this order
@@ -1408,22 +1497,39 @@ class BacktestEngine:
                     filled_qty = exec_result.filled_qty
                     fill_ratio = exec_result.fill_ratio
                     
+                    # Log order fill for lifecycle tracking
+                    logger.debug(
+                        "Order filled - lifecycle transition: CREATED → FILLED",
+                        extra={
+                            "order_id": order.order_id,
+                            "order_side": order.side.value,
+                            "requested_qty": order.qty,
+                            "filled_qty": filled_qty,
+                            "fill_ratio": fill_ratio,
+                            "fill_price": fill_price,
+                            "slippage_pct": slippage_pct,
+                            "timestamp": bar_date.isoformat(),
+                        },
+                    )
+                    
                     # Handle partial fills
                     if fill_ratio < 1.0:
                         remaining_qty = order.qty - filled_qty
                         logger.info(
-                            "Partial fill detected",
+                            "Partial fill detected - lifecycle transition: CREATED → PARTIALLY_FILLED",
                             extra={
+                                "order_id": order.order_id,
                                 "order_qty": order.qty,
                                 "filled_qty": filled_qty,
                                 "fill_ratio": fill_ratio,
                                 "remaining_qty": remaining_qty,
+                                "timestamp": bar_date.isoformat(),
                             },
                         )
                         
                         # Track partial fill
                         partial_fill = PartialFill(
-                            order_id=str(id(order)),
+                            order_id=order.order_id,
                             requested_qty=order.qty,
                             filled_qty=filled_qty,
                             fill_ratio=fill_ratio,
@@ -1475,6 +1581,86 @@ class BacktestEngine:
                             slippage_exit=0.0,
                         )
                         state.open_trades.append(trade)
+                        
+                        # Log trade opened for lifecycle tracking
+                        logger.info(
+                            "Trade opened - lifecycle transition: ORDER_FILLED → TRADE_OPENED",
+                            extra={
+                                "order_id": order.order_id,
+                                "trade_size": filled_qty,
+                                "entry_price": fill_price,
+                                "entry_timestamp": bar_date.isoformat(),
+                                "equity": state.equity_realistic,
+                                "fees_entry": fees,
+                                "slippage_entry": slippage_pct,
+                            },
+                        )
+                        
+                        # Validate SL/TP bounds if signal provided them
+                        if signal.get("stop_loss") is not None:
+                            stop_loss = signal.get("stop_loss")
+                            if state.position.side == PositionSide.LONG:
+                                if stop_loss >= fill_price:
+                                    logger.warning(
+                                        "Invalid stop loss bound for LONG position",
+                                        extra={
+                                            "entry_price": fill_price,
+                                            "stop_loss": stop_loss,
+                                            "issue": "stop_loss >= entry_price (should be < entry_price for LONG)",
+                                            "timestamp": bar_date.isoformat(),
+                                        },
+                                    )
+                            else:  # SHORT
+                                if stop_loss <= fill_price:
+                                    logger.warning(
+                                        "Invalid stop loss bound for SHORT position",
+                                        extra={
+                                            "entry_price": fill_price,
+                                            "stop_loss": stop_loss,
+                                            "issue": "stop_loss <= entry_price (should be > entry_price for SHORT)",
+                                            "timestamp": bar_date.isoformat(),
+                                        },
+                                    )
+                        
+                        if signal.get("take_profit") is not None:
+                            take_profit = signal.get("take_profit")
+                            if state.position.side == PositionSide.LONG:
+                                if take_profit <= fill_price:
+                                    logger.warning(
+                                        "Invalid take profit bound for LONG position",
+                                        extra={
+                                            "entry_price": fill_price,
+                                            "take_profit": take_profit,
+                                            "issue": "take_profit <= entry_price (should be > entry_price for LONG)",
+                                            "timestamp": bar_date.isoformat(),
+                                        },
+                                    )
+                            else:  # SHORT
+                                if take_profit >= fill_price:
+                                    logger.warning(
+                                        "Invalid take profit bound for SHORT position",
+                                        extra={
+                                            "entry_price": fill_price,
+                                            "take_profit": take_profit,
+                                            "issue": "take_profit >= entry_price (should be < entry_price for SHORT)",
+                                            "timestamp": bar_date.isoformat(),
+                                        },
+                                    )
+                        
+                        # Validate position sizing constraints
+                        position_notional = fill_price * filled_qty
+                        position_pct_of_equity = (position_notional / state.equity_realistic * 100) if state.equity_realistic > 0 else 0.0
+                        if position_pct_of_equity > 100.0:
+                            logger.error(
+                                "Position sizing constraint violated",
+                                extra={
+                                    "position_notional": position_notional,
+                                    "equity": state.equity_realistic,
+                                    "position_pct_of_equity": position_pct_of_equity,
+                                    "issue": "position_notional > equity (leverage > 1.0x)",
+                                    "timestamp": bar_date.isoformat(),
+                                },
+                            )
 
                         # Theoretical: no costs
                         state.equity_theoretical -= fill_price * filled_qty
@@ -1565,6 +1751,70 @@ class BacktestEngine:
                                 trade.pnl_pct = pnl_pct
                                 trade.return_pct = (fill_price / entry_price - 1) * 100 if state.position.side == PositionSide.LONG else (entry_price / fill_price - 1) * 100
                                 state.closed_trades.append(trade)
+                                
+                                # Log trade closed for lifecycle tracking
+                                logger.info(
+                                    "Trade closed - lifecycle transition: TRADE_OPENED → TRADE_CLOSED",
+                                    extra={
+                                        "entry_timestamp": trade.timestamp_entry.isoformat(),
+                                        "exit_timestamp": bar_date.isoformat(),
+                                        "entry_price": entry_price,
+                                        "exit_price": fill_price,
+                                        "trade_size": filled_qty,
+                                        "exit_reason": trade.exit_reason,
+                                        "pnl": trade.pnl,
+                                        "pnl_pct": trade.pnl_pct,
+                                        "return_pct": trade.return_pct,
+                                        "fees_total": trade.fees_entry + fees,
+                                        "slippage_total": slippage_pct,
+                                        "equity": state.equity_realistic,
+                                    },
+                                )
+                                
+                                # Validate SL/TP bounds were respected
+                                if trade.exit_reason in ("stop_loss", "take_profit"):
+                                    if state.position.side == PositionSide.LONG:
+                                        if trade.exit_reason == "stop_loss" and fill_price > entry_price:
+                                            logger.warning(
+                                                "SL/TP validation: Stop loss triggered above entry for LONG",
+                                                extra={
+                                                    "entry_price": entry_price,
+                                                    "exit_price": fill_price,
+                                                    "exit_reason": trade.exit_reason,
+                                                    "issue": "SL should be below entry for LONG positions",
+                                                },
+                                            )
+                                        elif trade.exit_reason == "take_profit" and fill_price < entry_price:
+                                            logger.warning(
+                                                "SL/TP validation: Take profit triggered below entry for LONG",
+                                                extra={
+                                                    "entry_price": entry_price,
+                                                    "exit_price": fill_price,
+                                                    "exit_reason": trade.exit_reason,
+                                                    "issue": "TP should be above entry for LONG positions",
+                                                },
+                                            )
+                                    else:  # SHORT
+                                        if trade.exit_reason == "stop_loss" and fill_price < entry_price:
+                                            logger.warning(
+                                                "SL/TP validation: Stop loss triggered below entry for SHORT",
+                                                extra={
+                                                    "entry_price": entry_price,
+                                                    "exit_price": fill_price,
+                                                    "exit_reason": trade.exit_reason,
+                                                    "issue": "SL should be above entry for SHORT positions",
+                                                },
+                                            )
+                                        elif trade.exit_reason == "take_profit" and fill_price > entry_price:
+                                            logger.warning(
+                                                "SL/TP validation: Take profit triggered above entry for SHORT",
+                                                extra={
+                                                    "entry_price": entry_price,
+                                                    "exit_price": fill_price,
+                                                    "exit_reason": trade.exit_reason,
+                                                    "issue": "TP should be below entry for SHORT positions",
+                                                },
+                                            )
 
                             # Theoretical: no costs
                             state.equity_theoretical += fill_price * filled_qty
@@ -1893,6 +2143,7 @@ class BacktestEngine:
             "tracking_error_series": tracking_error_series_records,
             "tracking_error_cumulative": tracking_error_cumulative_records,
             "no_trade_diagnostics": no_trade_diagnostics if no_trade_diagnostics else None,
+            "guardrail_bypass_metadata": self._get_guardrail_bypass_metadata(total_trades) if total_trades > 0 else None,
         }
 
         # Final wall-clock profiling log

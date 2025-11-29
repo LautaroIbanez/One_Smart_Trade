@@ -472,7 +472,21 @@ async def get_performance_summary(
 
         # Deployment guardrails: handle non-PASS statuses gracefully
         oos_days = result.get("oos_days")
-        metrics_status = result.get("metrics_status", "UNKNOWN")
+        # Map missing metrics_status to deterministic fallback instead of UNKNOWN
+        metrics_status = result.get("metrics_status")
+        if not metrics_status or metrics_status == "UNKNOWN":
+            # Determine fallback status based on trade count
+            trade_count = result.get("metrics", {}).get("total_trades", 0) or result.get("trade_count", 0)
+            if trade_count == 0:
+                metrics_status = "FALLBACK_NO_TRADES"
+            else:
+                # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
+                from app.core.config import settings
+                dev_mode = settings.is_dev_mode()
+                if dev_mode:
+                    metrics_status = "DEV_FALLBACK"
+                else:
+                    metrics_status = "FALLBACK_NO_TRADES"  # Conservative fallback
         
         if oos_days is not None and oos_days < 120:
             logger.warning(
@@ -524,7 +538,7 @@ async def get_performance_summary(
             
             # Build human-readable status messages for explicit statuses
             status_messages = {
-                "UNKNOWN": "Metrics available but not yet validated. Backtest data may be incomplete or validation is in progress.",
+                "FALLBACK_NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Conservative fallback metrics provided.",
                 "FAIL": "Metrics validation failed. Data shown for informational purposes only.",
                 "DEV_FALLBACK": f"Development mode: Fallback metrics generated due to insufficient trades ({trade_count} < 50). Data shown for informational purposes only.",
                 "NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Performance metrics unavailable.",
@@ -553,9 +567,24 @@ async def get_performance_summary(
             
             # Extract dev_bypass from metadata if available
             dev_bypass = metadata.get("dev_bypass")
+            guardrail_bypass = metadata.get("guardrail_bypass")
+            guardrail_bypass_reason = metadata.get("guardrail_bypass_reason")
+            guardrail_bypass_details = metadata.get("guardrail_bypass_details")
+            
             if not dev_bypass and metrics_status == "DEV_FALLBACK":
                 # Try to extract from guardrail result if available
                 dev_bypass = "min_trades"  # Default for DEV_FALLBACK
+            
+            # Surface guardrail bypass explicitly in API metadata
+            if guardrail_bypass or metrics_status == "DEV_FALLBACK":
+                if not guardrail_bypass:
+                    guardrail_bypass = True
+                    guardrail_bypass_reason = guardrail_bypass_reason or "insufficient_trades_dev_mode"
+                    guardrail_bypass_details = guardrail_bypass_details or {
+                        "trade_count": trade_count,
+                        "min_required": 50,
+                        "dev_mode": True,
+                    }
             
             # Build chart banner with status info
             chart_banner = f"Metrics status: {metrics_status}"
@@ -584,7 +613,15 @@ async def get_performance_summary(
                 fallback_reason=degraded_reason,
                 trade_count=trade_count,
             )
+            
+            # Add guardrail bypass metadata to response dict
             response_dict = response.model_dump()
+            if guardrail_bypass:
+                response_dict["guardrail_bypass"] = guardrail_bypass
+                response_dict["guardrail_bypass_reason"] = guardrail_bypass_reason
+                response_dict["guardrail_bypass_details"] = guardrail_bypass_details
+            if "response_dict" not in locals():
+                response_dict = response.model_dump()
             response_dict["equity_theoretical"] = result.get("equity_theoretical", [])
             response_dict["equity_realistic"] = result.get("equity_realistic", [])
             response_dict["equity_curve"] = result.get("equity_curve", [])
@@ -592,9 +629,17 @@ async def get_performance_summary(
             response_dict["equity_curve_realistic"] = result.get("equity_curve_realistic", [])
             
             # Include no-trade diagnostics in response if available
-            if metrics_status == "NO_TRADES" and no_trade_diagnostics:
+            if metrics_status in ("NO_TRADES", "FALLBACK_NO_TRADES") and no_trade_diagnostics:
                 response_dict["no_trade_diagnostics"] = no_trade_diagnostics
                 response_dict["no_trade_root_cause"] = no_trade_root_cause
+            
+            # Include conservative TP probability and expected return if available
+            conservative_tp_prob = metrics_dict.get("conservative_tp_probability")
+            conservative_expected_return = metrics_dict.get("conservative_expected_return")
+            if conservative_tp_prob is not None:
+                response_dict["conservative_tp_probability"] = conservative_tp_prob
+                response_dict["conservative_expected_return"] = conservative_expected_return
+                response_dict["conservative_estimates_reason"] = metrics_dict.get("conservative_estimates_reason")
             
             return response_dict
         

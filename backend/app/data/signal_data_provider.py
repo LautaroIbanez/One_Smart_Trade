@@ -96,6 +96,7 @@ class SignalDataProvider:
             ValueError: If dataframes are empty or invalid
         """
         # Check if cache should be invalidated based on latest_open_time
+        # Tighten freshness checks even in dev: warn + force cache invalidation when stale
         should_invalidate_cache = False
         if self._cached_inputs is not None and not force_refresh:
             # Check if latest_open_time is stale (for 1d interval, check if < today-2d)
@@ -108,15 +109,19 @@ class SignalDataProvider:
                         now = datetime.now(timezone.utc)
                         days_old = (now - latest_dt).days
                         # If 1d data is older than 2 days, invalidate cache and trigger ingestion
+                        # This check applies even in dev mode (tightened requirement)
                         if days_old >= 2:
                             should_invalidate_cache = True
+                            dev_mode = settings.is_dev_mode()
                             logger.warning(
-                                "Cache invalidated: latest_open_time is stale",
+                                "Cache invalidated: latest_open_time is stale (even in dev mode)",
                                 extra={
                                     "interval": "1d",
                                     "latest_open_time": latest_open_time_str,
                                     "days_old": days_old,
                                     "threshold_days": 2,
+                                    "dev_mode": dev_mode,
+                                    "cache_invalidated": True,
                                 },
                             )
                             # Log that ingestion should be triggered (actual triggering should be done by scheduled job or API)
@@ -127,6 +132,7 @@ class SignalDataProvider:
                                     "latest_open_time": latest_open_time_str,
                                     "days_old": days_old,
                                     "should_trigger_ingestion": True,
+                                    "dev_mode": dev_mode,
                                 },
                             )
             except Exception as exc:
@@ -143,7 +149,7 @@ class SignalDataProvider:
         
         logger.info("Loading validated signal data inputs", extra={"venue": self.venue, "symbol": self.symbol})
         
-        # Check if dev mode is enabled (unified check)
+        # Check if dev mode is enabled (unified check) - do this early for use in freshness checks
         dev_mode = settings.is_dev_mode()
         
         # Initialize metadata tracking
@@ -155,17 +161,32 @@ class SignalDataProvider:
         }
         
         # Validate data freshness if requested
-        # In dev mode, validation will be skipped by curation.validate_data_freshness() but status is still logged
+        # Tighten freshness checks even in dev: warn + force cache invalidation when stale
         if validate_freshness:
             try:
                 # 1d uses interval-specific threshold (48 hours by default), allowing yesterday's candle
-                # In dev mode, validation is skipped but freshness is still logged
+                # In dev mode, validation is skipped but freshness is still logged and cache is invalidated if stale
                 self.curation.validate_data_freshness("1d", venue=self.venue, symbol=self.symbol, skip_in_dev=True)
                 # 1h uses default threshold (90 minutes)
-                # In dev mode, validation is skipped but freshness is still logged
+                # In dev mode, validation is skipped but freshness is still logged and cache is invalidated if stale
                 self.curation.validate_data_freshness("1h", venue=self.venue, symbol=self.symbol, skip_in_dev=True)
                 logger.debug("Data freshness validation passed")
             except DataFreshnessError as exc:
+                # Even in dev mode, invalidate cache when data is stale (tightened requirement)
+                should_invalidate_cache = True
+                if self._cached_inputs is not None:
+                    self._cached_inputs = None
+                    logger.warning(
+                        "Cache invalidated due to stale data (even in dev mode)",
+                        extra={
+                            "interval": exc.interval,
+                            "latest_timestamp": exc.latest_timestamp,
+                            "threshold_minutes": exc.threshold_minutes,
+                            "dev_mode": dev_mode,
+                            "cache_invalidated": True,
+                        },
+                    )
+                
                 if dev_mode:
                     # In dev mode, log the failure but don't raise - allow stale data to proceed
                     # Extract freshness metadata
@@ -196,14 +217,15 @@ class SignalDataProvider:
                     }
                     
                     self._record_data_freshness_failure(exc)
-                    logger.info(
-                        "DEV MODE: Data freshness validation failed but continuing with stale data",
+                    logger.warning(
+                        "DEV MODE: Data freshness validation failed - cache invalidated, continuing with stale data",
                         extra={
                             "interval": exc.interval,
                             "latest_timestamp": latest_timestamp,
                             "stale_minutes": age_minutes,
                             "threshold_minutes": threshold_minutes,
                             "dev_mode": True,
+                            "cache_invalidated": True,
                         },
                     )
                 else:
@@ -461,18 +483,38 @@ class SignalDataProvider:
             return None
 
     def _record_data_freshness_failure(self, exc: DataFreshnessError) -> None:
-        """Emit structured telemetry when curated data is stale."""
+        """Emit structured telemetry when curated data is stale (with deduplication)."""
+        from app.services.freshness_tracking_service import get_freshness_tracker
+        
         context = getattr(exc, "context_data", {}) or {}
         age_minutes = context.get("age_minutes")
-        logger.warning(
-            "Data freshness validation failed",
-            extra={
-                "interval": exc.interval,
-                "latest_timestamp": exc.latest_timestamp,
-                "latest_candle_age_minutes": age_minutes,
-                "threshold_minutes": exc.threshold_minutes,
-                "venue": context.get("venue") or self.venue,
-                "symbol": context.get("symbol") or self.symbol,
-            },
-        )
+        
+        # Use deduplication: emit warning once per interval per window
+        tracker = get_freshness_tracker()
+        window_key = f"signal_data_provider_{self.venue}_{self.symbol}"
+        should_emit = tracker.should_emit_stale_warning(exc.interval, window_key, cooldown_seconds=3600)
+        
+        if should_emit:
+            logger.warning(
+                "Data freshness validation failed",
+                extra={
+                    "interval": exc.interval,
+                    "latest_timestamp": exc.latest_timestamp,
+                    "latest_candle_age_minutes": age_minutes,
+                    "threshold_minutes": exc.threshold_minutes,
+                    "venue": context.get("venue") or self.venue,
+                    "symbol": context.get("symbol") or self.symbol,
+                    "should_trigger_ingestion": True,
+                },
+            )
+        else:
+            logger.debug(
+                "Data freshness validation failed (deduplicated)",
+                extra={
+                    "interval": exc.interval,
+                    "latest_timestamp": exc.latest_timestamp,
+                    "latest_candle_age_minutes": age_minutes,
+                    "threshold_minutes": exc.threshold_minutes,
+                },
+            )
 

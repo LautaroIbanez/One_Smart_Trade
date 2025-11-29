@@ -24,6 +24,8 @@ type Props = {
   entryRange: [number, number]
   currentPrice: number
   tpProbability?: number
+  asOf?: string | null
+  isStale?: boolean
 }
 
 type AnchorPoint = {
@@ -64,7 +66,7 @@ const buildAnchorPoints = (points: MarketPoint[]): AnchorPoint[] => {
   return anchors
 }
 
-export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, currentPrice, tpProbability }: Props) {
+export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, currentPrice, tpProbability, asOf, isStale }: Props) {
   const filteredData = useMemo(
     () =>
       data.filter(
@@ -240,6 +242,13 @@ export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, curre
           {' — '}
           {formatTimestamp(latestTimestamp)}
         </p>
+        {asOf && (
+          <p className={isStale ? 'data-stale-badge' : 'data-fresh-badge'}>
+            Datos actualizados:{' '}
+            <strong>{formatTimestamp(asOf)}</strong>
+            {isStale && ' ⚠️ (Desactualizado)'}
+          </p>
+        )}
         {typeof tpProbability === 'number' && (
           <p>
             Probabilidad TP estimada: <strong>{tpProbability.toFixed(1)}%</strong>

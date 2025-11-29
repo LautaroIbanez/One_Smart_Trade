@@ -37,7 +37,10 @@ function Dashboard() {
   const [toast, setToast] = useState<RefreshToast | null>(null)
   const toastTimeoutRef = useRef<number | null>(null)
   const { data, isLoading: isRecommendationLoading, error: recommendationError, refetch: refetchRecommendation } = useTodayRecommendation()
-  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData('1h')
+  // Extract recommendation timestamp/date for market data query key to trigger refetch on new pipeline runs
+  // Use data_recency.as_of (from _apply_recency_metadata) or fallback to timestamp/original_signal_date
+  const recommendationTimestamp = data?.data_recency?.as_of || data?.timestamp || data?.original_signal_date || null
+  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData('1h', recommendationTimestamp, 200)
 
   // Auto-dismiss toast after 5 seconds
   useEffect(() => {
@@ -123,25 +126,19 @@ function Dashboard() {
 
       // Also refetch explicit queries from hooks that we know are active
       // These are counted in totalQueries from the start
+      // Invalidate both recommendation and market caches together to keep them in sync
       const explicitRefetches = [
-        refetchRecommendation()
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['recommendation', 'today'] }),
+          queryClient.invalidateQueries({ queryKey: ['market'] }),
+        ])
+          .then(() => Promise.all([refetchRecommendation(), refetchMarket()]))
           .then(() => {
             completedQueries++
             updateProgress(completedQueries, totalQueries)
           })
           .catch(err => {
-            console.error('Error refetching recommendation:', err)
-            completedQueries++
-            updateProgress(completedQueries, totalQueries)
-          }),
-        queryClient.invalidateQueries({ queryKey: ['market', '1h'] })
-          .then(() => refetchMarket())
-          .then(() => {
-            completedQueries++
-            updateProgress(completedQueries, totalQueries)
-          })
-          .catch(err => {
-            console.error('Error refetching market:', err)
+            console.error('Error refetching recommendation/market:', err)
             completedQueries++
             updateProgress(completedQueries, totalQueries)
           }),
@@ -294,7 +291,7 @@ function Dashboard() {
                   }
                 }}
               />
-            ) : data && isTradableRecommendation(data) && chartData.length > 0 && marketData?.status !== 'data_stale' ? (
+            ) : data && isTradableRecommendation(data) && chartData.length > 0 ? (
               <>
                 {data.metadata?.served_from_cache && (
                   <DegradedDataBanner 
@@ -309,6 +306,12 @@ function Dashboard() {
                     source={marketData.metadata?.source}
                   />
                 )}
+                {marketData?.status === 'data_stale' && (
+                  <DegradedDataBanner 
+                    message={marketData.reason || "Los datos del gráfico están desactualizados. Por favor, actualiza manualmente."}
+                    source={marketData.metadata?.source}
+                  />
+                )}
                 <PriceLevelsChart
                   data={chartData}
                   stopLoss={data.stop_loss_take_profit.stop_loss}
@@ -320,26 +323,9 @@ function Dashboard() {
                       ? data.risk_metrics.tp_probability
                       : undefined
                   }
+                  asOf={marketData?.metadata?.as_of}
+                  isStale={marketData?.status === 'data_stale'}
                 />
-              </>
-            ) : data && isTradableRecommendation(data) && marketData?.status === 'data_stale' ? (
-              <>
-                <DegradedDataBanner 
-                  message={marketData.reason || "Los datos del gráfico están desactualizados. Por favor, actualiza manualmente."}
-                  source={marketData.metadata?.source}
-                />
-                <div className="empty-state">
-                  <p>⚠️ <strong>Gráfico no disponible</strong></p>
-                  <p>Los datos del mercado están desactualizados. Por favor, actualiza los datos para ver el gráfico.</p>
-                  <button
-                    onClick={() => {
-                      queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
-                    }}
-                    className="refresh-button"
-                  >
-                    Actualizar datos
-                  </button>
-                </div>
               </>
             ) : data && !isTradableRecommendation(data) ? (
               <div className="empty-state">

@@ -2010,6 +2010,26 @@ class RecommendationService:
                 metrics_status = backtest_result.get("metrics_status") or backtest_result.get("no_trade_diagnostics", {}).get("root_cause")
                 no_trade_diagnostics = backtest_result.get("no_trade_diagnostics", {})
                 trade_count = metrics.get("total_trades", 0)
+                exit_count = len([t for t in backtest_result.get("trades", []) if t.get("status") == "closed"])
+                guardrail_bypass = backtest_result.get("guardrail_bypass_metadata")
+                
+                # Enhanced logging for recommendation generation with trade/exit counts
+                logger.info(
+                    "Recommendation generation: backtest trade lifecycle summary",
+                    extra={
+                        "trade_count": trade_count,
+                        "exit_count": exit_count,
+                        "open_trades": len(backtest_result.get("trades", [])) - exit_count,
+                        "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
+                        "enter_signals": no_trade_diagnostics.get("signal_counts", {}).get("enter", 0),
+                        "exit_signals": no_trade_diagnostics.get("signal_counts", {}).get("exit", 0),
+                        "rejected_orders_count": no_trade_diagnostics.get("rejected_orders_count", 0),
+                        "partial_fills": len(backtest_result.get("execution_stats", {}).get("partial_fill_details", [])),
+                        "root_cause": no_trade_diagnostics.get("root_cause") if trade_count == 0 else None,
+                        "guardrail_bypass": guardrail_bypass is not None,
+                        "guardrail_bypass_details": guardrail_bypass if guardrail_bypass else None,
+                    },
+                )
                 
                 if trade_count == 0:
                     logger.warning(
@@ -2017,8 +2037,12 @@ class RecommendationService:
                         f"Will persist HOLD recommendation for today.",
                         extra={
                             "root_cause": no_trade_diagnostics.get("root_cause", "unknown"),
+                            "reason": no_trade_diagnostics.get("reason", "No trades executed"),
                             "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
+                            "enter_signals": no_trade_diagnostics.get("signal_counts", {}).get("enter", 0),
                             "rejected_orders_count": no_trade_diagnostics.get("rejected_orders_count", 0),
+                            "signals_with_zero_size": no_trade_diagnostics.get("signals_with_zero_size", 0),
+                            "invalid_stop_loss_count": no_trade_diagnostics.get("invalid_stop_loss_count", 0),
                         }
                     )
                     # Degrade signal to HOLD but continue to persist recommendation
