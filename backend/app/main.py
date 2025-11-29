@@ -229,7 +229,7 @@ async def job_daily_pipeline() -> None:
     """
     import time
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
 
     from app.core.logging import logger, sanitize_log_extra
     from app.data.ingestion import INTERVALS, DataIngestion
@@ -266,7 +266,6 @@ async def job_daily_pipeline() -> None:
             
             # Step 1.5: Verify 1d data exists, force reingestion if missing (especially critical for dev)
             from app.data.storage import get_raw_path, get_curated_path
-            from datetime import datetime, timedelta, timezone
             raw_1d_path = get_raw_path(venue, symbol, "1d").parent
             curated_1d_path = get_curated_path(venue, symbol, "1d")
             

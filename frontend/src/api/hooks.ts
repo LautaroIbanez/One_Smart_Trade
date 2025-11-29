@@ -564,6 +564,31 @@ export interface DataStatusResponse {
   message?: string
 }
 
+export interface PipelineStatusResponse {
+  status: string
+  pipeline?: {
+    running: boolean
+    started_at: string | null
+    completed_at: string | null
+    error: string | null
+    details: Record<string, any>
+  }
+  reason?: string
+}
+
+export const usePipelineStatus = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['pipeline', 'status'],
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get<PipelineStatusResponse>('/health', { signal })
+      return data
+    },
+    staleTime: 5000, // 5 seconds - pipeline status changes frequently
+    refetchInterval: enabled ? 10000 : false, // Poll every 10s when enabled
+    enabled,
+  })
+}
+
 export const useDataStatus = (
   interval: string = '1d',
   symbol: string = 'BTCUSDT',

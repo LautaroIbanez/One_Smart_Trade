@@ -1,5 +1,5 @@
 import { useMemo, useEffect, useState } from 'react'
-import { usePerformanceSummary, useCalculatePerformanceSummary, useDataStatus, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
+import { usePerformanceSummary, useCalculatePerformanceSummary, useDataStatus, usePipelineStatus, isTimeoutError, isBackendDown, isEmptyDatabase, getErrorMessage } from '../api/hooks'
 import './PerformanceSummary.css'
 
 function PerformanceSummary() {
@@ -10,6 +10,10 @@ function PerformanceSummary() {
   
   // Fetch data status to check latest_open_time
   const { data: dataStatus } = useDataStatus('1d', 'BTCUSDT', 'binance', true)
+  
+  // Fetch pipeline status to check if pipeline is running
+  const { data: pipelineStatus } = usePipelineStatus(true)
+  const isPipelineRunning = pipelineStatus?.status === 'processing' || pipelineStatus?.pipeline?.running === true
 
   // Check if status is degraded
   const isDegradedStatus = data?.status === 'degraded'
@@ -25,23 +29,48 @@ function PerformanceSummary() {
   const shouldDeemphasizeKPIs = metricsStatus && metricsStatus !== 'PASS'
   
   // Check if we should show warning modal based on latest_open_time or metrics_status
+  // Don't show if pipeline is running (data is being updated)
   useEffect(() => {
     if (!dataStatus || !data) return
     
+    // Don't show warning if pipeline is actively running (data is being updated)
+    if (isPipelineRunning) {
+      // Close modal if it was open, since pipeline is updating data
+      if (showWarningModal) {
+        setShowWarningModal(false)
+      }
+      return
+    }
+    
+    // Only show warning if pipeline is NOT running AND conditions are met
     const shouldShowWarning = 
       // Check if latest_open_time is older than 2 days
       (dataStatus.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) ||
       // Check if metrics_status indicates problems
       (metricsStatus && ['NO_TRADES', 'DEV_FALLBACK'].includes(metricsStatus))
     
-    if (shouldShowWarning && !showWarningModal) {
+    // Close modal automatically if data is now fresh (age_days <= 2 and metrics_status is PASS)
+    const isDataFresh = 
+      (dataStatus.age_days === null || dataStatus.age_days <= 2) &&
+      (metricsStatus === 'PASS' || !metricsStatus || !['NO_TRADES', 'DEV_FALLBACK'].includes(metricsStatus))
+    
+    if (isDataFresh && showWarningModal) {
+      // Data is fresh, close modal
+      setShowWarningModal(false)
+    } else if (shouldShowWarning && !isPipelineRunning && !showWarningModal) {
+      // Show modal only if pipeline is NOT running and conditions are met
       setShowWarningModal(true)
     }
-  }, [dataStatus, metricsStatus, data, showWarningModal])
+  }, [dataStatus, metricsStatus, data, showWarningModal, isPipelineRunning])
   
   // Build warning message
   const warningMessage = useMemo(() => {
     const messages: string[] = []
+    
+    // If pipeline is running, show a different message
+    if (isPipelineRunning) {
+      return 'El pipeline está corriendo; los datos se actualizarán automáticamente'
+    }
     
     if (dataStatus?.latest_open_time && dataStatus.age_days !== null && dataStatus.age_days > 2) {
       const dateStr = dataStatus.latest_open_time_date || new Date(dataStatus.latest_open_time).toISOString().split('T')[0]
@@ -55,7 +84,7 @@ function PerformanceSummary() {
     }
     
     return messages.join('. ')
-  }, [dataStatus, metricsStatus])
+  }, [dataStatus, metricsStatus, isPipelineRunning])
 
   // Extract data from main payload or fallback_summary
   // Always attempt to extract partial/fallback data
@@ -240,8 +269,41 @@ function PerformanceSummary() {
     <div className="performance-summary">
       <h2>Resumen de Performance (Backtesting)</h2>
       
-      {/* Warning Modal */}
-      {showWarningModal && warningMessage && (
+      {/* Pipeline Running Banner - Show when pipeline is active */}
+      {isPipelineRunning && (
+        <div 
+          className="pipeline-running-banner" 
+          role="status" 
+          aria-live="polite"
+          style={{
+            padding: '1rem',
+            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            borderRadius: '0.5rem',
+            marginBottom: '1rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{ fontSize: '1.25rem' }}>🔄</span>
+            <div style={{ flex: 1 }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#3b82f6' }}>
+                Pipeline en ejecución
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+                El pipeline está corriendo; los datos se actualizarán automáticamente cuando termine.
+              </p>
+              {pipelineStatus?.pipeline?.started_at && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.6)', fontStyle: 'italic' }}>
+                  Iniciado: {new Date(pipelineStatus.pipeline.started_at).toLocaleString()}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Warning Modal - Only show when pipeline is NOT running */}
+      {showWarningModal && warningMessage && !isPipelineRunning && (
         <div 
           className="warning-modal-overlay" 
           onClick={() => setShowWarningModal(false)}
