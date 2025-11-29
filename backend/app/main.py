@@ -414,6 +414,12 @@ async def job_daily_pipeline() -> None:
         }
         logger.info(f"Pipeline {run_id}: Curation completed in {curation_duration:.2f}s")
         
+        # Invalidate market data cache after curation completes
+        from app.utils.cache import clear_cache
+        cleared_count = clear_cache("market_data")
+        if cleared_count > 0:
+            logger.info(f"Pipeline {run_id}: Invalidated {cleared_count} market_data cache entries after curation")
+        
         # Step 2.5: Performance backfill (after ingestion/curation, before signal generation)
         # This ensures performance cache is populated even if signal generation fails
         # Respects STARTUP_BACKTEST_BACKFILL_ENABLED flag to skip or limit backfill in dev
@@ -587,6 +593,12 @@ async def job_daily_pipeline() -> None:
             )
             
             record_signal_generation(signal_duration, True)
+            
+            # Invalidate market data cache after recommendation is generated
+            from app.utils.cache import clear_cache
+            cleared_count = clear_cache("market_data")
+            if cleared_count > 0:
+                logger.info(f"Pipeline {run_id}: Invalidated {cleared_count} market_data cache entries after recommendation generation")
             
         except Exception as exc:
             signal_duration = time.time() - signal_start

@@ -385,6 +385,7 @@ export interface RecommendationHistoryParams {
   status?: string | null
   tracking_error_min?: number | null
   tracking_error_max?: number | null
+  include_hold_and_open?: boolean
 }
 
 const sanitizeHistoryParams = (params?: RecommendationHistoryParams) => {

@@ -527,6 +527,7 @@ async def get_recommendation_history(
     tracking_error_min: float | None = Query(None, ge=0.0, description="Min tracking error percentage"),
     tracking_error_max: float | None = Query(None, ge=0.0, description="Max tracking error percentage"),
     format: str | None = Query("json", pattern="^(json|csv)$", description="Response format"),
+    include_hold_and_open: bool = Query(False, description="Include HOLD signals and open recommendations (decision-support mode)"),
 ):
     """
     Get recent recommendation history.
@@ -563,7 +564,34 @@ async def get_recommendation_history(
             status=status,
             tracking_error_min=tracking_error_min,
             tracking_error_max=tracking_error_max,
+            include_hold_and_open=include_hold_and_open,
         )
+        
+        # Add no_trade_diagnostics if available from performance summary
+        from app.services.performance_service import get_performance_service
+        try:
+            perf_service = get_performance_service()
+            perf_summary = await perf_service.get_summary(use_cache=True, allow_stale_inputs=True, trigger_backfill=False)
+            if perf_summary.get("metrics_status") == "NO_TRADES":
+                # no_trade_diagnostics is in metadata
+                perf_metadata = perf_summary.get("metadata", {})
+                no_trade_diagnostics = perf_metadata.get("no_trade_diagnostics") or perf_summary.get("no_trade_diagnostics")
+                if no_trade_diagnostics:
+                    history["metadata"] = history.get("metadata", {})
+                    history["metadata"]["no_trade_diagnostics"] = no_trade_diagnostics
+                    history["metadata"]["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+                    history["metadata"]["signal_counts"] = no_trade_diagnostics.get("signal_counts", {}) or perf_metadata.get("signal_counts", {})
+                    history["metadata"]["rejected_orders_count"] = no_trade_diagnostics.get("rejected_orders_count", 0) or perf_metadata.get("rejected_orders_count", 0)
+                elif perf_metadata.get("signal_counts"):
+                    # Fallback: use signal_counts from metadata even if no_trade_diagnostics is missing
+                    history["metadata"] = history.get("metadata", {})
+                    history["metadata"]["signal_counts"] = perf_metadata.get("signal_counts", {})
+                    history["metadata"]["rejected_orders_count"] = perf_metadata.get("rejected_orders_count", 0)
+                    history["metadata"]["no_trade_root_cause"] = perf_metadata.get("no_trade_root_cause", "unknown")
+        except Exception:
+            # Don't fail if performance service is unavailable
+            pass
+        
         return history
     except HTTPException:
         raise

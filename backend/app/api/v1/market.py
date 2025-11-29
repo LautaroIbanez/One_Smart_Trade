@@ -42,6 +42,11 @@ async def get_market_data(interval: Interval):
     if cached_result:
         duration = time.time() - start_time
         ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status="cached").observe(duration)
+        # Mark as served from cache
+        if isinstance(cached_result, dict):
+            if "metadata" not in cached_result:
+                cached_result["metadata"] = {}
+            cached_result["metadata"]["served_from_cache"] = True
         return cached_result
     
     try:
@@ -53,6 +58,7 @@ async def get_market_data(interval: Interval):
             data["data"] = [
                 {
                     "open_time": row["open_time"].isoformat() if hasattr(row["open_time"], "isoformat") else str(row["open_time"]),
+                    "timestamp": row["open_time"].isoformat() if hasattr(row["open_time"], "isoformat") else str(row["open_time"]),
                     "close": float(row["close"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
@@ -65,11 +71,24 @@ async def get_market_data(interval: Interval):
             if "data" not in data:
                 data["data"] = []
         
+        # Ensure metadata exists and mark as not from cache
+        if "metadata" not in data:
+            data["metadata"] = {}
+        data["metadata"]["served_from_cache"] = False
+        
         # Cache result
         set_cached("market_data", data, interval=interval, ttl_seconds=60.0)
         
         duration = time.time() - start_time
-        ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status="success").observe(duration)
+        status_label = data.get("status", "success")
+        ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status=status_label).observe(duration)
+        
+        # Return 503 if data is stale
+        if data.get("status") == "data_stale":
+            return JSONResponse(
+                status_code=503,
+                content=data,
+            )
         
         return data
     except Exception as e:

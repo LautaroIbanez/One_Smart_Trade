@@ -37,6 +37,7 @@ function HistoryExplorer({
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(defaultPageSize)
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
+  const [includeHoldAndOpen, setIncludeHoldAndOpen] = useState(false)
   const [filters, setFilters] = useState<HistoryFilters>({
     dateRange: { from: null, to: null },
     signal: [],
@@ -45,11 +46,15 @@ function HistoryExplorer({
     ...initialFilters,
   })
 
-  const { data, isLoading, error, refetch } = useRecommendationHistory({ limit: 1000 })
+  const { data, isLoading, error, refetch } = useRecommendationHistory({ limit: 1000, include_hold_and_open: includeHoldAndOpen })
   
-  // Get trade count from performance summary for charts
+  // Get trade count and diagnostics from performance summary
   const { data: performanceData } = usePerformanceSummary()
   const tradeCount = (performanceData as any)?.trade_count ?? performanceData?.metrics?.total_trades
+  const noTradeDiagnostics = (data as any)?.metadata?.no_trade_diagnostics ?? (performanceData as any)?.no_trade_diagnostics
+  const signalCounts = (data as any)?.metadata?.signal_counts ?? (performanceData as any)?.signal_counts ?? {}
+  const noTradeRootCause = (data as any)?.metadata?.no_trade_root_cause ?? (performanceData as any)?.no_trade_root_cause
+  const enterSignals = signalCounts.enter || 0
 
   const recommendations = data?.items || []
 
@@ -293,6 +298,21 @@ function HistoryExplorer({
           />
         </div>
 
+        <div className="filter-section">
+          <label className="filter-label">
+            <input
+              type="checkbox"
+              checked={includeHoldAndOpen}
+              onChange={(e) => {
+                setIncludeHoldAndOpen(e.target.checked)
+                setPage(1)
+              }}
+              className="checkbox-input"
+            />
+            Incluir señales HOLD y recomendaciones abiertas (modo decision-support)
+          </label>
+        </div>
+
         {(filters.dateRange.from || filters.dateRange.to || filters.signal.length > 0 || filters.outcome.length > 0 || filters.minConfidence > 0) && (
           <button
             type="button"
@@ -313,6 +333,87 @@ function HistoryExplorer({
           </button>
         )}
       </div>
+
+      {/* Show NO_TRADES diagnostics when trade_count=0 but signals were generated */}
+      {tradeCount === 0 && enterSignals > 0 && (
+        <div className="no-trades-diagnostic" style={{
+          margin: '1rem 0',
+          padding: '1rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '0.5rem',
+        }}>
+          <h3 style={{ margin: '0 0 0.5rem 0', color: '#ef4444', fontSize: '1rem' }}>
+            🔍 Diagnóstico: Sin trades ejecutados
+          </h3>
+          <p style={{ margin: '0 0 0.5rem 0', color: '#94a3b8' }}>
+            Se generaron {enterSignals} señales de entrada, pero no se ejecutaron trades. Posibles causas:
+          </p>
+          <ul style={{ margin: '0 0 0.5rem 0', paddingLeft: '1.5rem', color: '#94a3b8' }}>
+            {noTradeRootCause === 'invalid_stop_loss' && (
+              <li>Configuración de stop loss inválida (distancia cero o faltante)</li>
+            )}
+            {noTradeRootCause === 'sizing_rejected' && (
+              <li>El sizing/risk manager rechazó todas las órdenes (capital insuficiente, drawdown alto, etc.)</li>
+            )}
+            {noTradeRootCause === 'missing_prices' && (
+              <li>Precios faltantes en los datos curados</li>
+            )}
+            {noTradeRootCause === 'guardrails_failed' && (
+              <li>Los guardrails (liquidez, RR mínimo) bloquearon todas las señales</li>
+            )}
+            {(!noTradeRootCause || noTradeRootCause === 'unknown') && (
+              <li>Causa desconocida - revisar logs del backtest</li>
+            )}
+          </ul>
+          {noTradeDiagnostics && (
+            <details style={{ marginTop: '0.5rem' }}>
+              <summary style={{ cursor: 'pointer', color: '#94a3b8', fontSize: '0.875rem' }}>
+                Ver detalles técnicos
+              </summary>
+              <pre style={{
+                marginTop: '0.5rem',
+                padding: '0.5rem',
+                backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                borderRadius: '0.25rem',
+                fontSize: '0.75rem',
+                overflow: 'auto',
+                color: '#cbd5e1',
+              }}>
+                {JSON.stringify(noTradeDiagnostics, null, 2)}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* Show empty state with helpful message when no recommendations match */}
+      {filteredRecommendations.length === 0 && recommendations.length === 0 && !isLoading && (
+        <div className="empty-state" style={{
+          padding: '2rem',
+          textAlign: 'center',
+          color: '#94a3b8',
+        }}>
+          <p style={{ margin: '0 0 0.5rem 0', fontSize: '1.125rem', fontWeight: 600 }}>
+            Sin trades simulados
+          </p>
+          {tradeCount === 0 && (
+            <p style={{ margin: '0 0 1rem 0' }}>
+              No hay recomendaciones en el historial. Esto puede deberse a que el backtest no ejecutó trades.
+            </p>
+          )}
+          {!includeHoldAndOpen && (
+            <button
+              type="button"
+              onClick={() => setIncludeHoldAndOpen(true)}
+              className="pagination-button"
+              style={{ marginTop: '0.5rem' }}
+            >
+              Incluir señales HOLD y abiertas
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="history-explorer-charts">
         <div className="chart-container">
@@ -361,10 +462,16 @@ function HistoryExplorer({
               </tr>
             </thead>
             <tbody>
-              {paginatedRecommendations.length === 0 ? (
+              {paginatedRecommendations.length === 0 && recommendations.length > 0 ? (
                 <tr>
                   <td colSpan={7} className="empty-message">
                     No hay recomendaciones que coincidan con los filtros seleccionados
+                  </td>
+                </tr>
+              ) : paginatedRecommendations.length === 0 && recommendations.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="empty-message">
+                    Sin trades simulados
                   </td>
                 </tr>
               ) : (

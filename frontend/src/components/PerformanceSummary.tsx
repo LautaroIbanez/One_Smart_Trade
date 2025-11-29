@@ -23,6 +23,10 @@ function PerformanceSummary() {
   const metricsStatus = (data as any)?.metrics_status
   const devBypass = (data as any)?.dev_bypass
   const fallbackReason = (data as any)?.fallback_reason
+  const degradedReason = (data as any)?.degraded_reason
+  const cacheMiss = (data as any)?.cache_miss
+  const noTradeDiagnostics = (data as any)?.no_trade_diagnostics
+  const noTradeRootCause = (data as any)?.no_trade_root_cause || noTradeDiagnostics?.root_cause
   const tradeCount = (data as any)?.trade_count ?? data?.metrics?.total_trades
   
   // Determine if metrics should be de-emphasized
@@ -192,10 +196,22 @@ function PerformanceSummary() {
   const isDegraded = (effectiveData as any)?._isDegraded === true || isDegradedStatus || shouldDeemphasizeKPIs
   const isDevFallback = (effectiveData as any)?._isDevFallback === true || (data as any)?.dev_fallback === true || metricsStatus === 'DEV_FALLBACK'
   
-  // Build degraded message based on metrics_status
+  // Build degraded message based on metrics_status with precise root cause
   const getDegradedMessage = () => {
+    // Show precise root cause for NO_TRADES
     if (metricsStatus === 'NO_TRADES') {
-      return 'Backtest invalid or incomplete (0 trades). Use this dashboard only as research, NOT as trading advice.'
+      if (noTradeRootCause) {
+        const rootCauseMessages: Record<string, string> = {
+          'no_signals_generated': 'No se generaron señales durante el backtest. Esto puede indicar que las condiciones de la estrategia no se cumplieron.',
+          'no_enter_signals': 'Se generaron señales pero ninguna fue de entrada. La estrategia puede estar en estado de espera.',
+          'invalid_stop_loss': 'Se generaron señales de entrada pero la configuración de stop loss es inválida (distancia cero o faltante).',
+          'enter_signals_zero_size': `Se generaron ${noTradeDiagnostics?.signal_counts?.enter || 0} señales de entrada pero el sizing calculó tamaño cero. Puede indicar capital insuficiente, límites de riesgo, o distancias de stop loss inválidas.`,
+          'orders_rejected': `Se generaron señales de entrada pero ${noTradeDiagnostics?.rejected_orders_count || 0} órdenes fueron rechazadas por el simulador de ejecución (profundidad insuficiente, precio movido, etc.).`,
+          'unknown': 'Se generaron señales de entrada pero no se ejecutaron trades. Causa desconocida - revisar logs del backtest.',
+        }
+        return rootCauseMessages[noTradeRootCause] || noTradeDiagnostics?.reason || 'Sin trades ejecutados durante el backtest.'
+      }
+      return noTradeDiagnostics?.reason || 'Backtest invalid or incomplete (0 trades). Use this dashboard only as research, NOT as trading advice.'
     }
     if (metricsStatus === 'INSUFFICIENT_DATA') {
       return `Backtest invalid or incomplete (${tradeCount || 0} trades, below minimum). Use this dashboard only as research, NOT as trading advice.`
@@ -206,11 +222,31 @@ function PerformanceSummary() {
     if (metricsStatus === 'FAIL') {
       return 'Backtest validation failed. Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.'
     }
+    if (metricsStatus === 'CACHE_MISS') {
+      return 'Cache miss: Los datos del backtest se están calculando en segundo plano. Las métricas reales estarán disponibles pronto.'
+    }
+    if (cacheMiss) {
+      return 'Cache miss: Los datos del backtest se están calculando en segundo plano. Las métricas reales estarán disponibles pronto.'
+    }
     if (isDemoMetrics) {
       return 'Mostrando métricas demo. Los datos reales se están calculando en segundo plano.'
     }
     if (isDevFallback) {
       return 'Modo desarrollo: Mostrando métricas de respaldo generadas automáticamente.'
+    }
+    // Use degraded_reason if available for more precise messaging
+    if (degradedReason) {
+      const reasonMessages: Record<string, string> = {
+        'cache_miss_cache_miss': 'Cache miss: Los datos del backtest se están calculando en segundo plano.',
+        'cache_miss_warmup_failed': 'El cálculo del backtest falló. Intente nuevamente o revise los logs.',
+        'no_trades_executed_no_signals_generated': 'No se generaron señales durante el backtest.',
+        'no_trades_executed_no_enter_signals': 'Se generaron señales pero ninguna fue de entrada.',
+        'no_trades_executed_invalid_stop_loss': 'Se generaron señales pero la configuración de stop loss es inválida.',
+        'no_trades_executed_enter_signals_zero_size': 'Se generaron señales de entrada pero el sizing calculó tamaño cero.',
+        'no_trades_executed_orders_rejected': 'Se generaron señales pero las órdenes fueron rechazadas.',
+        'no_trades_executed_unknown': 'Sin trades ejecutados - causa desconocida.',
+      }
+      return reasonMessages[degradedReason] || (effectiveData as any)?._degradedMessage || data?.message || fallbackReason || 'Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.'
     }
     return (effectiveData as any)?._degradedMessage || data?.message || fallbackReason || 'Backtest invalid or incomplete. Use this dashboard only as research, NOT as trading advice.'
   }
@@ -401,12 +437,22 @@ function PerformanceSummary() {
               <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
                 {degradedMessage}
               </p>
-              {isDevFallback && (
+              {noTradeRootCause && metricsStatus === 'NO_TRADES' && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
+                  Causa raíz: {noTradeRootCause}
+                </p>
+              )}
+              {cacheMiss && (
+                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
+                  Los datos del backtest se están calculando en segundo plano. Esta página se actualizará automáticamente cuando estén listos.
+                </p>
+              )}
+              {isDevFallback && !cacheMiss && (
                 <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
                   Las métricas mostradas son valores de respaldo generados automáticamente en modo desarrollo. No reflejan resultados reales de backtesting.
                 </p>
               )}
-              {isDemoMetrics && !isDevFallback && (
+              {isDemoMetrics && !isDevFallback && !cacheMiss && (
                 <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.6)' }}>
                   Las métricas reales se están calculando en segundo plano. Esta página se actualizará automáticamente cuando estén listas.
                 </p>

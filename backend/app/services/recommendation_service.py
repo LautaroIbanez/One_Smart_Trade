@@ -2027,6 +2027,8 @@ class RecommendationService:
                     risk_metrics["backtest_no_trades"] = True
                     risk_metrics["backtest_no_trades_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
                     risk_metrics["backtest_no_trades_reason"] = no_trade_diagnostics.get("reason", "No trades executed during backtest")
+                    risk_metrics["backtest_metrics_source"] = "fallback"
+                    risk_metrics["backtest_metrics_status"] = "NO_TRADES"
                     signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
                     logger.info("Signal degraded to HOLD due to NO_TRADES, but recommendation will be persisted for today")
                 
@@ -2077,6 +2079,11 @@ class RecommendationService:
                 signal["backtest_cagr"] = metrics.get("cagr")
                 signal["backtest_win_rate"] = metrics.get("win_rate")
                 signal["backtest_max_drawdown"] = metrics.get("max_drawdown")
+                
+                # Mark that backtest metrics are real (not fallback)
+                risk_metrics = signal.setdefault("risk_metrics", {})
+                risk_metrics["backtest_metrics_source"] = "real"
+                risk_metrics["backtest_metrics_status"] = "PASS"
                 
                 # Calculate risk/reward ratio from profit_factor or avg_win/avg_loss
                 profit_factor = metrics.get("profit_factor", 0.0)
@@ -2984,6 +2991,7 @@ class RecommendationService:
         status: str | None = None,
         tracking_error_min: float | None = None,
         tracking_error_max: float | None = None,
+        include_hold_and_open: bool = False,
     ) -> dict[str, Any]:
         """Get recommendation history with pagination and filters."""
         self._ensure_champion_context(run_alerts=False)
@@ -2994,17 +3002,36 @@ class RecommendationService:
         start_dt = self._parse_date(start_date, start_of_day=True)
         end_dt = self._parse_date(end_date, start_of_day=False)
 
+        # In decision-support mode, relax filters to include HOLD and open recommendations
+        effective_status = status
+        effective_result = result_value
+        if include_hold_and_open:
+            # Don't filter by status if not explicitly provided, or include 'open' and 'hold'
+            if status is None:
+                effective_status = None  # Include all statuses
+            elif status not in ('open', 'closed', 'hold'):
+                # If status is provided but not one of the inclusive ones, keep it
+                effective_status = status
+            # Allow null result (for open recommendations)
+            if result_value is None:
+                effective_result = None
+        else:
+            # Default behavior: exclude HOLD and open if not explicitly requested
+            effective_status = status
+            effective_result = result_value
+        
         records, has_more, next_cursor = self._query_history_records(
             limit=limit,
             cursor_filter=cursor_tuple,
             start_dt=start_dt,
             end_dt=end_dt,
             signal=signal_value,
-            status=status,
-            result=result_value,
+            status=effective_status,
+            result=effective_result,
             tracking_error_min=tracking_error_min,
             tracking_error_max=tracking_error_max,
             include_pagination=True,
+            include_hold_and_open=include_hold_and_open,
         )
 
         items = [self._build_history_item(self._from_orm(rec)) for rec in records]
@@ -3030,6 +3057,7 @@ class RecommendationService:
             "filters": {k: v for k, v in response_filters.items() if v is not None},
             "insights": insights,
             "download_url": self._build_history_export_url(response_filters, cursor),
+            "metadata": {},
         }
 
     async def export_recommendation_history(
@@ -3872,6 +3900,7 @@ class RecommendationService:
         tracking_error_min: float | None,
         tracking_error_max: float | None,
         include_pagination: bool,
+        include_hold_and_open: bool = False,
     ) -> tuple[list[RecommendationORM], bool, str | None]:
         stmt = select(RecommendationORM).order_by(desc(RecommendationORM.created_at), desc(RecommendationORM.id))
         if cursor_filter:
@@ -3895,6 +3924,10 @@ class RecommendationService:
             stmt = stmt.where(RecommendationORM.status == status)
         if result:
             stmt = stmt.where(RecommendationORM.exit_reason == result)
+        elif include_hold_and_open:
+            # In decision-support mode, allow null exit_reason (for open recommendations)
+            # Don't filter by exit_reason if result is None
+            pass
 
         te_expr = self._tracking_error_expression()
         if tracking_error_min is not None:

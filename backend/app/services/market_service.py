@@ -1,6 +1,10 @@
 """Market data service."""
+from datetime import datetime, timezone
 from typing import Any
 
+import pandas as pd
+
+from app.core.config import settings
 from app.data.curation import DataCuration
 
 
@@ -28,6 +32,52 @@ class MarketService:
             }
 
         latest = df.iloc[-1]
+        
+        # Get metadata to check freshness
+        metadata = self.curation.get_curated_metadata(interval)
+        latest_open_time = None
+        data_stale = False
+        age_minutes = None
+        
+        # Determine latest timestamp from metadata or dataframe
+        if metadata and "latest_open_time" in metadata:
+            latest_open_time_str = metadata["latest_open_time"]
+            try:
+                latest_open_time = datetime.fromisoformat(latest_open_time_str.replace("Z", "+00:00"))
+                if latest_open_time.tzinfo is None:
+                    latest_open_time = latest_open_time.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                # Fallback to dataframe max
+                latest_ts = pd.to_datetime(df["open_time"].max())
+                if hasattr(latest_ts, 'to_pydatetime'):
+                    latest_open_time = latest_ts.to_pydatetime()
+                else:
+                    latest_open_time = latest_ts
+                if latest_open_time.tzinfo is None:
+                    latest_open_time = latest_open_time.replace(tzinfo=timezone.utc)
+        else:
+            # Fallback to dataframe max
+            latest_ts = pd.to_datetime(df["open_time"].max())
+            if hasattr(latest_ts, 'to_pydatetime'):
+                latest_open_time = latest_ts.to_pydatetime()
+            else:
+                latest_open_time = latest_ts
+            if latest_open_time.tzinfo is None:
+                latest_open_time = latest_open_time.replace(tzinfo=timezone.utc)
+        
+        # Validate freshness
+        if latest_open_time:
+            now = datetime.now(timezone.utc)
+            age_minutes = (now - latest_open_time).total_seconds() / 60.0
+            
+            # Get threshold for this interval
+            threshold_minutes = self.curation._get_freshness_threshold_minutes(interval)
+            
+            # Check if data is stale (unless in dev mode)
+            dev_mode = settings.is_dev_mode()
+            if not dev_mode and age_minutes > threshold_minutes:
+                data_stale = True
+        
         chart_points = [
             {
                 "timestamp": row["open_time"].isoformat(),
@@ -44,9 +94,9 @@ class MarketService:
         support = float(latest.get("support", support)) if latest.get("support", 0) > 0 else support
         resistance = float(latest.get("resistance", resistance)) if latest.get("resistance", 0) > 0 else resistance
 
-        return {
+        result = {
             "interval": interval,
-            "status": "success",
+            "status": "data_stale" if data_stale else "success",
             "current_price": float(latest["close"]),
             "volume": float(latest["volume"]),
             "vwap": float(latest.get("vwap", latest["close"])),
@@ -56,5 +106,15 @@ class MarketService:
             "resistance": resistance,
             "timestamp": latest["open_time"].isoformat(),
             "data": chart_points,
+            "metadata": {
+                "latest_timestamp": latest_open_time.isoformat() if latest_open_time else None,
+                "age_minutes": round(age_minutes, 2) if age_minutes is not None else None,
+                "source": "curated_parquet",
+            },
         }
+        
+        if data_stale:
+            result["reason"] = f"Data is stale: {age_minutes:.1f} minutes old (threshold: {threshold_minutes} minutes)"
+        
+        return result
 

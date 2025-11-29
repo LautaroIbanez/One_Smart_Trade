@@ -182,6 +182,10 @@ function RecommendationCard() {
   // Check if this is a dev fallback/degraded recommendation
   const isDevFallback = (data as any)?.dev_fallback === true || (data as any)?.risk_metrics?.dev_fallback === true
   const isDegradedMode = (data as any)?.degraded_mode === true || (data as any)?.risk_metrics?.degraded_mode === true
+  const backtestMetricsSource = (data as any)?.risk_metrics?.backtest_metrics_source
+  const backtestMetricsStatus = (data as any)?.risk_metrics?.backtest_metrics_status
+  const backtestNoTrades = (data as any)?.risk_metrics?.backtest_no_trades === true
+  const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades
 
   // Type guard: Check if this is a fallback response (no_data) without required fields
   const isFallbackResponse = (data: any): boolean => {
@@ -779,8 +783,27 @@ function RecommendationCard() {
         ⚠️ Experimental signal – decision-support only, NOT trading advice.
       </div>
       
+      {/* Backtest metrics fallback indicator */}
+      {isMetricsFallback && (
+        <div style={{
+          padding: '0.75rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '0.5rem',
+          marginBottom: '1rem',
+          fontSize: '0.875rem',
+        }}>
+          <p style={{ margin: 0, color: '#ef4444', fontWeight: 600 }}>
+            ⚠️ Métricas de riesgo basadas en backtest fallido
+          </p>
+          <p style={{ margin: '0.5rem 0 0 0', color: 'rgba(255, 255, 255, 0.8)', fontSize: '0.75rem' }}>
+            Las métricas de riesgo mostradas provienen de un backtest que no ejecutó trades. Use esta recomendación con precaución.
+          </p>
+        </div>
+      )}
+      
       {/* Dev fallback / Degraded mode banner */}
-      {(isDevFallback || isDegradedMode || isManualGeneration) && (
+      {(isDevFallback || isDegradedMode || isManualGeneration) && !isMetricsFallback && (
         <div className="manual-generation-banner" role="alert" aria-live="polite" style={{ 
           margin: '1rem 0', 
           padding: '0.75rem', 

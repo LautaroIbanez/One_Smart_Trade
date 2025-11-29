@@ -308,3 +308,4 @@ class RecommendationHistoryResponse(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
     insights: HistoryInsights | None = None
     download_url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)

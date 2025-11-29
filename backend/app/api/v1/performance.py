@@ -264,9 +264,12 @@ async def get_performance_summary(
                     chart_banners=[f"No backtest data available - showing demo metrics (cause: {demo_cause})"],
                 )
                 response_dict = response.model_dump()
-                # Add metadata about demo metrics cause
+                # Add metadata about demo metrics cause and cache status
                 response_dict["demo_metrics_cause"] = demo_cause
                 response_dict["demo_metrics"] = True
+                response_dict["cache_miss"] = True
+                response_dict["metrics_status"] = "CACHE_MISS"
+                response_dict["degraded_reason"] = f"cache_miss_{demo_cause}"
                 return response_dict
         
         # Server-side guardrail: When allow_stale_inputs=True, enqueue background backfill if needed
@@ -643,6 +646,14 @@ async def get_performance_summary(
                 response_dict["rejected_orders_count"] = no_trade_diagnostics.get("rejected_orders_count", 0)
                 response_dict["no_trade_diagnostics"] = no_trade_diagnostics
                 response_dict["no_trade_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
+        
+        # Always expose cache_miss and degraded_reason in metadata for frontend
+        if metadata.get("cache_miss"):
+            response_dict["cache_miss"] = True
+        if metadata.get("degraded_reason"):
+            response_dict["degraded_reason"] = metadata.get("degraded_reason")
+        if metadata.get("served_from_cache") is not None:
+            response_dict["served_from_cache"] = metadata.get("served_from_cache")
         
         return response_dict
     except HTTPException:

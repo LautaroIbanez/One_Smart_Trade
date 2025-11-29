@@ -134,7 +134,8 @@ function Dashboard() {
             completedQueries++
             updateProgress(completedQueries, totalQueries)
           }),
-        refetchMarket()
+        queryClient.invalidateQueries({ queryKey: ['market', '1h'] })
+          .then(() => refetchMarket())
           .then(() => {
             completedQueries++
             updateProgress(completedQueries, totalQueries)
@@ -174,7 +175,13 @@ function Dashboard() {
   
   const chartData = useMemo<MarketPoint[]>(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
-    return marketData.data.slice(-80).map((item: Record<string, unknown>, index, arr) => {
+    // Accept both timestamp and open_time, sort by timestamp
+    const sortedData = [...marketData.data].sort((a, b) => {
+      const timeA = a.timestamp ?? a.open_time ?? ''
+      const timeB = b.timestamp ?? b.open_time ?? ''
+      return new Date(timeA).getTime() - new Date(timeB).getTime()
+    })
+    return sortedData.slice(-80).map((item: Record<string, unknown>, index, arr) => {
       const rawTime = item.timestamp ?? item.open_time
       const timestamp =
         typeof rawTime === 'string'
@@ -282,16 +289,24 @@ function Dashboard() {
                 title="Error al cargar gráfico de precios"
                 onRetry={() => {
                   if (recommendationError) refetchRecommendation()
-                  if (marketError) refetchMarket()
+                  if (marketError) {
+                    queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
+                  }
                 }}
               />
-            ) : data && isTradableRecommendation(data) && chartData.length > 0 ? (
+            ) : data && isTradableRecommendation(data) && chartData.length > 0 && marketData?.status !== 'data_stale' ? (
               <>
                 {data.metadata?.served_from_cache && (
                   <DegradedDataBanner 
                     message="Mostrando datos en caché. Los datos frescos se están actualizando en segundo plano."
                     source={data.metadata?.source}
                     cachedAt={data.metadata?.generated_at}
+                  />
+                )}
+                {marketData?.metadata?.served_from_cache && (
+                  <DegradedDataBanner 
+                    message="Gráfico mostrando datos en caché. Los datos frescos se están actualizando en segundo plano."
+                    source={marketData.metadata?.source}
                   />
                 )}
                 <PriceLevelsChart
@@ -306,6 +321,25 @@ function Dashboard() {
                       : undefined
                   }
                 />
+              </>
+            ) : data && isTradableRecommendation(data) && marketData?.status === 'data_stale' ? (
+              <>
+                <DegradedDataBanner 
+                  message={marketData.reason || "Los datos del gráfico están desactualizados. Por favor, actualiza manualmente."}
+                  source={marketData.metadata?.source}
+                />
+                <div className="empty-state">
+                  <p>⚠️ <strong>Gráfico no disponible</strong></p>
+                  <p>Los datos del mercado están desactualizados. Por favor, actualiza los datos para ver el gráfico.</p>
+                  <button
+                    onClick={() => {
+                      queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
+                    }}
+                    className="refresh-button"
+                  >
+                    Actualizar datos
+                  </button>
+                </div>
               </>
             ) : data && !isTradableRecommendation(data) ? (
               <div className="empty-state">
