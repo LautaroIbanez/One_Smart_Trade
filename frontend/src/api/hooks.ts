@@ -429,8 +429,11 @@ export const useSignalPerformance = (lookaheadDays: number = 5, limit: number = 
 }
 
 export const useMarketData = (interval: Interval, recommendationTimestamp?: string | null, window: number = 200) => {
+  // FE-DATA-04: Decouple market query from recommendation timestamp
+  // Use a stable query key based only on interval and window
+  // The query will refetch based on staleTime and refetchInterval independently
   return useQuery({
-    queryKey: ['market', interval, recommendationTimestamp || 'no-rec', window],
+    queryKey: ['market', interval, window],
     queryFn: async ({ signal }) => {
       const { data } = await api.get(`/api/v1/market/${interval}`, { 
         params: { window },
@@ -438,15 +441,30 @@ export const useMarketData = (interval: Interval, recommendationTimestamp?: stri
       })
       return data
     },
-    staleTime: 300_000, // 5 minutes - increased from 30s
+    staleTime: 60000, // FE-DATA-04: Reduced to 1 minute to catch new candles faster
     refetchInterval: (query) => {
       const data = query.state.data as any
       const status = data?.status
       const isStale = query.isStale()
       const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
       
-      return getPollingInterval(status, isStale, cacheAge)
+      // FE-DATA-04: Poll more aggressively if data is stale or if status indicates processing
+      if (status === 'data_stale' || status === 'processing') {
+        return 30000 // Poll every 30s when stale/processing
+      }
+      
+      // FE-DATA-04: Default polling every 60s to catch new candles independently of recommendation
+      // This ensures the chart updates even if recommendation doesn't change
+      const defaultPolling = 60000 // 1 minute
+      const statusBasedPolling = getPollingInterval(status, isStale, cacheAge)
+      
+      // Use status-based polling if available, otherwise use default
+      return statusBasedPolling !== false ? statusBasedPolling : defaultPolling
     },
+    // FE-DATA-04: Refetch when window focus returns to catch up on missed updates
+    refetchOnWindowFocus: true,
+    // FE-DATA-04: Refetch when reconnecting to catch up on missed updates
+    refetchOnReconnect: true,
   })
 }
 

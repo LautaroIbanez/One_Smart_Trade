@@ -38,10 +38,14 @@ function Dashboard() {
   const [toast, setToast] = useState<RefreshToast | null>(null)
   const toastTimeoutRef = useRef<number | null>(null)
   const { data, isLoading: isRecommendationLoading, error: recommendationError, refetch: refetchRecommendation } = useTodayRecommendation()
-  // Extract recommendation timestamp/date for market data query key to trigger refetch on new pipeline runs
-  // Use data_recency.as_of (from _apply_recency_metadata) or fallback to timestamp/original_signal_date
-  const recommendationTimestamp = data?.data_recency?.as_of || data?.timestamp || data?.original_signal_date || null
-  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData('1h', recommendationTimestamp, 200)
+  // FE-DATA-04: Market data query is now decoupled from recommendation timestamp
+  // The query key no longer includes recommendationTimestamp, allowing independent refresh
+  // Market data will refresh every 60s independently via refetchInterval
+  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData('1h', null, 200)
+  
+  // FE-DATA-04: Monitor market data as_of to detect when new candles arrive
+  // Track previous as_of to detect changes - the query will automatically refetch via refetchInterval
+  const marketAsOf = marketData?.metadata?.as_of
 
   // Auto-dismiss toast after 5 seconds
   useEffect(() => {
@@ -339,6 +343,12 @@ function Dashboard() {
                   <DegradedDataBanner 
                     message={marketData.reason || "Los datos del gráfico están desactualizados. Por favor, actualiza manualmente."}
                     source={marketData.metadata?.source}
+                  />
+                )}
+                {/* FE-DATA-04: Show age information when data is approaching stale */}
+                {marketData?.metadata?.age_minutes && marketData.metadata.age_minutes > 30 && marketData.status !== 'data_stale' && (
+                  <DegradedDataBanner 
+                    message={`Datos del gráfico tienen ${Math.round(marketData.metadata.age_minutes)} minutos de antigüedad. Se actualizarán automáticamente cuando haya nuevas velas.`}
                   />
                 )}
                 <PriceLevelsChart

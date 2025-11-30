@@ -133,10 +133,12 @@ _preflight_task: asyncio.Task | None = None
     coalesce=True,  # If multiple runs missed during startup, only run once
 )
 async def job_ingest_all() -> None:
-    """Scheduled job to ingest data for all timeframes."""
+    """Scheduled job to ingest data for all timeframes and trigger curation."""
     import time
+    import asyncio
 
     from app.observability.metrics import record_ingestion
+    from app.core.logging import logger, sanitize_log_extra
 
     ingestion = DataIngestion()
     start_time = time.time()
@@ -160,6 +162,60 @@ async def job_ingest_all() -> None:
             success = res.get("status") == "success"
             record_ingestion(interval, duration / max(len(results), 1), success, res.get("status"))
         record_ingestion("multiple", duration, True)
+        
+        # BE-DATA-02: Trigger curation after ingestion to ensure curated parquet files are updated
+        # This ensures that /api/v1/market/{interval} serves fresh data
+        curation_start = time.time()
+        curation = DataCuration()
+        curation_results = {}
+        from app.data.ingestion import INTERVALS
+        
+        for interval in INTERVALS:
+            # Only curate intervals that had successful ingestion
+            ingestion_result = next((r for r in results if r.get("interval") == interval), None)
+            if ingestion_result and ingestion_result.get("status") == "success":
+                try:
+                    # Execute blocking curation operations in thread pool to avoid blocking
+                    await asyncio.to_thread(
+                        curation.curate_interval,
+                        interval,
+                        venue=venue,
+                        symbol=symbol
+                    )
+                    curation_results[interval] = "success"
+                    logger.info(
+                        f"Curation completed for {interval} after ingestion",
+                        extra=sanitize_log_extra({"interval": interval, "venue": venue, "symbol": symbol}),
+                    )
+                except FileNotFoundError:
+                    logger.warning(f"Skipping curation for {interval} - raw data missing")
+                    curation_results[interval] = "skipped_no_data"
+                except Exception as exc:
+                    logger.warning(
+                        f"Curation failed for {interval} after ingestion",
+                        extra=sanitize_log_extra({"interval": interval, "error": str(exc)}),
+                    )
+                    curation_results[interval] = f"error: {str(exc)}"
+        
+        curation_duration = time.time() - curation_start
+        logger.info(
+            f"Ingestion and curation completed: {total_rows} rows ingested, curation in {curation_duration:.2f}s",
+            extra=sanitize_log_extra({
+                "total_rows": total_rows,
+                "curation_duration": round(curation_duration, 2),
+                "curation_results": curation_results,
+            }),
+        )
+        
+        # BE-CACHE-03: Invalidate market data cache after curation completes
+        # This ensures the next request picks up fresh metadata with updated latest_open_time
+        from app.utils.cache import clear_cache
+        cleared_count = clear_cache("market_data")
+        if cleared_count > 0:
+            logger.info(
+                f"Invalidated {cleared_count} market_data cache entries after curation",
+                extra=sanitize_log_extra({"cleared_count": cleared_count}),
+            )
     except Exception as exc:  # rate limits, timeouts, etc.
         duration = time.time() - start_time
         db = SessionLocal()

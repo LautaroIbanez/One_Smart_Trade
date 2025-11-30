@@ -124,6 +124,31 @@ async def get_market_data(
         status_label = data.get("status", "success")
         ENDPOINT_RESPONSE_TIME.labels(endpoint=f"/market/{interval}", status=status_label).observe(duration)
         
+        # BE-CACHE-03: Log age_minutes for observability and cache freshness tracking
+        age_minutes = data.get("metadata", {}).get("age_minutes")
+        if age_minutes is not None:
+            logger.info(
+                f"Market data served for {interval}",
+                extra={
+                    "interval": interval,
+                    "age_minutes": age_minutes,
+                    "status": status_label,
+                    "window": window,
+                    "cache_version": cache_version,
+                },
+            )
+            # Log warning if data is approaching stale threshold
+            threshold_minutes = 60.0 if interval in ("15m", "30m") else 120.0 if interval == "1h" else 1440.0
+            if age_minutes > threshold_minutes * 0.8:
+                logger.warning(
+                    f"Market data approaching stale threshold for {interval}",
+                    extra={
+                        "interval": interval,
+                        "age_minutes": age_minutes,
+                        "threshold_minutes": threshold_minutes,
+                    },
+                )
+        
         # Return 503 if data is stale
         if data.get("status") == "data_stale":
             return JSONResponse(
