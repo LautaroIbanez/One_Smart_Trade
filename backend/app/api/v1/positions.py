@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.backtesting.position import Position, PositionConfig, PositionManager, PositionSide
+from app.core.config import settings
 
 router = APIRouter()
 position_manager = PositionManager()
@@ -36,10 +37,22 @@ class PartialFillRequest(BaseModel):
 @router.post("/open")
 async def open_position(request: PositionRequest) -> dict[str, Any]:
     """
-    Open a new position or add to existing position.
+    Open a new simulated position or add to existing simulated position.
     
-    Automatically calculates SL/TP levels based on average entry price.
+    This endpoint is **paper-only**: it manages positions in memory for backtesting/simulación,
+    and no real orders or positions are created on any exchange.
     """
+    # BE-LIVE-01: Enforce decision-support only mode for any position operation
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "paper_only",
+                "reason": "Live position management is disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION.",
+                "message": "Este endpoint sólo gestiona posiciones simuladas para backtesting/decision support. No abre posiciones reales.",
+                "disclaimer": "Simulation only. No live positions are managed by this API.",
+            },
+        )
     try:
         config = PositionConfig(
             risk_per_unit=request.risk_per_unit,
@@ -75,10 +88,20 @@ async def open_position(request: PositionRequest) -> dict[str, Any]:
 @router.post("/apply-fill")
 async def apply_fill(request: PartialFillRequest) -> dict[str, Any]:
     """
-    Apply a fill to existing position.
+    Apply a fill to existing simulated position.
     
-    Recalculates average entry price and SL/TP levels automatically.
+    Recalculates average entry price and SL/TP levels automatically (paper-only).
     """
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "paper_only",
+                "reason": "Live position management is disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION.",
+                "message": "Este endpoint sólo actualiza fills en posiciones simuladas. No afecta ninguna cuenta real.",
+                "disclaimer": "Simulation only. No live positions are managed by this API.",
+            },
+        )
     try:
         position = position_manager.get_position(request.symbol)
         if not position:
@@ -118,7 +141,17 @@ async def update_position_price(
     symbol: str = Query(..., description="Trading symbol"),
     current_price: float = Query(..., gt=0, description="Current market price"),
 ) -> dict[str, Any]:
-    """Update position current price and calculate unrealized P&L."""
+    """Update simulated position current price and calculate unrealized P&L (paper-only)."""
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "paper_only",
+                "reason": "Live position management is disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION.",
+                "message": "Este endpoint sólo actualiza precios y P&L de posiciones simuladas. No afecta ninguna cuenta real.",
+                "disclaimer": "Simulation only. No live positions are managed by this API.",
+            },
+        )
     try:
         position = position_manager.get_position(symbol)
         if not position:
@@ -138,7 +171,7 @@ async def update_position_price(
 
 @router.get("/status")
 async def get_position_status(symbol: str = Query(..., description="Trading symbol")) -> dict[str, Any]:
-    """Get current position status with SL/TP levels."""
+    """Get current simulated position status with SL/TP levels (paper-only)."""
     try:
         position = position_manager.get_position(symbol)
         if not position:
@@ -172,7 +205,17 @@ async def close_position(
     close_price: float = Query(..., gt=0, description="Close price"),
     partial_qty: float | None = Query(None, gt=0, description="Partial close quantity (if None, closes all)"),
 ) -> dict[str, Any]:
-    """Close position (full or partial)."""
+    """Close simulated position (full or partial, paper-only)."""
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "paper_only",
+                "reason": "Live position management is disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION.",
+                "message": "Este endpoint sólo cierra posiciones simuladas utilizadas para backtesting/decision support. No cierra posiciones reales.",
+                "disclaimer": "Simulation only. No live positions are managed by this API.",
+            },
+        )
     try:
         result = position_manager.close_position(symbol, close_price, partial_qty=partial_qty)
         
@@ -190,7 +233,7 @@ async def close_position(
 
 @router.get("/all")
 async def get_all_positions() -> dict[str, Any]:
-    """Get all open positions."""
+    """Get all open simulated positions (paper-only)."""
     try:
         positions = []
         for symbol, position in position_manager.positions.items():

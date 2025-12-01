@@ -38,6 +38,7 @@ class MarketService:
         latest_open_time = None
         data_stale = False
         age_minutes = None
+        threshold_minutes: float | None = None
         
         # Determine latest timestamp from metadata or dataframe
         if metadata and "latest_open_time" in metadata:
@@ -70,8 +71,8 @@ class MarketService:
             now = datetime.now(timezone.utc)
             age_minutes = (now - latest_open_time).total_seconds() / 60.0
             
-            # Get threshold for this interval
-            threshold_minutes = self.curation._get_freshness_threshold_minutes(interval)
+            # Get threshold for this interval (interval-aware: intradía, diario, semanal)
+            threshold_minutes = float(self.curation._get_freshness_threshold_minutes(interval))
             
             # Check if data is stale (unless in dev mode)
             dev_mode = settings.is_dev_mode()
@@ -97,6 +98,7 @@ class MarketService:
         support = float(latest.get("support", support)) if latest.get("support", 0) > 0 else support
         resistance = float(latest.get("resistance", resistance)) if latest.get("resistance", 0) > 0 else resistance
 
+        # Build response with explicit staleness metadata for frontend/observability
         result = {
             "interval": interval,
             "status": "data_stale" if data_stale else "success",
@@ -110,8 +112,16 @@ class MarketService:
             "timestamp": latest["open_time"].isoformat(),
             "data": chart_points,
             "metadata": {
+                # BE-DATA-01: Explicit latest_open_time for daily freshness checks
+                "latest_open_time": latest_open_time.isoformat() if latest_open_time else None,
+                # Backward-compatible alias used by some callers
                 "latest_timestamp": latest_open_time.isoformat() if latest_open_time else None,
+                # Age of last candle in minutes (relative to now, interval-aware thresholds in backend)
                 "age_minutes": round(age_minutes, 2) if age_minutes is not None else None,
+                # Explicit staleness flag to complement status field
+                "is_stale": bool(data_stale),
+                # Surface freshness threshold used for this interval (intraday/diario/semanal)
+                "freshness_threshold_minutes": float(threshold_minutes) if threshold_minutes is not None else None,
                 "source": "curated_parquet",
                 "window": window,
                 # Include as_of timestamp matching parquet metadata

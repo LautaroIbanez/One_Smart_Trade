@@ -470,8 +470,12 @@ class RecommendationService:
                 data_recency["days_since_release"] = None
         else:
             data_recency["days_since_release"] = None
+        # BE-SIGNAL-01: Use explicit day-level status for UI:
+        # - "no_signal_today": no recommendation generated for today (may or may not have historical signals)
+        # - "no_data": legacy/compat status (kept for backwards compatibility and empty DB scenarios)
+        status_value = "no_signal_today"
         return {
-            "status": "no_data",
+            "status": status_value,
             "reason": reason,
             "latest_available_timestamp": latest_timestamp,
             "latest_available_date": latest_date,

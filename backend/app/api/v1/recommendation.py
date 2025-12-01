@@ -404,7 +404,18 @@ async def get_today_recommendation(
                 },
             )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # BE-SIGNAL-01: Surface a structured generation_failed payload instead of a raw 500
+        logger.exception("Error fetching today's recommendation")
+        # Try to include recency metadata if available
+        fallback = {
+            "status": "generation_failed",
+            "reason": str(e) or "Recommendation generation failed. Check backend logs for details.",
+            "latest_available_timestamp": None,
+            "latest_available_date": None,
+            "data_recency": {"status": "unknown", "as_of": None, "days_since_release": None},
+            "allow_replay_hint": settings.ALLOW_MANUAL_REPLAY,
+        }
+        return RecommendationFallbackResponse(**fallback)
 
 
 @router.get("/{recommendation_id}/snapshot")

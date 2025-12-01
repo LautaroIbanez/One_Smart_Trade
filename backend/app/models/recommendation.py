@@ -189,9 +189,11 @@ class RecommendationResponse(BaseModel):
 
 
 class RecommendationFallbackResponse(BaseModel):
-    """Fallback payload when no fresh recommendation is available."""
+    """Fallback payload when no fresh recommendation is available or generation failed."""
 
-    status: Literal["no_data"]
+    # BE-SIGNAL-01: Use explicit day-level statuses so the UI can distinguish
+    # between "no signal generated today" and "pipeline/generation failed".
+    status: Literal["no_signal_today", "generation_failed", "no_data"]
     reason: str
     latest_available_timestamp: str | None = Field(
         default=None,

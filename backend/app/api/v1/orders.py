@@ -17,6 +17,7 @@ from app.backtesting.order_types import (
 )
 from app.data.fill_model import FillModel
 from app.data.orderbook import OrderBookRepository
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -42,10 +43,22 @@ async def simulate_order(
     bar_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Simulate order execution against order book and bar data.
+    Simulate order execution against historical order book and bar data.
     
-    Creates order and attempts to fill it based on current market conditions.
+    This endpoint is **paper-only**: it never sends live orders to an exchange.
+    Execution is simulated purely against curated market data and internal models.
     """
+    # BE-LIVE-01: Explicitly enforce decision-support only mode
+    if settings.DISABLE_LIVE_EXECUTION or settings.DECISION_SUPPORT_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "paper_only",
+                "reason": "Live order execution is disabled by DECISION_SUPPORT_ONLY/DISABLE_LIVE_EXECUTION.",
+                "message": "Este endpoint sólo simula órdenes sobre datos históricos (paper trading). No se envían órdenes reales a ningún exchange.",
+                "disclaimer": "Simulation only. No live trading is performed by this API.",
+            },
+        )
     try:
         ts = pd.Timestamp(timestamp)
         repo = OrderBookRepository(venue=request.venue)

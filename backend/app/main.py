@@ -137,7 +137,7 @@ async def job_ingest_all() -> None:
     import time
     import asyncio
 
-    from app.observability.metrics import record_ingestion
+    from app.observability.metrics import record_ingestion, record_data_gap
     from app.core.logging import logger, sanitize_log_extra
 
     ingestion = DataIngestion()
@@ -153,7 +153,48 @@ async def job_ingest_all() -> None:
 
         db = SessionLocal()
         try:
-            log_run(db, "ingestion", "success", f"Fetched {total_rows} rows", {"results": results})
+            # BE-DATA-02: Detect 0-row ingestion for critical intervals (1h, 1d)
+            critical_intervals: tuple[str, ...] = ("1h", "1d")
+            zero_row_critical: dict[str, dict[str, Any]] = {}
+            for res in results:
+                interval = res.get("interval")
+                if interval in critical_intervals:
+                    rows = res.get("rows", 0)
+                    status_str = res.get("status")
+                    if rows == 0 or status_str != "success":
+                        zero_row_critical[interval] = {
+                            "rows": rows,
+                            "status": status_str,
+                            "meta": res.get("meta"),
+                        }
+                        logger.warning(
+                            f"BE-DATA-02: Ingestion returned no new rows for critical interval {interval}",
+                            extra=sanitize_log_extra(
+                                {
+                                    "interval": interval,
+                                    "rows": rows,
+                                    "status": status_str,
+                                    "meta": res.get("meta"),
+                                }
+                            ),
+                        )
+                        # Emit data gap metric as an alert for operators/monitoring
+                        try:
+                            record_data_gap(interval)
+                        except Exception:
+                            logger.debug(
+                                "Failed to record data gap metric for BE-DATA-02 zero-row ingestion",
+                                extra=sanitize_log_extra({"interval": interval}),
+                            )
+
+            log_status = "warning" if zero_row_critical else "success"
+            log_details: dict[str, Any] = {
+                "results": results,
+            }
+            if zero_row_critical:
+                log_details["critical_zero_row_intervals"] = zero_row_critical
+
+            log_run(db, "ingestion", log_status, f"Fetched {total_rows} rows", log_details)
         finally:
             db.close()
 
@@ -218,7 +259,8 @@ async def job_ingest_all() -> None:
                 extra=sanitize_log_extra({"cleared_count": cleared_count}),
             )
         
-        # BE-CACHE-01: Log metadata freshness after curation to verify updates
+        # BE-CACHE-01 / BE-DATA-01: Log metadata freshness after curation and alert if no new candles for >= 1 cycle
+        from app.data.ingestion import _interval_to_timedelta
         for interval in INTERVALS:
             if curation_results.get(interval) == "success":
                 try:
@@ -232,6 +274,11 @@ async def job_ingest_all() -> None:
                                 latest_dt = latest_dt.replace(tzinfo=timezone.utc)
                             now = datetime.now(timezone.utc)
                             age_minutes = (now - latest_dt).total_seconds() / 60.0
+
+                            # Compute one full candle cycle in minutes for this interval (15m, 1h, 1d, 1w, etc.)
+                            interval_delta = _interval_to_timedelta(interval)
+                            interval_minutes = interval_delta.total_seconds() / 60.0
+
                             logger.info(
                                 f"Metadata updated for {interval} after curation",
                                 extra=sanitize_log_extra({
@@ -240,9 +287,34 @@ async def job_ingest_all() -> None:
                                     "symbol": symbol,
                                     "latest_open_time": latest_open_time_str,
                                     "age_minutes": round(age_minutes, 2),
+                                    "interval_minutes": round(interval_minutes, 2),
                                     "generated_at": metadata.get("generated_at"),
                                 }),
                             )
+
+                            # BE-DATA-01: If no new rows have been ingested for >= 1 full candle cycle,
+                            # raise a warning and emit a metric so alerts/dashboards can pick it up.
+                            if age_minutes >= interval_minutes:
+                                logger.warning(
+                                    f"No new candles ingested for >= 1 cycle on interval {interval}",
+                                    extra=sanitize_log_extra({
+                                        "interval": interval,
+                                        "venue": venue,
+                                        "symbol": symbol,
+                                        "age_minutes": round(age_minutes, 2),
+                                        "interval_minutes": round(interval_minutes, 2),
+                                        "latest_open_time": latest_open_time_str,
+                                    }),
+                                )
+                                # Reuse data gap metric as a generic freshness/staleness alert per interval
+                                try:
+                                    record_data_gap(interval)
+                                except Exception:
+                                    # Metrics are best-effort; logging is the primary alerting channel
+                                    logger.debug(
+                                        "Failed to record data gap metric for BE-DATA-01 staleness alert",
+                                        extra=sanitize_log_extra({"interval": interval}),
+                                    )
                         except Exception as parse_exc:
                             logger.warning(
                                 f"Failed to parse latest_open_time for {interval} after curation: {parse_exc}",
@@ -335,6 +407,7 @@ async def job_daily_pipeline() -> None:
 
     from app.core.logging import logger, sanitize_log_extra
     from app.data.ingestion import INTERVALS, DataIngestion
+    from app.data.curation import DataCuration
     from app.observability.metrics import record_signal_generation
     from app.services.recommendation_service import RecommendationService
 
@@ -356,9 +429,21 @@ async def job_daily_pipeline() -> None:
         # Step 1: Data ingestion
         ingestion_start = time.time()
         ingestion = DataIngestion()
+        curation_for_freshness = DataCuration()
         try:
             venue = settings.PERFORMANCE_STRATEGY_VENUE or "binance"
             symbol = settings.PERFORMANCE_STRATEGY_SYMBOL or "BTCUSDT"
+
+            # BE-DATA-02: Capture last_open_time_before for critical intervals (1h, 1d)
+            critical_intervals: tuple[str, ...] = ("1h", "1d")
+            last_open_before: dict[str, str | None] = {}
+            for tf in critical_intervals:
+                try:
+                    meta_before = curation_for_freshness.get_curated_metadata(tf, venue=venue, symbol=symbol)
+                    last_open_before[tf] = meta_before.get("latest_open_time") if meta_before else None
+                except Exception:
+                    # If metadata is missing or unreadable, record as None and continue
+                    last_open_before[tf] = None
 
             # Ensure ingestion includes data up to the most recent close
             ingestion_end = datetime.now(timezone.utc)
@@ -438,6 +523,8 @@ async def job_daily_pipeline() -> None:
                 "duration_seconds": round(ingestion_duration, 2),
                 "total_rows": total_rows,
                 "results": ingestion_results,
+                # Record baseline timestamps for BE-DATA-02 diagnostics
+                "last_open_time_before": last_open_before,
             }
             logger.info(f"Pipeline {run_id}: Ingestion completed - {total_rows} rows in {ingestion_duration:.2f}s")
         except Exception as exc:
@@ -490,7 +577,7 @@ async def job_daily_pipeline() -> None:
         # Step 2: Data curation
         # Run curation in thread pool to avoid blocking the event loop
         curation_start = time.time()
-        curation = DataCuration()
+        curation = curation_for_freshness
         curation_results = {}
         for interval in INTERVALS:
             try:
@@ -515,6 +602,89 @@ async def job_daily_pipeline() -> None:
             "results": curation_results,
         }
         logger.info(f"Pipeline {run_id}: Curation completed in {curation_duration:.2f}s")
+
+        # BE-DATA-02: Validate that critical intervals (1h, 1d) advanced at least one candle
+        # and that ingestion did not silently return 0 rows without updating data.
+        freshness_checks: dict[str, dict[str, Any]] = {}
+        critical_ok = True
+        for tf in ("1h", "1d"):
+            before_ts = outcome_details["steps"]["ingestion"]["last_open_time_before"].get(tf)
+            # Reload metadata after curation to inspect latest_open_time
+            after_meta = None
+            after_ts = None
+            try:
+                after_meta = curation.get_curated_metadata(tf, venue=venue, symbol=symbol)
+                after_ts = after_meta.get("latest_open_time") if after_meta else None
+            except Exception:
+                after_meta = None
+                after_ts = None
+
+            # Locate ingestion result for this timeframe
+            ingestion_result = next((r for r in ingestion_results if r.get("interval") == tf), None)
+            rows = ingestion_result.get("rows", 0) if ingestion_result else 0
+            status_str = ingestion_result.get("status") if ingestion_result else "missing"
+
+            advanced = False
+            parse_error: str | None = None
+            if after_ts is not None:
+                try:
+                    before_dt = None
+                    if before_ts is not None:
+                        before_dt = datetime.fromisoformat(before_ts.replace("Z", "+00:00"))
+                    after_dt = datetime.fromisoformat(after_ts.replace("Z", "+00:00"))
+                    if before_dt is None:
+                        # If we had no baseline but now have data, treat as advanced
+                        advanced = True
+                    else:
+                        advanced = after_dt > before_dt
+                except Exception as exc:
+                    parse_error = str(exc)
+                    advanced = False
+            else:
+                # No metadata after curation -> cannot confirm progress
+                advanced = False
+
+            freshness_checks[tf] = {
+                "interval": tf,
+                "rows_ingested": rows,
+                "ingestion_status": status_str,
+                "last_open_time_before": before_ts,
+                "last_open_time_after": after_ts,
+                "advanced": advanced,
+                "parse_error": parse_error,
+            }
+
+            # Mark pipeline as degraded if either we ingested 0 rows for a critical interval
+            # or latest_open_time did not move forward.
+            if rows == 0 or not advanced or status_str not in {"success"}:
+                critical_ok = False
+                logger.warning(
+                    f"BE-DATA-02: Critical interval {tf} did not advance after ingestion",
+                    extra=sanitize_log_extra(
+                        {
+                            "run_id": run_id,
+                            "interval": tf,
+                            "rows_ingested": rows,
+                            "ingestion_status": status_str,
+                            "last_open_time_before": before_ts,
+                            "last_open_time_after": after_ts,
+                            "parse_error": parse_error,
+                        }
+                    ),
+                )
+
+        outcome_details["steps"]["ingestion_freshness"] = {
+            "status": "ok" if critical_ok else "failed",
+            "checks": freshness_checks,
+        }
+
+        # If critical intervals did not advance, abort before generating a new recommendation.
+        # This enforces that signals are only generated when 1h/1d candles progressed.
+        if not critical_ok:
+            raise RuntimeError(
+                f"BE-DATA-02: Critical ingestion did not advance latest_open_time for intervals: "
+                f"{', '.join(tf for tf, chk in freshness_checks.items() if not chk['advanced'] or chk['rows_ingested'] == 0)}"
+            )
         
         # Invalidate market data cache after curation completes
         from app.utils.cache import clear_cache

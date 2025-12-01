@@ -64,7 +64,12 @@ class PerformancePeriod(BaseModel):
 class PerformanceSummaryResponse(BaseModel):
     """Performance summary API response."""
 
-    status: str = Field(..., description="Status: success, error, or degraded")
+    # BE-PERF-01: Status can be:
+    # - "success": metrics valid and based on real simulated trades
+    # - "degraded": metrics/fallbacks available but not fully validated
+    # - "error": calculation failed
+    # - "insufficient_history": not enough simulated trades to compute robust metrics
+    status: str = Field(..., description="Status: success, error, degraded, or insufficient_history")
     metrics: Optional[PerformanceMetrics] = Field(None, description="Performance metrics")
     period: Optional[PerformancePeriod] = Field(None, description="Backtest period")
     report_path: Optional[str] = Field(None, description="Path to generated report")

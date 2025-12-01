@@ -277,3 +277,4 @@ def get_rules_registry() -> StrategyRulesRegistry:
         _rules_registry = StrategyRulesRegistry()
     return _rules_registry
 
+

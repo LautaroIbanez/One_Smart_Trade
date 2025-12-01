@@ -15,8 +15,8 @@ function PerformanceSummary() {
   const { data: pipelineStatus } = usePipelineStatus(true)
   const isPipelineRunning = pipelineStatus?.status === 'processing' || pipelineStatus?.pipeline?.running === true
 
-  // Check if status is degraded
-  const isDegradedStatus = data?.status === 'degraded'
+  // Check if status is degraded or insufficient_history (both are non-ideal states for KPIs)
+  const isDegradedStatus = data?.status === 'degraded' || data?.status === 'insufficient_history'
   const isDemoMetrics = data?.has_realistic_data === false && isDegradedStatus
   
   // Extract metrics_status and related fields from API response
@@ -164,8 +164,8 @@ function PerformanceSummary() {
       }
     }
     
-    // If status is degraded/success and we have metrics, ensure arrays are present
-    if ((data.status === 'degraded' || data.status === 'success') && data.metrics) {
+    // If status is degraded/success/insufficient_history and we have metrics, ensure arrays are present
+    if ((data.status === 'degraded' || data.status === 'success' || data.status === 'insufficient_history') && data.metrics) {
       return {
         ...data,
         _isDegraded: data.status === 'degraded' || isDevFallback,
@@ -315,9 +315,38 @@ function PerformanceSummary() {
   const metrics = effectiveData?.metrics || (data as any)?.metrics || {}
   const hasMetrics = Object.keys(metrics).length > 0
 
+  // FE-PERF-01: Extract period and data source information
+  const period = effectiveData?.period || data?.period
+  const periodStart = period?.start ? new Date(period.start).toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric' }) : null
+  const periodEnd = period?.end ? new Date(period.end).toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric' }) : null
+  const dataSource = effectiveData?.has_realistic_data === true ? 'Backtest con ejecución realista' : 'Backtest teórico'
+  const isInsufficientHistory = data?.status === 'insufficient_history' || metricsStatus === 'NO_TRADES' || metricsStatus === 'INSUFFICIENT_DATA'
+  const shouldHideMetrics = isInsufficientHistory && (!hasMetrics || tradeCount === 0)
+
   return (
     <div className="performance-summary">
-      <h2>Resumen de Performance (Backtesting)</h2>
+      <div className="performance-header">
+        <h2>Resumen de Performance</h2>
+        {/* FE-PERF-01: Show data source and time range */}
+        <div className="performance-metadata">
+          <div className="metadata-item">
+            <span className="metadata-label">Fuente:</span>
+            <span className="metadata-value">{dataSource}</span>
+          </div>
+          {periodStart && periodEnd && (
+            <div className="metadata-item">
+              <span className="metadata-label">Período:</span>
+              <span className="metadata-value">{periodStart} - {periodEnd}</span>
+            </div>
+          )}
+          {tradeCount !== undefined && tradeCount !== null && (
+            <div className="metadata-item">
+              <span className="metadata-label">Trades:</span>
+              <span className="metadata-value">{tradeCount}</span>
+            </div>
+          )}
+        </div>
+      </div>
       
       {/* Pipeline Running Banner - Show when pipeline is active */}
       {isPipelineRunning && (
@@ -479,7 +508,43 @@ function PerformanceSummary() {
           </div>
         </div>
       )}
-      {hasMetrics ? (
+      {/* FE-PERF-01: Show prominent alert when insufficient data or fallback, and hide empty metrics */}
+      {shouldHideMetrics ? (
+        <div className="insufficient-data-alert" role="alert" aria-live="assertive" style={{
+          padding: '1.5rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          border: '2px solid rgba(239, 68, 68, 0.5)',
+          borderRadius: '0.5rem',
+          marginBottom: '1rem',
+          textAlign: 'center',
+        }}>
+          <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⚠️</div>
+          <h3 style={{ margin: '0 0 0.75rem 0', color: '#ef4444', fontSize: '1.25rem', fontWeight: 600 }}>
+            Datos Insuficientes para Mostrar Métricas
+          </h3>
+          <p style={{ margin: '0 0 0.75rem 0', fontSize: '1rem', color: 'rgba(255, 255, 255, 0.9)', lineHeight: '1.6' }}>
+            {degradedMessage}
+          </p>
+          {fallbackReason && (
+            <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
+              <strong>Razón:</strong> {fallbackReason}
+            </p>
+          )}
+          {noTradeRootCause && (
+            <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+              <strong>Causa raíz:</strong> {noTradeRootCause}
+            </p>
+          )}
+          {tradeCount !== undefined && tradeCount !== null && (
+            <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+              <strong>Trades en backtest:</strong> {tradeCount}
+            </p>
+          )}
+          <p style={{ margin: '0.75rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.7)', fontStyle: 'italic' }}>
+            Las métricas no se mostrarán hasta que haya suficientes trades simulados en el backtest.
+          </p>
+        </div>
+      ) : hasMetrics ? (
         <>
           {shouldDeemphasizeKPIs && (
             <div className="metrics-degraded-warning" role="alert" aria-live="assertive" style={{

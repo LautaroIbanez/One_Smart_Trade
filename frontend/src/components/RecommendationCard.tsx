@@ -41,11 +41,65 @@ function RecommendationCard() {
   const isGenerating = generateRecommendation.isPending
   const generationError = generateRecommendation.error as any
 
+  // FE-SIGNAL-01: Check if backend is processing (status 202 or processing state)
+  const isProcessing = data?.status === 'processing' || data?.processing === true || (data as any)?.pipeline?.running === true
+
   if (isLoading || isRefetching || isRetrying || isGenerating) {
     return (
       <div className="recommendation-card loading" role="status" aria-live="polite">
         <div className="loading-spinner">
           {isGenerating ? 'Generando recomendación...' : isRetrying ? 'Reintentando...' : 'Cargando recomendación...'}
+        </div>
+      </div>
+    )
+  }
+
+  // FE-SIGNAL-01: Show explicit processing state when backend returns 202
+  if (isProcessing) {
+    const pipelineStatus = (data as any)?.pipeline
+    return (
+      <div className="recommendation-card processing-state" role="status" aria-live="polite">
+        <div className="processing-header">
+          <h2>⏳ Generando Recomendación</h2>
+        </div>
+        <div className="processing-content">
+          <p className="processing-message">
+            El backend está procesando datos y generando la recomendación del día.
+            {pipelineStatus?.stage && (
+              <> Etapa actual: <strong>{pipelineStatus.stage}</strong></>
+            )}
+          </p>
+          {pipelineStatus?.progress !== undefined && (
+            <div className="processing-progress">
+              <div className="progress-bar">
+                <div 
+                  className="progress-fill" 
+                  style={{ width: `${Math.min(100, Math.max(0, pipelineStatus.progress))}%` }}
+                  role="progressbar"
+                  aria-valuenow={pipelineStatus.progress}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                />
+              </div>
+              <span className="progress-text">{pipelineStatus.progress}%</span>
+            </div>
+          )}
+          <p className="processing-hint">
+            💡 <strong>Sugerencia:</strong> Esta página se actualizará automáticamente cuando la recomendación esté lista.
+            También puedes usar el botón de refrescar para verificar el estado.
+          </p>
+          <div className="processing-actions" style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <button 
+              onClick={handleRetry} 
+              type="button" 
+              aria-label="Verificar estado de la recomendación"
+              disabled={isRetrying}
+              className="guardrail-retry-button"
+              style={{ backgroundColor: '#3b82f6' }}
+            >
+              {isRetrying ? 'Verificando...' : '🔄 Verificar Estado'}
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -187,38 +241,82 @@ function RecommendationCard() {
   const backtestNoTrades = (data as any)?.risk_metrics?.backtest_no_trades === true
   const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades
 
-  // Type guard: Check if this is a fallback response (no_data) without required fields
+  // Type guard: Check if this is a fallback response without required fields
   const isFallbackResponse = (data: any): boolean => {
-    return data?.status === 'no_data' || 
+    return data?.status === 'no_signal_today' || 
+           data?.status === 'generation_failed' ||
+           data?.status === 'no_data' || 
            !data?.signal || 
            typeof data?.current_price !== 'number' || 
            !data?.entry_range || 
            !data?.stop_loss_take_profit
   }
 
-  // Handle no_data status early - before accessing fields that don't exist in fallback response
-  if (data.status === 'no_data' || isFallbackResponse(data)) {
+  // Handle fallback statuses early - before accessing fields that don't exist in fallback response
+  if (data.status === 'no_signal_today' || data.status === 'generation_failed' || data.status === 'no_data' || isFallbackResponse(data)) {
+    // FE-SIGNAL-01: Extract last available signal date prominently
+    const lastSignalDate = data.latest_available_date || data.latest_available_timestamp
+    const lastSignalDateFormatted = lastSignalDate 
+      ? new Date(lastSignalDate).toLocaleDateString('es-ES', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null
+    const daysSinceLastSignal = data.data_recency?.days_since_release
+
     return (
       <div className="recommendation-card no-data-state">
         <div className="no-data-header">
-          <h2>📊 Sin Recomendación Disponible</h2>
+          <h2>
+            {data.status === 'no_signal_today' 
+              ? '📊 Hoy No Hay Señal Disponible'
+              : data.status === 'generation_failed'
+              ? '❌ Error al Generar Señal'
+              : '📊 Sin Señal Diaria Disponible'}
+          </h2>
         </div>
         <div className="no-data-content">
           <p className="no-data-message">
-            {data.reason || 'Aún no se ha generado una recomendación para hoy.'}
+            {data.status === 'no_signal_today'
+              ? (data.reason || 'Hoy aún no se ha generado una señal diaria. Se mostrará aquí cuando el pipeline la calcule.')
+              : data.status === 'generation_failed'
+              ? (data.reason || 'La generación de la señal de hoy ha fallado. Revisa los logs del backend para más detalles.')
+              : (data.reason || 'Aún no se ha generado una recomendación para hoy.')}
           </p>
-          {data.data_recency && (
+          {/* FE-SIGNAL-01: Show last available signal date prominently */}
+          {lastSignalDateFormatted && (
+            <div className="last-signal-info" style={{
+              marginTop: '1rem',
+              padding: '1rem',
+              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+              border: '1px solid rgba(59, 130, 246, 0.3)',
+              borderRadius: '0.5rem',
+            }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#3b82f6', fontSize: '0.875rem' }}>
+                📅 Última señal disponible:
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '1rem', fontWeight: 500 }}>
+                {lastSignalDateFormatted}
+                {daysSinceLastSignal !== undefined && daysSinceLastSignal > 0 && (
+                  <span style={{ fontSize: '0.875rem', color: '#94a3b8', marginLeft: '0.5rem' }}>
+                    (hace {daysSinceLastSignal} {daysSinceLastSignal === 1 ? 'día' : 'días'})
+                  </span>
+                )}
+              </p>
+            </div>
+          )}
+          {data.data_recency && !lastSignalDateFormatted && (
             <div className="no-data-details">
               {data.data_recency.status === 'missing' ? (
                 <p className="no-data-hint">
                   No hay recomendaciones generadas aún. Las recomendaciones se generan automáticamente todos los días a las 12:00 UTC.
                 </p>
-              ) : data.data_recency.status === 'stale' && data.data_recency.days_since_release !== undefined ? (
+              ) : data.data_recency.status === 'stale' && daysSinceLastSignal !== undefined ? (
                 <p className="no-data-hint">
-                  La última recomendación disponible es de hace {data.data_recency.days_since_release} día(s).
-                  {data.latest_available_date && (
-                    <> Última disponible: {new Date(data.latest_available_date).toLocaleDateString('es-ES')}</>
-                  )}
+                  La última señal disponible es de hace {daysSinceLastSignal} día(s).
                 </p>
               ) : null}
             </div>

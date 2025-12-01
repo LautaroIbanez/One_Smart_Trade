@@ -32,17 +32,22 @@ interface RefreshToast {
   message: string
 }
 
+type ChartInterval = '1h' | '4h' | '1d'
+
 function Dashboard() {
   const queryClient = useQueryClient()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshProgress, setRefreshProgress] = useState<number>(0)
   const [toast, setToast] = useState<RefreshToast | null>(null)
   const toastTimeoutRef = useRef<number | null>(null)
+  // FE-CHART-01: Add interval selector state
+  const [selectedInterval, setSelectedInterval] = useState<ChartInterval>('1h')
   const { data, isLoading: isRecommendationLoading, error: recommendationError, refetch: refetchRecommendation } = useTodayRecommendation()
+  // FE-CHART-01: Use selected interval instead of hardcoded '1h'
   // FE-DATA-04: Market data query is now decoupled from recommendation timestamp
   // The query key no longer includes recommendationTimestamp, allowing independent refresh
   // Market data will refresh every 60s independently via refetchInterval
-  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData('1h', null, 200)
+  const { data: marketData, isLoading: isMarketLoading, error: marketError, refetch: refetchMarket } = useMarketData(selectedInterval, null, 200)
   
   // FE-DATA-04: Monitor market data as_of to detect when new candles arrive
   // Track previous as_of to detect changes - the query will automatically refetch via refetchInterval
@@ -330,6 +335,36 @@ function Dashboard() {
     })
   }, [marketData])
 
+  // FE-CHART-01: Auto-refresh logic to keep last candle aligned with latest_open_time
+  useEffect(() => {
+    if (!marketData?.metadata?.as_of || !chartData.length) return
+
+    const apiLatestTimestamp = marketData.metadata.as_of
+    const latestCandle = chartData[chartData.length - 1]
+    const latestCandleTimestamp = latestCandle?.timestamp
+
+    if (!latestCandleTimestamp) return
+
+    // Check if latest candle matches API latest timestamp (within 1 minute tolerance)
+    const latestCandleMs = new Date(latestCandleTimestamp).getTime()
+    const apiLatestMs = new Date(apiLatestTimestamp).getTime()
+    const timeDiffMs = Math.abs(apiLatestMs - latestCandleMs)
+
+    // If API has newer data than what's shown in chart, trigger refresh
+    if (apiLatestMs > latestCandleMs && timeDiffMs > 60000) {
+      console.debug('[FE-CHART-01] API has newer data, refreshing chart', {
+        latestCandleTimestamp,
+        apiLatestTimestamp,
+        timeDiffMs,
+        interval: selectedInterval,
+      })
+      // Invalidate and refetch market data for the selected interval
+      queryClient.invalidateQueries({ queryKey: ['market', selectedInterval] }).then(() => {
+        refetchMarket()
+      })
+    }
+  }, [marketData?.metadata?.as_of, chartData, selectedInterval, queryClient, refetchMarket])
+
   return (
     <AppLayout>
       <div className="dashboard">
@@ -394,7 +429,39 @@ function Dashboard() {
           <RecommendationCard />
           {/* Price Chart Section with Error/Loading Handling */}
           <section className="price-chart" aria-label="Gráfico de precio con niveles recomendados">
-            <h2>Precio vs Niveles Recomendados</h2>
+            <div className="price-chart-header">
+              <h2>Precio vs Niveles Recomendados</h2>
+              {/* FE-CHART-01: Interval selector */}
+              <div className="interval-selector" role="group" aria-label="Seleccionar intervalo de tiempo">
+                <button
+                  type="button"
+                  className={`interval-button ${selectedInterval === '1h' ? 'active' : ''}`}
+                  onClick={() => setSelectedInterval('1h')}
+                  aria-pressed={selectedInterval === '1h'}
+                  aria-label="Intervalo de 1 hora"
+                >
+                  1h
+                </button>
+                <button
+                  type="button"
+                  className={`interval-button ${selectedInterval === '4h' ? 'active' : ''}`}
+                  onClick={() => setSelectedInterval('4h')}
+                  aria-pressed={selectedInterval === '4h'}
+                  aria-label="Intervalo de 4 horas"
+                >
+                  4h
+                </button>
+                <button
+                  type="button"
+                  className={`interval-button ${selectedInterval === '1d' ? 'active' : ''}`}
+                  onClick={() => setSelectedInterval('1d')}
+                  aria-pressed={selectedInterval === '1d'}
+                  aria-label="Intervalo de 1 día"
+                >
+                  1d
+                </button>
+              </div>
+            </div>
             {isRecommendationLoading || isMarketLoading ? (
               <LoadingState message="Cargando datos de mercado y recomendación..." />
             ) : (recommendationError || marketError) && !isProcessingError(recommendationError || marketError) ? (
@@ -404,7 +471,7 @@ function Dashboard() {
                 onRetry={() => {
                   if (recommendationError) refetchRecommendation()
                   if (marketError) {
-                    queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
+                    queryClient.invalidateQueries({ queryKey: ['market', selectedInterval] }).then(() => refetchMarket())
                   }
                 }}
               />
@@ -419,7 +486,7 @@ function Dashboard() {
                   onClick={() => {
                     if (recommendationError) refetchRecommendation()
                     if (marketError) {
-                      queryClient.invalidateQueries({ queryKey: ['market', '1h'] }).then(() => refetchMarket())
+                      queryClient.invalidateQueries({ queryKey: ['market', selectedInterval] }).then(() => refetchMarket())
                     }
                   }}
                   style={{ marginTop: '1rem' }}
@@ -454,13 +521,13 @@ function Dashboard() {
                     message={`Datos del gráfico tienen ${Math.round(marketData.metadata.age_minutes)} minutos de antigüedad. Se actualizarán automáticamente cuando haya nuevas velas.`}
                   />
                 )}
-                {/* FE-UX-02: Display data staleness indicator near chart */}
+                {/* FE-CHART-01: Display data staleness indicator with selected interval */}
                 <DataStalenessIndicator
                   asOf={marketData?.metadata?.as_of}
                   ageMinutes={marketData?.metadata?.age_minutes}
                   isStale={marketData?.status === 'data_stale'}
                   status={marketData?.status}
-                  interval="1h"
+                  interval={selectedInterval}
                 />
                 <PriceLevelsChart
                   data={chartData}
@@ -475,6 +542,7 @@ function Dashboard() {
                   }
                   asOf={marketData?.metadata?.as_of}
                   isStale={marketData?.status === 'data_stale'}
+                  interval={selectedInterval}
                 />
               </>
             ) : data && !isTradableRecommendation(data) ? (

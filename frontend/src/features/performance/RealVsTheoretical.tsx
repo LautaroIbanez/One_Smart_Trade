@@ -150,6 +150,35 @@ export function RealVsTheoretical() {
   }
 
   // If we have degraded data but no equity series, show placeholder
+  // Explicitly handle insufficient_history state (not enough simulated trades)
+  if (data?.status === 'insufficient_history') {
+    return (
+      <section className="real-vs-theoretical">
+        <header>
+          <h2>Ejecución Real vs. Teórica</h2>
+        </header>
+        <div className="no-data-placeholder" style={{
+          padding: '2rem',
+          textAlign: 'center',
+          color: 'rgba(255, 255, 255, 0.8)',
+        }}>
+          <p style={{ margin: 0, fontWeight: 600, color: '#f59e0b', marginBottom: '0.5rem', fontSize: '1rem' }}>
+            Historial insuficiente de trades simulados
+          </p>
+          <p style={{ margin: 0, fontSize: '0.875rem' }}>
+            El backtest aún no tiene suficientes operaciones simuladas (trades) para calcular métricas robustas de ejecución real vs. teórica.
+          </p>
+          {typeof tradeCount === 'number' && (
+            <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', opacity: 0.8 }}>
+              Trades simulados actuales: {tradeCount}
+            </p>
+          )}
+        </div>
+      </section>
+    )
+  }
+
+  // If we have degraded data but no equity series, show placeholder
   if (isDegraded && equitySeries.length === 0) {
     return (
       <section className="real-vs-theoretical">

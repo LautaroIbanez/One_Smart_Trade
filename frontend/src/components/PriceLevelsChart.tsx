@@ -16,6 +16,7 @@ import {
   ZAxis,
 } from 'recharts'
 import type { MarketPoint } from '@/types'
+import './PriceLevelsChart.css'
 
 type Props = {
   data: MarketPoint[]
@@ -26,6 +27,7 @@ type Props = {
   tpProbability?: number
   asOf?: string | null
   isStale?: boolean
+  interval?: string
 }
 
 type AnchorPoint = {
@@ -66,7 +68,7 @@ const buildAnchorPoints = (points: MarketPoint[]): AnchorPoint[] => {
   return anchors
 }
 
-export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, currentPrice, tpProbability, asOf, isStale }: Props) {
+export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, currentPrice, tpProbability, asOf, isStale, interval = '1h' }: Props) {
   // FE-CHART-01: Filter data without date-based exclusions - only filter invalid entries
   const filteredData = useMemo(
     () => {
@@ -214,7 +216,7 @@ export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, curre
             strokeWidth={2.2}
             dot={{ r: 2.5, fill: '#bae6fd', stroke: '#0ea5e9', strokeWidth: 1.2 }}
             activeDot={{ r: 4.5, fill: '#0ea5e9', stroke: '#bae6fd', strokeWidth: 1.5 }}
-            name="Close (1h)"
+            name={`Close (${interval})`}
           />
 
           <Line
@@ -256,9 +258,10 @@ export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, curre
           {' — '}
           {formatTimestamp(latestTimestamp)}
         </p>
+        {/* FE-CHART-01: Make metadata as_of more visible */}
         {asOf && (
           <p className={isStale ? 'data-stale-badge' : 'data-fresh-badge'}>
-            Datos actualizados:{' '}
+            <span className="metadata-label">Última vela ({interval}):</span>{' '}
             <strong>{formatTimestamp(asOf)}</strong>
             {isStale && ' ⚠️ (Desactualizado)'}
           </p>

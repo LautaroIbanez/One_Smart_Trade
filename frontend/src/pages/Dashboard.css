@@ -187,3 +187,76 @@
   }
 }
 
+/* FE-CHART-01: Interval selector styles */
+.price-chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.price-chart-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.interval-selector {
+  display: flex;
+  gap: 0.5rem;
+  background-color: var(--bg-secondary, #1e293b);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  border-radius: 0.5rem;
+  padding: 0.25rem;
+}
+
+.interval-button {
+  padding: 0.5rem 1rem;
+  background-color: transparent;
+  color: var(--text-secondary, #cbd5e1);
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background-color 0.2s, color 0.2s;
+  min-width: 3rem;
+}
+
+.interval-button:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary, #f1f5f9);
+}
+
+.interval-button.active {
+  background-color: var(--accent-primary, #3b82f6);
+  color: white;
+}
+
+.interval-button.active:hover {
+  background-color: #2563eb;
+}
+
+.interval-button:focus-visible {
+  outline: 2px solid var(--accent-primary, #3b82f6);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .price-chart-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .interval-selector {
+    width: 100%;
+    justify-content: stretch;
+  }
+  
+  .interval-button {
+    flex: 1;
+  }
+}
+
