@@ -1,0 +1,149 @@
+/* FE-CHART-02: DataStalenessIndicator component styles */
+
+.data-staleness-indicator {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background-color: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border-color, #333333);
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-primary, #ffffff);
+}
+
+.staleness-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+  line-height: 1;
+}
+
+.staleness-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0; /* Prevent overflow */
+}
+
+.staleness-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.staleness-label strong {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.staleness-interval {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #a0a0a0);
+  font-weight: 500;
+}
+
+.staleness-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary, #a0a0a0);
+}
+
+.staleness-age {
+  display: inline-block;
+}
+
+.staleness-timestamp {
+  display: inline-block;
+}
+
+/* State modifiers */
+
+/* Fresh state - green/success */
+.data-staleness-indicator.staleness-fresh {
+  background-color: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  border-left: 4px solid var(--accent-success, #10b981);
+}
+
+.data-staleness-indicator.staleness-fresh .staleness-label strong {
+  color: var(--accent-success, #10b981);
+}
+
+/* Recent state - blue/info */
+.data-staleness-indicator.staleness-recent {
+  background-color: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.3);
+  border-left: 4px solid var(--accent-primary, #3b82f6);
+}
+
+.data-staleness-indicator.staleness-recent .staleness-label strong {
+  color: var(--accent-primary, #3b82f6);
+}
+
+/* Aging state - yellow/warning */
+.data-staleness-indicator.staleness-aging {
+  background-color: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  border-left: 4px solid var(--accent-warning, #f59e0b);
+}
+
+.data-staleness-indicator.staleness-aging .staleness-label strong {
+  color: var(--accent-warning, #f59e0b);
+}
+
+/* Stale state - red/danger */
+.data-staleness-indicator.staleness-stale {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  border-left: 4px solid var(--accent-danger, #ef4444);
+}
+
+.data-staleness-indicator.staleness-stale .staleness-label strong {
+  color: var(--accent-danger, #ef4444);
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .data-staleness-indicator {
+    padding: 0.625rem 0.75rem;
+    font-size: 0.8125rem;
+  }
+
+  .staleness-icon {
+    font-size: 1.125rem;
+  }
+
+  .staleness-label {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+
+  .staleness-details {
+    font-size: 0.6875rem;
+  }
+}
+
+/* Ensure proper spacing and prevent layout regressions */
+.data-staleness-indicator + .data-staleness-indicator {
+  margin-top: 0.5rem;
+}
+
+/* Accessibility: Ensure sufficient contrast */
+@media (prefers-contrast: high) {
+  .data-staleness-indicator {
+    border-width: 2px;
+  }
+
+  .staleness-details {
+    color: var(--text-primary, #ffffff);
+  }
+}
+
