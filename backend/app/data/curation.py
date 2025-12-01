@@ -11,7 +11,18 @@ from app.core.exceptions import DataFreshnessError, DataGapError
 from app.core.logging import logger
 from .ingestion import INTERVALS
 from .quality import CrossVenueReconciler, DataQualityPipeline
-from .storage import CURATED_ROOT, RAW_ROOT, ensure_dirs, ensure_partition_dirs, get_curated_path, get_raw_path, read_parquet, write_parquet
+from .storage import (
+    CURATED_ROOT,
+    RAW_ROOT,
+    ensure_dirs,
+    ensure_partition_dirs,
+    get_curated_path,
+    get_raw_path,
+    ParquetSchemaError,
+    read_parquet,
+    validate_parquet_schema,
+    write_parquet,
+)
 from .universe import AssetSpec, MarketUniverseConfig
 
 
@@ -78,6 +89,23 @@ class DataCuration:
             raw_dir = RAW_ROOT / interval
             curated_path = CURATED_ROOT / interval / "latest.parquet"
 
+        # BE-DATA-02: Validate partition structure
+        if venue and symbol:
+            partition_dir = get_curated_path(venue, symbol, interval).parent
+            if not partition_dir.exists():
+                logger.warning(
+                    f"Partition directory does not exist: {partition_dir}",
+                    extra={
+                        "venue": venue,
+                        "symbol": symbol,
+                        "interval": interval,
+                        "partition_dir": str(partition_dir),
+                        "actionable_error": True,
+                    },
+                )
+                # Create partition directory - this is not an error, just a warning
+                partition_dir.mkdir(parents=True, exist_ok=True)
+        
         files = sorted(raw_dir.glob("*.parquet"))
         if not files:
             return {
@@ -89,13 +117,69 @@ class DataCuration:
             }
 
         selected = files[-lookback_files:]
-        frames = [read_parquet(path) for path in selected]
+        # BE-DATA-02: Validate raw file schemas before concatenation
+        raw_schemas = []
+        for path in selected:
+            try:
+                # Quick schema check on raw files
+                sample_df = read_parquet(path)
+                if sample_df.empty:
+                    logger.warning(
+                        f"Empty raw file detected: {path}",
+                        extra={"path": str(path), "interval": interval},
+                    )
+                    continue
+                raw_schemas.append({
+                    "path": str(path),
+                    "columns": list(sample_df.columns),
+                    "rows": len(sample_df),
+                })
+            except Exception as exc:
+                logger.error(
+                    f"Failed to read raw file for schema validation: {path}",
+                    extra={
+                        "path": str(path),
+                        "error": str(exc),
+                        "interval": interval,
+                        "actionable_error": True,
+                    },
+                )
+                # Continue with other files, but log the error
+        
+        # Read and concatenate frames
+        frames = []
+        for path in selected:
+            try:
+                frame = read_parquet(path)
+                if not frame.empty:
+                    frames.append(frame)
+            except Exception as exc:
+                logger.error(
+                    f"Failed to read raw file: {path}",
+                    extra={
+                        "path": str(path),
+                        "error": str(exc),
+                        "interval": interval,
+                        "actionable_error": True,
+                    },
+                )
+                # Continue with other files
+        
+        if not frames:
+            return {
+                "status": "error",
+                "interval": interval,
+                "error": "No valid raw files could be read",
+                "venue": venue,
+                "symbol": symbol,
+            }
+        
         df = pd.concat(frames).drop_duplicates(subset="open_time").reset_index(drop=True)
         if df.empty:
             return {
                 "status": "no_data",
                 "interval": interval,
-                "error": "Raw dataframe empty",
+                "error": "Raw dataframe empty after concatenation",
                 "venue": venue,
                 "symbol": symbol,
             }
@@ -262,7 +346,53 @@ class DataCuration:
             df["timestamp"] = _convert_to_datetime_utc(df["timestamp"])
 
         curated_path.parent.mkdir(parents=True, exist_ok=True)
-        write_parquet(
+        
+        # BE-DATA-02: Validate schema before writing curated parquet
+        # Required columns for curated data (includes indicators)
+        required_columns = ["open_time", "open", "high", "low", "close", "volume"]
+        try:
+            validation_result = validate_parquet_schema(
+                df,
+                curated_path,
+                required_columns=required_columns,
+                strict=True,  # Raise error on schema issues
+            )
+            if validation_result.get("issues"):
+                logger.warning(
+                    f"Schema validation warnings for {interval}",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "validation_issues": validation_result["issues"],
+                        "existing_schema": validation_result.get("existing_schema"),
+                        "new_schema": validation_result.get("new_schema"),
+                    },
+                )
+        except ParquetSchemaError as exc:
+            # Log actionable error and halt curation
+            logger.error(
+                f"Parquet schema validation failed for curated {interval}: {exc.message}",
+                extra={
+                    "interval": interval,
+                    "venue": venue,
+                    "symbol": symbol,
+                    "error": exc.message,
+                    "details": exc.details,
+                    "actionable_error": True,
+                    "curation_halted": True,
+                },
+            )
+            return {
+                "status": "error",
+                "interval": interval,
+                "error": f"Schema validation failed: {exc.message}",
+                "details": exc.details,
+                "venue": venue,
+                "symbol": symbol,
+            }
+        
+        write_result = write_parquet(
             df,
             curated_path,
             metadata={
@@ -272,7 +402,106 @@ class DataCuration:
                 "venue": venue,
                 "symbol": symbol,
             },
+            validate_schema=True,  # Double-check before writing
+            required_columns=required_columns,
         )
+        
+        # BE-DATA-02: Validate parquet integrity after writing
+        if curated_path.exists():
+            try:
+                # Read back and verify we can read what we wrote
+                verification_df = read_parquet(curated_path)
+                if len(verification_df) != len(df):
+                    logger.error(
+                        f"Parquet integrity check failed: row count mismatch after write",
+                        extra={
+                            "interval": interval,
+                            "venue": venue,
+                            "symbol": symbol,
+                            "expected_rows": len(df),
+                            "actual_rows": len(verification_df),
+                            "path": str(curated_path),
+                            "actionable_error": True,
+                        },
+                    )
+                    return {
+                        "status": "error",
+                        "interval": interval,
+                        "error": f"Parquet integrity check failed: row count mismatch (expected {len(df)}, got {len(verification_df)})",
+                        "venue": venue,
+                        "symbol": symbol,
+                    }
+                
+                # Verify required columns exist
+                missing_cols = [col for col in required_columns if col not in verification_df.columns]
+                if missing_cols:
+                    logger.error(
+                        f"Parquet integrity check failed: missing columns after write",
+                        extra={
+                            "interval": interval,
+                            "venue": venue,
+                            "symbol": symbol,
+                            "missing_columns": missing_cols,
+                            "path": str(curated_path),
+                            "actionable_error": True,
+                        },
+                    )
+                    return {
+                        "status": "error",
+                        "interval": interval,
+                        "error": f"Parquet integrity check failed: missing columns {missing_cols}",
+                        "venue": venue,
+                        "symbol": symbol,
+                    }
+                
+                logger.debug(
+                    f"Parquet integrity check passed for {interval}",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "rows": len(verification_df),
+                        "columns": list(verification_df.columns),
+                    },
+                )
+            except Exception as exc:
+                logger.error(
+                    f"Parquet integrity check failed: could not read back written file",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "error": str(exc),
+                        "path": str(curated_path),
+                        "actionable_error": True,
+                    },
+                )
+                return {
+                    "status": "error",
+                    "interval": interval,
+                    "error": f"Parquet integrity check failed: {exc}",
+                    "venue": venue,
+                    "symbol": symbol,
+                }
+        else:
+            logger.error(
+                f"Parquet file was not created: {curated_path}",
+                extra={
+                    "interval": interval,
+                    "venue": venue,
+                    "symbol": symbol,
+                    "path": str(curated_path),
+                    "actionable_error": True,
+                },
+            )
+            return {
+                "status": "error",
+                "interval": interval,
+                "error": f"Parquet file was not created: {curated_path}",
+                "venue": venue,
+                "symbol": symbol,
+            }
+        
         result = {
             "status": "success",
             "interval": interval,
@@ -283,6 +512,8 @@ class DataCuration:
             "quality_stats": quality_stats,
             "discrepancies": discrepancies,
             "quality_pass": True,
+            "schema_validated": True,
+            "integrity_verified": True,
         }
         
         # Calculate latest_open_time from the dataframe

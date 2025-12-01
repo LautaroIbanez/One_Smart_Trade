@@ -495,10 +495,22 @@ async def get_performance_summary(
                     # Minimal metrics only - no fallback/synthetic values
                     metrics_status = "NO_TRADES"
             else:
-                # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
+                # BE-DEV-01: For non-zero trades but missing status, use PASS if metrics are real
+                # DEV_FALLBACK should only be used when explicitly set, not as a default for missing status
                 from app.core.config import settings
                 dev_mode = settings.is_dev_mode()
-                if dev_mode:
+                # Check if metrics contain real calculated values (not just fallback/synthetic)
+                has_real_metrics = bool(
+                    metrics_dict.get("cagr") is not None and metrics_dict.get("cagr") != 0.0
+                    or metrics_dict.get("sharpe_ratio") is not None and metrics_dict.get("sharpe_ratio") != 0.0
+                    or metrics_dict.get("max_drawdown") is not None and metrics_dict.get("max_drawdown") != 0.0
+                    or metrics_dict.get("total_return") is not None and metrics_dict.get("total_return") != 0.0
+                )
+                if has_real_metrics:
+                    # Real metrics exist - use PASS status (dev mode doesn't block metrics)
+                    metrics_status = "PASS"
+                elif dev_mode:
+                    # In dev mode without real metrics, use DEV_FALLBACK
                     metrics_status = "DEV_FALLBACK"
                 else:
                     metrics_status = "FALLBACK_NO_TRADES"  # Conservative fallback
@@ -656,6 +668,11 @@ async def get_performance_summary(
                 response_dict["conservative_expected_return"] = conservative_expected_return
                 response_dict["conservative_estimates_reason"] = metrics_dict.get("conservative_estimates_reason")
             
+            # BE-STRAT-01: Include per-signal metrics in response for traceability
+            per_signal_metrics = metrics_dict.get("per_signal_metrics")
+            if per_signal_metrics:
+                response_dict["per_signal_metrics"] = per_signal_metrics
+            
             return response_dict
         
         # Extract metrics_status and related fields from result
@@ -697,6 +714,11 @@ async def get_performance_summary(
         if demo_metrics_used:
             response_dict["demo_metrics"] = True
             response_dict["demo_metrics_cause"] = demo_metrics_cause
+        
+        # BE-STRAT-01: Include per-signal metrics in response for traceability
+        per_signal_metrics = metrics.per_signal_metrics if hasattr(metrics, "per_signal_metrics") else result.get("metrics", {}).get("per_signal_metrics")
+        if per_signal_metrics:
+            response_dict["per_signal_metrics"] = per_signal_metrics
         
         # Include signal_counts and rejected_orders_count when metrics_status ≠ PASS (for observability dashboard)
         if metrics_status and metrics_status != "PASS":
@@ -762,6 +784,27 @@ async def get_monitoring_metrics():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy-rules")
+async def get_strategy_rules():
+    """
+    BE-STRAT-01: Get centralized documentation of all strategy entry and exit rules.
+    
+    Returns a comprehensive registry of all strategy rules, enabling traceability
+    of trades back to their triggering conditions.
+    """
+    from app.strategies.rules_registry import get_rules_registry
+    
+    registry = get_rules_registry()
+    documentation = registry.document_rules()
+    
+    return {
+        "status": "success",
+        "rules": documentation,
+        "total_rules": documentation["total_rules"],
+        "strategies": list(documentation["strategies"].keys()),
+    }
 
 
 @router.get("/monthly")

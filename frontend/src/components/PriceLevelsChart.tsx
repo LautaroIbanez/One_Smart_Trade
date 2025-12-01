@@ -67,15 +67,29 @@ const buildAnchorPoints = (points: MarketPoint[]): AnchorPoint[] => {
 }
 
 export function PriceLevelsChart({ data, stopLoss, takeProfit, entryRange, currentPrice, tpProbability, asOf, isStale }: Props) {
+  // FE-CHART-01: Filter data without date-based exclusions - only filter invalid entries
   const filteredData = useMemo(
-    () =>
-      data.filter(
+    () => {
+      const valid = data.filter(
         (point) =>
           typeof point.timestamp === 'string' &&
           typeof point.close === 'number' &&
           !Number.isNaN(point.close),
-      ),
-    [data],
+      )
+      // FE-CHART-01: Log latest candle for validation
+      if (valid.length > 0 && asOf) {
+        const latest = valid[valid.length - 1]
+        console.debug('[FE-CHART-01] PriceLevelsChart data', {
+          totalPoints: data.length,
+          validPoints: valid.length,
+          latestTimestamp: latest.timestamp,
+          asOf,
+          match: latest.timestamp === asOf || (latest.timestamp && asOf && new Date(latest.timestamp).getTime() === new Date(asOf).getTime()),
+        })
+      }
+      return valid
+    },
+    [data, asOf],
   )
 
   const latestPoint = filteredData[filteredData.length - 1]

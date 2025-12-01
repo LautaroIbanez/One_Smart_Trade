@@ -430,6 +430,7 @@ export const useSignalPerformance = (lookaheadDays: number = 5, limit: number = 
 
 export const useMarketData = (interval: Interval, recommendationTimestamp?: string | null, window: number = 200) => {
   // FE-DATA-04: Decouple market query from recommendation timestamp
+  // FE-CHART-01: Ensure cache refreshes after backend ingestion
   // Use a stable query key based only on interval and window
   // The query will refetch based on staleTime and refetchInterval independently
   return useQuery({
@@ -439,22 +440,39 @@ export const useMarketData = (interval: Interval, recommendationTimestamp?: stri
         params: { window },
         signal 
       })
+      // FE-CHART-01: Log latest candle timestamp from API for validation
+      if (data?.data && Array.isArray(data.data) && data.data.length > 0) {
+        const latestCandle = data.data[data.data.length - 1]
+        const latestTimestamp = latestCandle.timestamp ?? latestCandle.open_time
+        const apiLatestTimestamp = data?.metadata?.as_of
+        console.debug('[FE-CHART-01] Market data fetched', {
+          interval,
+          window,
+          candlesReceived: data.data.length,
+          latestCandleTimestamp: latestTimestamp,
+          apiLatestTimestamp: apiLatestTimestamp,
+          status: data.status,
+        })
+      }
       return data
     },
     staleTime: 60000, // FE-DATA-04: Reduced to 1 minute to catch new candles faster
+    // FE-CHART-01: Reduced staleTime to ensure fresh data after ingestion (backend cache is 60s)
     refetchInterval: (query) => {
       const data = query.state.data as any
       const status = data?.status
       const isStale = query.isStale()
       const cacheAge = query.state.dataUpdatedAt ? Date.now() - query.state.dataUpdatedAt : undefined
       
-      // FE-DATA-04: Poll more aggressively if data is stale or if status indicates processing
+      // FE-CHART-01: Poll more aggressively if data is stale or if status indicates processing
+      // This ensures chart updates quickly after backend ingestion completes
       if (status === 'data_stale' || status === 'processing') {
         return 30000 // Poll every 30s when stale/processing
       }
       
       // FE-DATA-04: Default polling every 60s to catch new candles independently of recommendation
-      // This ensures the chart updates even if recommendation doesn't change
+      // FE-CHART-01: This ensures the chart updates even if recommendation doesn't change
+      // Backend ingestion runs every 15 minutes, so 60s polling catches new data within 1-2 minutes
       const defaultPolling = 60000 // 1 minute
       const statusBasedPolling = getPollingInterval(status, isStale, cacheAge)
       
@@ -462,8 +480,10 @@ export const useMarketData = (interval: Interval, recommendationTimestamp?: stri
       return statusBasedPolling !== false ? statusBasedPolling : defaultPolling
     },
     // FE-DATA-04: Refetch when window focus returns to catch up on missed updates
+    // FE-CHART-01: This ensures fresh data when user returns to the app after ingestion
     refetchOnWindowFocus: true,
     // FE-DATA-04: Refetch when reconnecting to catch up on missed updates
+    // FE-CHART-01: This ensures fresh data after network reconnection
     refetchOnReconnect: true,
   })
 }

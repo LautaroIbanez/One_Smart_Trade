@@ -302,7 +302,66 @@ class PerformanceService:
                 }
                 return self._cache_error_response(error_response)
 
+            # BE-PERF-01: Log trade count before metrics calculation to diagnose FALLBACK_NO_TRADES
+            trades = result.get("trades", [])
+            trade_count_before_metrics = len(trades) if trades else 0
+            logger.info(
+                "Backtest result before metrics calculation",
+                extra=sanitize_log_extra({
+                    "trade_count": trade_count_before_metrics,
+                    "has_trades_key": "trades" in result,
+                    "trades_type": type(trades).__name__,
+                    "start_date": result.get("start_date"),
+                    "end_date": result.get("end_date"),
+                    "initial_capital": result.get("initial_capital"),
+                    "final_capital": result.get("final_capital"),
+                }),
+            )
+            
+            # BE-PERF-01: Verify trades structure before passing to calculate_metrics
+            if trades and len(trades) > 0:
+                # Sample first trade to verify structure
+                sample_trade = trades[0] if isinstance(trades, list) else None
+                if sample_trade:
+                    logger.debug(
+                        "Sample trade structure",
+                        extra=sanitize_log_extra({
+                            "sample_trade_keys": list(sample_trade.keys()) if isinstance(sample_trade, dict) else "not_dict",
+                            "has_pnl": "pnl" in sample_trade if isinstance(sample_trade, dict) else False,
+                            "has_return_pct": "return_pct" in sample_trade if isinstance(sample_trade, dict) else False,
+                            "has_status": "status" in sample_trade if isinstance(sample_trade, dict) else False,
+                        }),
+                    )
+
             metrics = calculate_metrics(result)
+            
+            # BE-PERF-01: Log trade count after metrics calculation to diagnose discrepancies
+            trade_count_after_metrics = metrics.get("total_trades", 0)
+            logger.info(
+                "Metrics calculated from backtest result",
+                extra=sanitize_log_extra({
+                    "trade_count_before": trade_count_before_metrics,
+                    "trade_count_after": trade_count_after_metrics,
+                    "metrics_total_trades": metrics.get("total_trades"),
+                    "metrics_winning_trades": metrics.get("winning_trades"),
+                    "metrics_losing_trades": metrics.get("losing_trades"),
+                    "has_cagr": "cagr" in metrics,
+                    "has_sharpe": "sharpe" in metrics or "sharpe_ratio" in metrics,
+                    "has_max_drawdown": "max_drawdown" in metrics,
+                }),
+            )
+            
+            # BE-PERF-01: Warn if trade count mismatch indicates issue
+            if trade_count_before_metrics > 0 and trade_count_after_metrics == 0:
+                logger.warning(
+                    "Trade count mismatch: trades exist in backtest result but metrics show zero trades",
+                    extra=sanitize_log_extra({
+                        "trades_in_result": trade_count_before_metrics,
+                        "trades_in_metrics": trade_count_after_metrics,
+                        "sample_trade": trades[0] if trades and len(trades) > 0 else None,
+                    }),
+                )
+            
             charts, chart_banners = self._generate_charts(result)
             build_campaign_report()
             self._clear_error_cache()
@@ -381,33 +440,40 @@ class PerformanceService:
                 metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
+                # BE-DEV-01: In dev mode with insufficient trades, preserve real metrics but mark as DEV_FALLBACK
+                # The metrics calculated from actual trades should be preserved, not replaced
                 logger.info(
-                    f"DEV MODE: Insufficient trades ({trade_count} < 50), generating fallback metrics",
+                    f"DEV MODE: Insufficient trades ({trade_count} < 50) for statistical validation, but preserving real metrics from {trade_count} trades",
                     extra=sanitize_log_extra({
                         "trade_count": trade_count,
                         "dev_mode": True,
                         "fallback_reason": "insufficient_trades_dev_mode",
                         "guardrail_threshold": 50,
                         "metrics_status": "DEV_FALLBACK",
+                        "preserving_real_metrics": True,
                     }),
                 )
-                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                # BE-DEV-01: Only fill in missing fields, don't replace real calculated metrics
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days, preserve_real_metrics=True)
                 metrics_status = "DEV_FALLBACK"
                 degraded_reason = "insufficient_trades_dev_mode"
             elif not guardrail_result.passed:
                 # Check if failure was due to insufficient trades in dev mode
                 if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
+                    # BE-DEV-01: Preserve real metrics when bypassing guardrails in dev mode
                     logger.info(
-                        f"DEV MODE: Guardrail bypassed for insufficient trades, generating fallback metrics",
+                        f"DEV MODE: Guardrail bypassed for insufficient trades, preserving real metrics from {trade_count} trades",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "dev_mode": True,
                             "fallback_reason": "insufficient_trades_guardrail_bypass",
                             "guardrail_threshold": 50,
                             "metrics_status": "DEV_FALLBACK",
+                            "preserving_real_metrics": True,
                         }),
                     )
-                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                    # BE-DEV-01: Only fill in missing fields, don't replace real calculated metrics
+                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days, preserve_real_metrics=True)
                     metrics_status = "DEV_FALLBACK"
                     degraded_reason = "insufficient_trades_guardrail_bypass"
                 else:
@@ -441,10 +507,28 @@ class PerformanceService:
                         if not degraded_reason:
                             degraded_reason = "no_trades_executed_unknown"
                 else:
-                    # For non-zero trades but missing status, use conservative fallback
-                    metrics_status = "FALLBACK_NO_TRADES"
-                    if not degraded_reason:
-                        degraded_reason = "metrics_status_missing"
+                    # BE-DEV-01: For non-zero trades but missing status, check if real metrics exist
+                    # DEV_FALLBACK should only be used when explicitly set, not as a default for missing status
+                    dev_mode = settings.is_dev_mode()
+                    # Check if metrics contain real calculated values (not just fallback/synthetic)
+                    has_real_metrics = bool(
+                        metrics.get("cagr") is not None and metrics.get("cagr") != 0.0
+                        or metrics.get("sharpe_ratio") is not None and metrics.get("sharpe_ratio") != 0.0
+                        or metrics.get("max_drawdown") is not None and metrics.get("max_drawdown") != 0.0
+                        or metrics.get("total_return") is not None and metrics.get("total_return") != 0.0
+                    )
+                    if has_real_metrics:
+                        # Real metrics exist - use PASS status (dev mode doesn't block metrics)
+                        metrics_status = "PASS"
+                        degraded_reason = None
+                    elif dev_mode:
+                        # In dev mode without real metrics, use DEV_FALLBACK
+                        metrics_status = "DEV_FALLBACK"
+                        degraded_reason = "metrics_status_missing_dev_fallback"
+                    else:
+                        metrics_status = "FALLBACK_NO_TRADES"  # Conservative fallback
+                        if not degraded_reason:
+                            degraded_reason = "metrics_status_missing"
 
             # Extract tracking error and execution data for response
             tracking_error = tracking_error_summary
@@ -483,6 +567,19 @@ class PerformanceService:
                 initial_capital = metrics.get("initial_capital", 10000.0)
                 equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
                 equity_theoretical = equity_curve.copy()
+            
+            # BE-STRAT-01: Ensure per-signal metrics are included in response
+            if "per_signal_metrics" not in metrics:
+                # Calculate per-signal metrics if not already included
+                trades = result.get("trades", [])
+                if trades:
+                    import pandas as pd
+                    df_trades = pd.DataFrame(trades)
+                    if not df_trades.empty:
+                        from app.backtesting.metrics import _calculate_per_signal_metrics
+                        per_signal = _calculate_per_signal_metrics(df_trades)
+                        if per_signal:
+                            metrics["per_signal_metrics"] = per_signal
             
             # Store metrics_status and tracking_error_status in metrics dict for persistence
             metrics["metrics_status"] = metrics_status
@@ -611,11 +708,18 @@ class PerformanceService:
         existing_metrics: dict[str, Any],
         trade_count: int,
         total_days: int,
+        preserve_real_metrics: bool = False,
     ) -> dict[str, Any]:
         """
         Generate fallback metrics when insufficient trades in dev mode.
         
-        Creates minimal numeric metrics with neutral values and zeroed equity curves.
+        When preserve_real_metrics=True, preserves all real calculated metrics from actual trades
+        and only fills in missing fields with neutral values. This ensures historical metrics
+        are never blocked by dev mode flags.
+        
+        When preserve_real_metrics=False (legacy behavior), creates minimal numeric metrics
+        with neutral values and zeroed equity curves.
+        
         When trade_count < N (default: 10), computes conservative TP probability and expected return.
         """
         import numpy as np
@@ -623,60 +727,112 @@ class PerformanceService:
         # Use existing metrics as base but fill in missing values
         fallback = dict(existing_metrics)
         
-        # Calculate synthetic equity curve (flat line)
-        initial_capital = existing_metrics.get("initial_capital", 10000.0)
-        equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
-        
-        # Compute conservative TP probability and expected return when trade count < N
-        # Threshold for computing conservative estimates (default: 10 trades)
-        min_trades_for_estimates = 10
-        conservative_tp_probability = None
-        conservative_expected_return = None
-        
-        if 0 < trade_count < min_trades_for_estimates:
-            # Conservative estimates based on typical market behavior
-            # Assume conservative 40% TP probability (lower than typical 50-60%)
-            # This is more conservative than assuming 50% win rate
-            conservative_tp_probability = 0.40
-            
-            # Conservative expected return: assume small positive edge but with high uncertainty
-            # Use a conservative risk-reward ratio of 1.5:1 (typical for well-managed trades)
-            # Expected return = (TP_prob * TP_reward) - (SL_prob * SL_loss)
-            # = (0.40 * 1.5) - (0.60 * 1.0) = 0.60 - 0.60 = 0.0 (breakeven)
-            # But we'll use a slightly positive value to reflect conservative optimism
-            conservative_expected_return = 0.05  # 5% per trade (conservative)
-            
+        # BE-DEV-01: If preserving real metrics, only fill missing fields, don't overwrite calculated values
+        if preserve_real_metrics and trade_count > 0:
             logger.info(
-                "Computed conservative TP probability and expected return for low trade count",
+                "Preserving real metrics from calculated trades, only filling missing fields",
                 extra=sanitize_log_extra({
                     "trade_count": trade_count,
-                    "min_trades_for_estimates": min_trades_for_estimates,
-                    "conservative_tp_probability": conservative_tp_probability,
-                    "conservative_expected_return": conservative_expected_return,
-                    "fallback_reason": "insufficient_trades_for_estimates",
+                    "existing_metrics_keys": list(existing_metrics.keys()),
+                    "has_cagr": "cagr" in existing_metrics and existing_metrics.get("cagr") is not None,
+                    "has_sharpe": "sharpe" in existing_metrics or "sharpe_ratio" in existing_metrics,
+                    "has_max_drawdown": "max_drawdown" in existing_metrics and existing_metrics.get("max_drawdown") is not None,
+                    "preserve_real_metrics": True,
                 }),
             )
-        
-        # Set neutral metrics
-        fallback.update({
-            "total_trades": trade_count,
-            "winning_trades": max(0, trade_count // 2),  # Assume 50% win rate
-            "losing_trades": max(0, trade_count - (trade_count // 2)),
-            "win_rate": 0.5 if trade_count > 0 else 0.0,
-            "profit_factor": 1.0,  # Neutral
-            "sharpe_ratio": 0.0,  # Neutral (zero)
-            "calmar_ratio": 0.0,  # Neutral (zero)
-            "max_drawdown": 0.0,  # No drawdown
-            "cagr": 0.0,  # No return
-            "total_return": 0.0,
-            "total_return_pct": 0.0,
-            "risk_of_ruin": 0.0,  # No risk
-            "expectancy": 0.0,
-            "expectancy_pct": 0.0,
-            "avg_trade_return": 0.0,
-            "equity_curve": equity_curve,
-            "degraded_mode": True,
-        })
+            # Only set fields that are missing or None, preserve all calculated values
+            if "total_trades" not in fallback or fallback.get("total_trades") is None:
+                fallback["total_trades"] = trade_count
+            if "winning_trades" not in fallback or fallback.get("winning_trades") is None:
+                fallback["winning_trades"] = existing_metrics.get("winning_trades", max(0, trade_count // 2))
+            if "losing_trades" not in fallback or fallback.get("losing_trades") is None:
+                fallback["losing_trades"] = existing_metrics.get("losing_trades", max(0, trade_count - (trade_count // 2)))
+            if "win_rate" not in fallback or fallback.get("win_rate") is None:
+                fallback["win_rate"] = existing_metrics.get("win_rate", 0.5 if trade_count > 0 else 0.0)
+            # Preserve calculated metrics - don't overwrite with neutral values
+            if "profit_factor" not in fallback or fallback.get("profit_factor") is None:
+                fallback["profit_factor"] = existing_metrics.get("profit_factor", 1.0)
+            if "sharpe_ratio" not in fallback or (fallback.get("sharpe") is None and fallback.get("sharpe_ratio") is None):
+                fallback["sharpe_ratio"] = existing_metrics.get("sharpe_ratio") or existing_metrics.get("sharpe")
+            if "calmar_ratio" not in fallback or fallback.get("calmar") is None:
+                fallback["calmar_ratio"] = existing_metrics.get("calmar_ratio") or existing_metrics.get("calmar")
+            if "max_drawdown" not in fallback or fallback.get("max_drawdown") is None:
+                fallback["max_drawdown"] = existing_metrics.get("max_drawdown", 0.0)
+            if "cagr" not in fallback or fallback.get("cagr") is None:
+                fallback["cagr"] = existing_metrics.get("cagr", 0.0)
+            if "total_return" not in fallback or fallback.get("total_return") is None:
+                fallback["total_return"] = existing_metrics.get("total_return", 0.0)
+            if "total_return_pct" not in fallback or fallback.get("total_return_pct") is None:
+                fallback["total_return_pct"] = existing_metrics.get("total_return_pct", 0.0)
+            if "risk_of_ruin" not in fallback or fallback.get("risk_of_ruin") is None:
+                fallback["risk_of_ruin"] = existing_metrics.get("risk_of_ruin", 0.0)
+            if "expectancy" not in fallback or fallback.get("expectancy") is None:
+                fallback["expectancy"] = existing_metrics.get("expectancy", 0.0)
+            if "expectancy_pct" not in fallback or fallback.get("expectancy_pct") is None:
+                fallback["expectancy_pct"] = existing_metrics.get("expectancy_pct", 0.0)
+            if "avg_trade_return" not in fallback or fallback.get("avg_trade_return") is None:
+                fallback["avg_trade_return"] = existing_metrics.get("avg_trade_return", 0.0)
+            # Preserve equity curve if it exists, otherwise create synthetic
+            if "equity_curve" not in fallback or not fallback.get("equity_curve"):
+                initial_capital = existing_metrics.get("initial_capital", 10000.0)
+                fallback["equity_curve"] = [float(initial_capital)] * max(10, min(100, total_days))
+            fallback["degraded_mode"] = True
+        else:
+            # Legacy behavior: replace with neutral metrics (only when no trades or explicitly requested)
+            # Calculate synthetic equity curve (flat line)
+            initial_capital = existing_metrics.get("initial_capital", 10000.0)
+            equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
+            
+            # Compute conservative TP probability and expected return when trade count < N
+            # Threshold for computing conservative estimates (default: 10 trades)
+            min_trades_for_estimates = 10
+            conservative_tp_probability = None
+            conservative_expected_return = None
+            
+            if 0 < trade_count < min_trades_for_estimates:
+                # Conservative estimates based on typical market behavior
+                # Assume conservative 40% TP probability (lower than typical 50-60%)
+                # This is more conservative than assuming 50% win rate
+                conservative_tp_probability = 0.40
+                
+                # Conservative expected return: assume small positive edge but with high uncertainty
+                # Use a conservative risk-reward ratio of 1.5:1 (typical for well-managed trades)
+                # Expected return = (TP_prob * TP_reward) - (SL_prob * SL_loss)
+                # = (0.40 * 1.5) - (0.60 * 1.0) = 0.60 - 0.60 = 0.0 (breakeven)
+                # But we'll use a slightly positive value to reflect conservative optimism
+                conservative_expected_return = 0.05  # 5% per trade (conservative)
+                
+                logger.info(
+                    "Computed conservative TP probability and expected return for low trade count",
+                    extra=sanitize_log_extra({
+                        "trade_count": trade_count,
+                        "min_trades_for_estimates": min_trades_for_estimates,
+                        "conservative_tp_probability": conservative_tp_probability,
+                        "conservative_expected_return": conservative_expected_return,
+                        "fallback_reason": "insufficient_trades_for_estimates",
+                    }),
+                )
+            
+            # Set neutral metrics (only when preserve_real_metrics=False)
+            fallback.update({
+                "total_trades": trade_count,
+                "winning_trades": max(0, trade_count // 2),  # Assume 50% win rate
+                "losing_trades": max(0, trade_count - (trade_count // 2)),
+                "win_rate": 0.5 if trade_count > 0 else 0.0,
+                "profit_factor": 1.0,  # Neutral
+                "sharpe_ratio": 0.0,  # Neutral (zero)
+                "calmar_ratio": 0.0,  # Neutral (zero)
+                "max_drawdown": 0.0,  # No drawdown
+                "cagr": 0.0,  # No return
+                "total_return": 0.0,
+                "total_return_pct": 0.0,
+                "risk_of_ruin": 0.0,  # No risk
+                "expectancy": 0.0,
+                "expectancy_pct": 0.0,
+                "avg_trade_return": 0.0,
+                "equity_curve": equity_curve,
+                "degraded_mode": True,
+            })
         
         # Add conservative estimates if computed
         if conservative_tp_probability is not None:
@@ -855,33 +1011,38 @@ class PerformanceService:
                 metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
+                # BE-DEV-01: In dev mode with insufficient trades, preserve real metrics but mark as DEV_FALLBACK
                 logger.info(
-                    f"DEV MODE: Insufficient trades ({trade_count} < 50) in background backfill, generating fallback metrics",
+                    f"DEV MODE: Insufficient trades ({trade_count} < 50) in background backfill, preserving real metrics from {trade_count} trades",
                     extra=sanitize_log_extra({
                         "trade_count": trade_count,
                         "dev_mode": True,
                         "fallback_reason": "insufficient_trades_dev_mode",
                         "guardrail_threshold": 50,
                         "metrics_status": "DEV_FALLBACK",
+                        "preserving_real_metrics": True,
                     }),
                 )
-                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                # BE-DEV-01: Only fill in missing fields, don't replace real calculated metrics
+                metrics = self._generate_fallback_metrics(metrics, trade_count, total_days, preserve_real_metrics=True)
                 metrics_status = "DEV_FALLBACK"
                 degraded_reason = "insufficient_trades_dev_mode"
             elif not guardrail_result.passed:
                 # Check if failure was due to insufficient trades in dev mode
                 if dev_mode and guardrail_result.reason and "INSUFFICIENT_TRADES" in str(guardrail_result.reason):
                     logger.info(
-                        f"DEV MODE: Guardrail bypassed for insufficient trades in background backfill, generating fallback metrics",
+                        f"DEV MODE: Guardrail bypassed for insufficient trades in background backfill, preserving real metrics from {trade_count} trades",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "dev_mode": True,
                             "fallback_reason": "insufficient_trades_guardrail_bypass",
                             "guardrail_threshold": 50,
                             "metrics_status": "DEV_FALLBACK",
+                            "preserving_real_metrics": True,
                         }),
                     )
-                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days)
+                    # BE-DEV-01: Only fill in missing fields, don't replace real calculated metrics
+                    metrics = self._generate_fallback_metrics(metrics, trade_count, total_days, preserve_real_metrics=True)
                     metrics_status = "DEV_FALLBACK"
                     degraded_reason = "insufficient_trades_guardrail_bypass"
                 else:
@@ -1003,9 +1164,22 @@ class PerformanceService:
                         metrics_status = "NO_TRADES"
                         degraded_reason = "no_trades_executed_unknown"
                 else:
-                    # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
+                    # BE-DEV-01: For non-zero trades but missing status, check if real metrics exist
+                    # DEV_FALLBACK should only be used when explicitly set, not as a default for missing status
                     dev_mode = settings.is_dev_mode()
-                    if dev_mode:
+                    # Check if metrics contain real calculated values (not just fallback/synthetic)
+                    has_real_metrics = bool(
+                        metrics.get("cagr") is not None and metrics.get("cagr") != 0.0
+                        or metrics.get("sharpe_ratio") is not None and metrics.get("sharpe_ratio") != 0.0
+                        or metrics.get("max_drawdown") is not None and metrics.get("max_drawdown") != 0.0
+                        or metrics.get("total_return") is not None and metrics.get("total_return") != 0.0
+                    )
+                    if has_real_metrics:
+                        # Real metrics exist - use PASS status (dev mode doesn't block metrics)
+                        metrics_status = "PASS"
+                        degraded_reason = None
+                    elif dev_mode:
+                        # In dev mode without real metrics, use DEV_FALLBACK
                         metrics_status = "DEV_FALLBACK"
                         degraded_reason = "metrics_status_missing_dev_fallback"
                     else:

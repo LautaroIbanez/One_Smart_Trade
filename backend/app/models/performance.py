@@ -51,6 +51,7 @@ class PerformanceMetrics(BaseModel):
     tracking_error_rmse: Optional[float] = Field(None, description="Tracking error RMSE (Root Mean Squared Error)")
     tracking_error_max: Optional[float] = Field(None, description="Maximum tracking error (basis points)")
     orderbook_fallback_events: Optional[int] = Field(None, description="Number of orderbook fallback events")
+    per_signal_metrics: Optional[dict[str, dict[str, float]]] = Field(None, description="BE-STRAT-01: Performance metrics grouped by entry signal reason (win_rate, avg_return, avg_r, etc.)")
 
 
 class PerformancePeriod(BaseModel):

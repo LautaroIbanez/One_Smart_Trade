@@ -10,6 +10,7 @@ import { useTodayRecommendation, useMarketData } from '../api/hooks'
 import { ErrorState } from '../components/shared/ErrorState'
 import { LoadingState } from '../components/shared/LoadingState'
 import { DegradedDataBanner } from '../components/shared/DegradedDataBanner'
+import { DataStalenessIndicator } from '../components/shared/DataStalenessIndicator'
 import { isProcessingError } from '../api/hooks'
 import { isTradableRecommendation, getNonTradableMessage } from '../utils/recommendation'
 import type { MarketPoint } from '@/types'
@@ -177,21 +178,123 @@ function Dashboard() {
   
   const chartData = useMemo<MarketPoint[]>(() => {
     if (!marketData?.data || !Array.isArray(marketData.data)) return []
-    // FE-DATA-01: Accept both timestamp and open_time, sort by timestamp
-    // Filter out invalid entries before sorting
+    // FE-CHART-01: Accept both timestamp and open_time, sort by timestamp
+    // Filter out invalid entries before sorting - ensure no date-based filtering excludes recent candles
     const validData = marketData.data.filter((item: any) => {
       const hasTimestamp = item?.timestamp || item?.open_time
       const hasPrice = item?.close !== undefined || item?.price !== undefined
+      // FE-CHART-01: Do not filter by date - include all valid candles from API
+      // Only filter out entries missing required fields
       return hasTimestamp && hasPrice
     })
     if (validData.length === 0) return []
     
+    // FE-CHART-01: Sort chronologically (oldest to newest) to ensure latest candle is last
     const sortedData = [...validData].sort((a, b) => {
       const timeA = a.timestamp ?? a.open_time ?? ''
       const timeB = b.timestamp ?? b.open_time ?? ''
-      return new Date(timeA).getTime() - new Date(timeB).getTime()
+      const dateA = new Date(timeA).getTime()
+      const dateB = new Date(timeB).getTime()
+      // Handle invalid dates by putting them at the end
+      if (isNaN(dateA) && isNaN(dateB)) return 0
+      if (isNaN(dateA)) return 1
+      if (isNaN(dateB)) return -1
+      return dateA - dateB
     })
-    return sortedData.slice(-80).map((item: Record<string, unknown>, index, arr) => {
+    
+    // FE-CHART-01: Use window from API response or default to showing last 80 candles for performance
+    // This ensures the latest candle from API is always included in the chart
+    // The slice(-80) takes the LAST 80 candles, which includes the most recent one
+    // IMPORTANT: If API metadata says latest is newer than what we have, log a warning
+    const displayWindow = 80 // Display window for chart performance (not a data filter)
+    
+    // FE-CHART-01: Before slicing, verify that sortedData contains the latest timestamp from API
+    const apiLatestTimestamp = marketData?.metadata?.as_of
+    if (apiLatestTimestamp && sortedData.length > 0) {
+      const sortedLatest = sortedData[sortedData.length - 1]
+      const sortedLatestTimestamp = sortedLatest.timestamp ?? sortedLatest.open_time
+      const sortedLatestMs = sortedLatestTimestamp ? new Date(sortedLatestTimestamp).getTime() : null
+      const apiLatestMs = new Date(apiLatestTimestamp).getTime()
+      
+      // If API says latest is newer than what we have in sortedData, the API is not returning all data
+      if (sortedLatestMs && apiLatestMs > sortedLatestMs) {
+        const daysDiff = (apiLatestMs - sortedLatestMs) / (1000 * 60 * 60 * 24)
+        console.error('[FE-CHART-01] API metadata indicates newer data than received in response', {
+          apiLatestTimestamp,
+          apiLatestDate: new Date(apiLatestTimestamp).toISOString(),
+          sortedLatestTimestamp,
+          sortedLatestDate: sortedLatestTimestamp ? new Date(sortedLatestTimestamp).toISOString() : null,
+          differenceDays: daysDiff,
+          totalCandlesReceived: sortedData.length,
+          action: 'Backend API is not returning all available candles. Check backend /api/v1/market/{interval} endpoint.',
+        })
+      }
+    }
+    
+    const dataToDisplay = sortedData.slice(-displayWindow)
+    
+    // FE-CHART-01: Log latest candle timestamp for validation and warn if mismatch
+    if (dataToDisplay.length > 0) {
+      const latestCandle = dataToDisplay[dataToDisplay.length - 1]
+      const latestTimestamp = latestCandle.timestamp ?? latestCandle.open_time
+      const apiLatestTimestamp = marketData?.metadata?.as_of
+      const latestTimestampMs = latestTimestamp ? new Date(latestTimestamp).getTime() : null
+      const apiLatestTimestampMs = apiLatestTimestamp ? new Date(apiLatestTimestamp).getTime() : null
+      const timestampsMatch = latestTimestamp === apiLatestTimestamp || 
+        (latestTimestampMs && apiLatestTimestampMs && Math.abs(latestTimestampMs - apiLatestTimestampMs) < 60000) // Within 1 minute
+      
+      // FE-CHART-01: Log all timestamps to diagnose data mismatch
+      const firstCandle = dataToDisplay[0]
+      const firstTimestamp = firstCandle.timestamp ?? firstCandle.open_time
+      const allTimestamps = sortedData.map((item: any) => ({
+        timestamp: item.timestamp ?? item.open_time,
+        date: item.timestamp ?? item.open_time ? new Date(item.timestamp ?? item.open_time).toISOString() : null,
+      }))
+      
+      console.debug('[FE-CHART-01] Chart data prepared', {
+        totalCandlesFromAPI: validData.length,
+        candlesDisplayed: dataToDisplay.length,
+        firstCandleTimestamp: firstTimestamp,
+        latestCandleTimestamp: latestTimestamp,
+        apiLatestTimestamp: apiLatestTimestamp,
+        timestampsMatch,
+        timeDifferenceMs: latestTimestampMs && apiLatestTimestampMs ? Math.abs(latestTimestampMs - apiLatestTimestampMs) : null,
+        dateRange: {
+          first: firstTimestamp ? new Date(firstTimestamp).toISOString() : null,
+          last: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
+          apiLatest: apiLatestTimestamp ? new Date(apiLatestTimestamp).toISOString() : null,
+        },
+        // Log first and last 3 timestamps from sorted data to verify ordering
+        firstThreeTimestamps: allTimestamps.slice(0, 3).map(t => t.date),
+        lastThreeTimestamps: allTimestamps.slice(-3).map(t => t.date),
+      })
+      
+      // FE-CHART-01: Warn if latest candle doesn't match API latest (potential data loss)
+      if (!timestampsMatch && apiLatestTimestamp) {
+        const daysDifference = latestTimestampMs && apiLatestTimestampMs 
+          ? Math.abs(latestTimestampMs - apiLatestTimestampMs) / (1000 * 60 * 60 * 24)
+          : null
+        console.error('[FE-CHART-01] Latest candle timestamp mismatch - API has newer data not shown in chart', {
+          chartLatest: latestTimestamp,
+          chartLatestDate: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
+          apiLatest: apiLatestTimestamp,
+          apiLatestDate: apiLatestTimestamp ? new Date(apiLatestTimestamp).toISOString() : null,
+          differenceMs: latestTimestampMs && apiLatestTimestampMs ? Math.abs(latestTimestampMs - apiLatestTimestampMs) : null,
+          differenceDays: daysDifference,
+          totalCandlesFromAPI: validData.length,
+          candlesDisplayed: dataToDisplay.length,
+          displayWindow,
+          // Check if API data contains the latest timestamp
+          apiDataContainsLatest: validData.some((item: any) => {
+            const itemTs = item.timestamp ?? item.open_time
+            return itemTs === apiLatestTimestamp || 
+              (itemTs && apiLatestTimestamp && new Date(itemTs).getTime() === new Date(apiLatestTimestamp).getTime())
+          }),
+        })
+      }
+    }
+    
+    return dataToDisplay.map((item: Record<string, unknown>, index, arr) => {
       const rawTime = item.timestamp ?? item.open_time
       const timestamp =
         typeof rawTime === 'string'
@@ -351,6 +454,14 @@ function Dashboard() {
                     message={`Datos del gráfico tienen ${Math.round(marketData.metadata.age_minutes)} minutos de antigüedad. Se actualizarán automáticamente cuando haya nuevas velas.`}
                   />
                 )}
+                {/* FE-UX-02: Display data staleness indicator near chart */}
+                <DataStalenessIndicator
+                  asOf={marketData?.metadata?.as_of}
+                  ageMinutes={marketData?.metadata?.age_minutes}
+                  isStale={marketData?.status === 'data_stale'}
+                  status={marketData?.status}
+                  interval="1h"
+                />
                 <PriceLevelsChart
                   data={chartData}
                   stopLoss={data.stop_loss_take_profit.stop_loss}

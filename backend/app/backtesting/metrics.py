@@ -14,12 +14,35 @@ from app.backtesting.ruin_simulation import monte_carlo_ruin
 
 def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, float]:
     """Calculate comprehensive backtesting metrics."""
+    from app.core.logging import logger
+    
     trades = backtest_result.get("trades", [])
     equity_curve = backtest_result.get("equity_curve", [])
     initial_capital = backtest_result.get("initial_capital", 10000.0)
     final_capital = backtest_result.get("final_capital", initial_capital)
 
+    # BE-PERF-01: Log trade data structure for debugging
+    trade_count = len(trades) if trades else 0
+    logger.debug(
+        "calculate_metrics: processing trades",
+        extra={
+            "trade_count": trade_count,
+            "trades_type": type(trades).__name__,
+            "has_trades_key": "trades" in backtest_result,
+            "equity_curve_length": len(equity_curve) if equity_curve else 0,
+            "initial_capital": initial_capital,
+            "final_capital": final_capital,
+        },
+    )
+
     if not trades:
+        logger.info(
+            "calculate_metrics: no trades found, returning zero metrics",
+            extra={
+                "backtest_result_keys": list(backtest_result.keys()),
+                "trades_value": trades,
+            },
+        )
         return {
             "cagr": 0.0,
             "sharpe": 0.0,
@@ -35,8 +58,97 @@ def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, fl
             "losing_trades": 0,
         }
 
-    df_trades = pd.DataFrame(trades)
-    returns = df_trades["return_pct"].values
+    # BE-PERF-01: Validate trade structure before creating DataFrame
+    try:
+        df_trades = pd.DataFrame(trades)
+        if df_trades.empty:
+            logger.warning(
+                "calculate_metrics: trades list is not empty but DataFrame is empty",
+                extra={
+                    "trade_count": trade_count,
+                    "trades_sample": trades[0] if trades else None,
+                },
+            )
+            return {
+                "cagr": 0.0,
+                "sharpe": 0.0,
+                "sortino": 0.0,
+                "max_drawdown": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "expectancy": 0.0,
+                "calmar": 0.0,
+                "total_return": 0.0,
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+            }
+        
+        # BE-PERF-01: Validate required columns exist
+        required_columns = ["return_pct", "pnl"]
+        missing_columns = [col for col in required_columns if col not in df_trades.columns]
+        if missing_columns:
+            logger.error(
+                "calculate_metrics: missing required columns in trades DataFrame",
+                extra={
+                    "missing_columns": missing_columns,
+                    "available_columns": list(df_trades.columns),
+                    "trade_count": len(df_trades),
+                    "sample_trade": trades[0] if trades else None,
+                },
+            )
+            # Try to continue with available columns or return zero metrics
+            if "return_pct" not in df_trades.columns:
+                return {
+                    "cagr": 0.0,
+                    "sharpe": 0.0,
+                    "sortino": 0.0,
+                    "max_drawdown": 0.0,
+                    "win_rate": 0.0,
+                    "profit_factor": 0.0,
+                    "expectancy": 0.0,
+                    "calmar": 0.0,
+                    "total_return": 0.0,
+                    "total_trades": len(df_trades),
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+        
+        returns = df_trades["return_pct"].values
+        logger.debug(
+            "calculate_metrics: successfully created DataFrame from trades",
+            extra={
+                "df_rows": len(df_trades),
+                "df_columns": list(df_trades.columns),
+                "returns_length": len(returns),
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "calculate_metrics: failed to process trades DataFrame",
+            extra={
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "trade_count": trade_count,
+                "trades_sample": trades[0] if trades else None,
+            },
+            exc_info=True,
+        )
+        # Return zero metrics on error
+        return {
+            "cagr": 0.0,
+            "sharpe": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "calmar": 0.0,
+            "total_return": 0.0,
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+        }
 
     # Total return and CAGR
     total_return = ((final_capital - initial_capital) / initial_capital) * 100
@@ -249,7 +361,76 @@ def calculate_metrics(backtest_result: dict[str, Any], **kwargs) -> dict[str, fl
             "no_trade_events_count": len(execution_metrics.no_trade_events),
         }
     
+    # BE-STRAT-01: Calculate per-signal effectiveness metrics
+    per_signal_metrics = _calculate_per_signal_metrics(df_trades)
+    if per_signal_metrics:
+        metrics_dict["per_signal_metrics"] = per_signal_metrics
+    
     return metrics_dict
+
+
+def _calculate_per_signal_metrics(df_trades: pd.DataFrame) -> dict[str, Any]:
+    """Calculate effectiveness metrics grouped by entry signal reason.
+    
+    BE-STRAT-01: Provides per-signal metrics (win rate, avg R, etc.) for traceability.
+    
+    Args:
+        df_trades: DataFrame with trades including entry_signal_reason column
+        
+    Returns:
+        Dict mapping signal_reason -> metrics (win_rate, avg_return, total_trades, etc.)
+    """
+    if df_trades.empty:
+        return {}
+    
+    # Check if we have signal metadata
+    if "entry_signal_reason" not in df_trades.columns:
+        # Try to use exit_reason as fallback or return empty
+        if "exit_reason" in df_trades.columns:
+            df_trades["entry_signal_reason"] = df_trades["exit_reason"].fillna("unknown")
+        else:
+            return {}
+    
+    per_signal: dict[str, Any] = {}
+    
+    # Group by entry signal reason
+    for reason, group in df_trades.groupby("entry_signal_reason"):
+        if group.empty:
+            continue
+        
+        winning = group[group["pnl"] > 0]
+        losing = group[group["pnl"] < 0]
+        total = len(group)
+        win_rate = (len(winning) / total * 100) if total > 0 else 0.0
+        
+        avg_return = float(group["return_pct"].mean()) if "return_pct" in group.columns and not group["return_pct"].empty else 0.0
+        avg_win = float(winning["return_pct"].mean()) if not winning.empty and "return_pct" in winning.columns else 0.0
+        avg_loss = float(losing["return_pct"].mean()) if not losing.empty and "return_pct" in losing.columns else 0.0
+        
+        # Calculate average R (risk/reward ratio approximation)
+        # Use avg_win / abs(avg_loss) if both exist
+        avg_r = 0.0
+        if avg_loss < 0 and abs(avg_loss) > 0:
+            avg_r = abs(avg_win / avg_loss) if avg_win > 0 else 0.0
+        
+        # Profit factor
+        gross_profit = float(winning["pnl"].sum()) if not winning.empty and "pnl" in winning.columns else 0.0
+        gross_loss = abs(float(losing["pnl"].sum())) if not losing.empty and "pnl" in losing.columns else 0.0
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+        
+        per_signal[str(reason)] = {
+            "total_trades": total,
+            "winning_trades": len(winning),
+            "losing_trades": len(losing),
+            "win_rate": round(win_rate, 2),
+            "avg_return_pct": round(avg_return, 2),
+            "avg_win_pct": round(avg_win, 2),
+            "avg_loss_pct": round(avg_loss, 2),
+            "avg_r": round(avg_r, 2),
+            "profit_factor": round(profit_factor, 2),
+        }
+    
+    return per_signal
 
 
 def _calculate_rolling_metrics(trades_df: pd.DataFrame, equity_curve: list[float], window_days: int) -> dict[str, Any]:

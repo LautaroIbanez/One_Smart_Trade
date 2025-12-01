@@ -159,8 +159,74 @@ class DataIngestion:
         results: list[dict[str, Any]] = []
         for interval in INTERVALS:
             try:
+                # Determine start timestamp from latest curated data to avoid re-fetching existing data
+                start = None
+                try:
+                    from app.data.curation import DataCuration
+                    curator = DataCuration()
+                    try:
+                        df_latest = curator.get_latest_curated(interval, venue=venue, symbol=symbol)
+                        if not df_latest.empty and "open_time" in df_latest.columns:
+                            latest_timestamp = df_latest["open_time"].max()
+                            # Ensure timestamp is timezone-aware UTC
+                            if isinstance(latest_timestamp, pd.Timestamp):
+                                if latest_timestamp.tz is None:
+                                    latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                                else:
+                                    latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                                latest_dt = latest_timestamp.to_pydatetime()
+                            else:
+                                latest_dt = pd.to_datetime(latest_timestamp).to_pydatetime()
+                                if latest_dt.tzinfo is None:
+                                    latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+                            
+                            # Add one interval to avoid re-fetching the last candle we already have
+                            # Binance API is inclusive on startTime, so we need to start after the last candle
+                            interval_delta = _interval_to_timedelta(interval)
+                            # pd.Timedelta can be added directly to Python datetime, result is still datetime
+                            start = latest_dt + interval_delta
+                            # Ensure it's a Python datetime (not pd.Timestamp) for Binance client compatibility
+                            if isinstance(start, pd.Timestamp):
+                                start = start.to_pydatetime()
+                            
+                            # Only use start if it's before end (otherwise we already have all data)
+                            if start >= end:
+                                logger.info(
+                                    f"Skipping ingestion for {interval}: already have data up to {latest_dt.isoformat()} (end={end.isoformat()})",
+                                    extra={
+                                        "interval": interval,
+                                        "venue": venue,
+                                        "symbol": symbol,
+                                        "latest_timestamp": latest_dt.isoformat(),
+                                        "end": end.isoformat(),
+                                    },
+                                )
+                                results.append({
+                                    "status": "skipped",
+                                    "interval": interval,
+                                    "symbol": symbol,
+                                    "venue": venue,
+                                    "rows": 0,
+                                    "reason": "already_up_to_date",
+                                    "latest_timestamp": latest_dt.isoformat(),
+                                })
+                                continue
+                    except FileNotFoundError:
+                        # No curated data exists, start from None (will fetch from beginning)
+                        start = None
+                        logger.info(
+                            f"No curated data found for {interval}, starting from beginning",
+                            extra={"interval": interval, "venue": venue, "symbol": symbol},
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        f"Could not determine latest timestamp for {interval}, starting from beginning: {exc}",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol, "error": str(exc)},
+                    )
+                    start = None
+                
                 result = await self.ingest_timeframe(
-                    interval, symbol=symbol, venue=venue, end=end
+                    interval, start=start, end=end, symbol=symbol, venue=venue
                 )
             except Exception as exc:  # pragma: no cover - bubbled to caller
                 result = {
@@ -190,6 +256,17 @@ class DataIngestion:
         """
         raw_klines, meta = await self.client.get_klines(symbol, interval, start, end, limit)
         if not raw_klines:
+            logger.info(
+                f"Binance returned empty response for {interval}",
+                extra={
+                    "interval": interval,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "start": start.isoformat() if start else None,
+                    "end": end.isoformat() if end else None,
+                    "status_code": "200",
+                },
+            )
             return {
                 "status": "empty",
                 "interval": interval,
@@ -204,6 +281,102 @@ class DataIngestion:
         df = await asyncio.to_thread(self._klines_to_dataframe, raw_klines)
         df["venue"] = venue
         df["symbol"] = symbol
+        
+        # BE-DATA-02: Validate data before writing - detect schema issues early
+        if df.empty:
+            # Check if we got data from Binance but DataFrame is empty (schema/parsing issue)
+            if raw_klines and len(raw_klines) > 0:
+                logger.error(
+                    f"BE-DATA-02: Schema/parsing issue detected: Binance returned {len(raw_klines)} klines but DataFrame is empty",
+                    extra={
+                        "interval": interval,
+                        "symbol": symbol,
+                        "venue": venue,
+                        "raw_klines_count": len(raw_klines),
+                        "df_rows": len(df),
+                        "raw_klines_sample": raw_klines[0] if raw_klines else None,
+                        "actionable_error": True,
+                        "ingestion_halted": True,
+                    },
+                )
+                return {
+                    "status": "error",
+                    "interval": interval,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "rows": 0,
+                    "error": f"Schema/parsing issue: Binance returned {len(raw_klines)} klines but DataFrame is empty. Check _klines_to_dataframe conversion logic.",
+                    "raw_klines_count": len(raw_klines),
+                }
+            else:
+                # No data from Binance - this is expected if already up-to-date
+                logger.info(
+                    f"No new data from Binance for {interval}",
+                    extra={
+                        "interval": interval,
+                        "symbol": symbol,
+                        "venue": venue,
+                        "rows": 0,
+                        "start": start.isoformat() if start else None,
+                        "end": end.isoformat() if end else None,
+                    },
+                )
+        else:
+            # Validate required columns exist
+            required_columns = ["open_time", "open", "high", "low", "close", "volume"]
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                logger.error(
+                    f"BE-DATA-02: Missing required columns in ingested data: {missing_columns}",
+                    extra={
+                        "interval": interval,
+                        "symbol": symbol,
+                        "venue": venue,
+                        "missing_columns": missing_columns,
+                        "available_columns": list(df.columns),
+                        "raw_klines_count": len(raw_klines),
+                        "actionable_error": True,
+                        "ingestion_halted": True,
+                    },
+                )
+                return {
+                    "status": "error",
+                    "interval": interval,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "rows": 0,
+                    "error": f"Missing required columns: {missing_columns}. Available columns: {list(df.columns)}",
+                    "missing_columns": missing_columns,
+                }
+        
+        # Log timestamp range of fetched data
+        if not df.empty and "open_time" in df.columns:
+            min_ts = df["open_time"].min()
+            max_ts = df["open_time"].max()
+            logger.info(
+                f"Ingested {len(df)} rows for {interval}",
+                extra={
+                    "interval": interval,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "rows": len(df),
+                    "min_timestamp": min_ts.isoformat() if hasattr(min_ts, "isoformat") else str(min_ts),
+                    "max_timestamp": max_ts.isoformat() if hasattr(max_ts, "isoformat") else str(max_ts),
+                    "start": start.isoformat() if start else None,
+                    "end": end.isoformat() if end else None,
+                },
+            )
+        else:
+            logger.warning(
+                f"DataFrame empty or missing open_time after processing for {interval}",
+                extra={
+                    "interval": interval,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "raw_rows": len(raw_klines),
+                    "df_rows": len(df),
+                },
+            )
         
         filename = meta["fetched_at"].replace(":", "-")
         if venue:

@@ -121,3 +121,4 @@
 - **Frontend**: Chart should update independently every 60s (check Network tab)
 - **Frontend**: Stale banners should appear when `status === 'data_stale'`
 
+

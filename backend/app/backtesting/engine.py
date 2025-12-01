@@ -128,7 +128,11 @@ class CandleSeries:
 
 @dataclass
 class TradeFill:
-    """Canonical trade fill record."""
+    """Canonical trade fill record with signal traceability.
+    
+    BE-STRAT-01: Enhanced with signal metadata to enable traceability
+    of trades back to their triggering conditions and exit rules.
+    """
 
     timestamp_entry: pd.Timestamp
     timestamp_exit: pd.Timestamp | None
@@ -145,10 +149,18 @@ class TradeFill:
     pnl: float = 0.0
     pnl_pct: float = 0.0
     return_pct: float = 0.0
+    # BE-STRAT-01: Signal traceability fields
+    entry_signal: str | None = None  # "BUY", "SELL", or "HOLD"
+    entry_signal_reason: str | None = None  # Reason from strategy (e.g., "trend_alignment", "oversold_bounce")
+    entry_signal_confidence: float | None = None  # Confidence score (0-100)
+    entry_strategy_breakdown: dict[str, Any] | None = None  # Strategy contributions from signal_breakdown
+    exit_signal: str | None = None  # Exit signal type (e.g., "stop_loss", "take_profit", "trailing_stop", "signal")
+    stop_loss: float | None = None  # Stop loss level
+    take_profit: float | None = None  # Take profit level
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        result = {
             "timestamp_entry": self.timestamp_entry.isoformat(),
             "timestamp_exit": self.timestamp_exit.isoformat() if self.timestamp_exit else None,
             "price_entry": self.price_entry,
@@ -165,6 +177,22 @@ class TradeFill:
             "pnl_pct": self.pnl_pct,
             "return_pct": self.return_pct,
         }
+        # BE-STRAT-01: Include signal metadata for traceability
+        if self.entry_signal:
+            result["entry_signal"] = self.entry_signal
+        if self.entry_signal_reason:
+            result["entry_signal_reason"] = self.entry_signal_reason
+        if self.entry_signal_confidence is not None:
+            result["entry_signal_confidence"] = self.entry_signal_confidence
+        if self.entry_strategy_breakdown:
+            result["entry_strategy_breakdown"] = self.entry_strategy_breakdown
+        if self.exit_signal:
+            result["exit_signal"] = self.exit_signal
+        if self.stop_loss is not None:
+            result["stop_loss"] = self.stop_loss
+        if self.take_profit is not None:
+            result["take_profit"] = self.take_profit
+        return result
 
 
 @dataclass
@@ -1568,6 +1596,14 @@ class BacktestEngine:
                             initial_qty=filled_qty,  # Use filled qty, not requested
                             opened_at=bar_date,
                         )
+                        # BE-STRAT-01: Capture signal metadata for traceability
+                        entry_signal = signal.get("signal", signal.get("action", "enter"))
+                        entry_signal_reason = signal.get("reason") or signal.get("entry_reason")
+                        entry_signal_confidence = signal.get("confidence") or signal.get("confidence_raw")
+                        entry_strategy_breakdown = signal.get("signal_breakdown") or signal.get("strategies")
+                        stop_loss = signal.get("stop_loss")
+                        take_profit = signal.get("take_profit")
+                        
                         trade = TradeFill(
                             timestamp_entry=bar_date,
                             timestamp_exit=None,
@@ -1579,10 +1615,16 @@ class BacktestEngine:
                             fees_exit=0.0,
                             slippage_entry=slippage_pct,
                             slippage_exit=0.0,
+                            entry_signal=entry_signal,
+                            entry_signal_reason=entry_signal_reason,
+                            entry_signal_confidence=entry_signal_confidence,
+                            entry_strategy_breakdown=entry_strategy_breakdown,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
                         )
                         state.open_trades.append(trade)
                         
-                        # Log trade opened for lifecycle tracking
+                        # BE-STRAT-01: Log trade opened with signal traceability
                         logger.info(
                             "Trade opened - lifecycle transition: ORDER_FILLED → TRADE_OPENED",
                             extra={
@@ -1593,6 +1635,11 @@ class BacktestEngine:
                                 "equity": state.equity_realistic,
                                 "fees_entry": fees,
                                 "slippage_entry": slippage_pct,
+                                "entry_signal": entry_signal,
+                                "entry_signal_reason": entry_signal_reason,
+                                "entry_signal_confidence": entry_signal_confidence,
+                                "stop_loss": stop_loss,
+                                "take_profit": take_profit,
                             },
                         )
                         
@@ -1707,6 +1754,8 @@ class BacktestEngine:
                             if state.open_trades:
                                 trade = state.open_trades[0]
                                 # Record partial exit
+                                # BE-STRAT-01: Preserve entry signal metadata and capture exit signal
+                                exit_signal = signal.get("exit_reason") or signal.get("action", "partial_exit")
                                 partial_exit = TradeFill(
                                     timestamp_entry=trade.timestamp_entry,
                                     timestamp_exit=bar_date,
@@ -1723,6 +1772,14 @@ class BacktestEngine:
                                     pnl=pnl - (trade.fees_entry * exit_ratio) - fees,
                                     pnl_pct=pnl_pct,
                                     return_pct=(fill_price / entry_price - 1) * 100 if state.position.side == PositionSide.LONG else (entry_price / fill_price - 1) * 100,
+                                    # Preserve entry signal metadata
+                                    entry_signal=trade.entry_signal,
+                                    entry_signal_reason=trade.entry_signal_reason,
+                                    entry_signal_confidence=trade.entry_signal_confidence,
+                                    entry_strategy_breakdown=trade.entry_strategy_breakdown,
+                                    exit_signal=exit_signal,
+                                    stop_loss=trade.stop_loss,
+                                    take_profit=trade.take_profit,
                                 )
                                 state.closed_trades.append(partial_exit)
                                 
@@ -1747,12 +1804,14 @@ class BacktestEngine:
                                 trade.slippage_exit = slippage_pct
                                 trade.status = "closed"
                                 trade.exit_reason = signal.get("exit_reason", "signal")
+                                # BE-STRAT-01: Capture exit signal type for traceability
+                                trade.exit_signal = signal.get("exit_reason") or signal.get("action", "signal")
                                 trade.pnl = pnl - trade.fees_entry - fees  # Subtract both entry and exit fees
                                 trade.pnl_pct = pnl_pct
                                 trade.return_pct = (fill_price / entry_price - 1) * 100 if state.position.side == PositionSide.LONG else (entry_price / fill_price - 1) * 100
                                 state.closed_trades.append(trade)
                                 
-                                # Log trade closed for lifecycle tracking
+                                # BE-STRAT-01: Log trade closed with signal traceability
                                 logger.info(
                                     "Trade closed - lifecycle transition: TRADE_OPENED → TRADE_CLOSED",
                                     extra={
@@ -1762,6 +1821,10 @@ class BacktestEngine:
                                         "exit_price": fill_price,
                                         "trade_size": filled_qty,
                                         "exit_reason": trade.exit_reason,
+                                        "exit_signal": trade.exit_signal,
+                                        "entry_signal": trade.entry_signal,
+                                        "entry_signal_reason": trade.entry_signal_reason,
+                                        "entry_signal_confidence": trade.entry_signal_confidence,
                                         "pnl": trade.pnl,
                                         "pnl_pct": trade.pnl_pct,
                                         "return_pct": trade.return_pct,

@@ -207,8 +207,9 @@ async def job_ingest_all() -> None:
             }),
         )
         
-        # BE-CACHE-03: Invalidate market data cache after curation completes
+        # BE-CACHE-01: Invalidate market data cache after curation completes
         # This ensures the next request picks up fresh metadata with updated latest_open_time
+        # Also verify metadata was updated with latest_open_time for observability
         from app.utils.cache import clear_cache
         cleared_count = clear_cache("market_data")
         if cleared_count > 0:
@@ -216,6 +217,51 @@ async def job_ingest_all() -> None:
                 f"Invalidated {cleared_count} market_data cache entries after curation",
                 extra=sanitize_log_extra({"cleared_count": cleared_count}),
             )
+        
+        # BE-CACHE-01: Log metadata freshness after curation to verify updates
+        for interval in INTERVALS:
+            if curation_results.get(interval) == "success":
+                try:
+                    metadata = curation.get_curated_metadata(interval, venue=venue, symbol=symbol)
+                    if metadata and "latest_open_time" in metadata:
+                        latest_open_time_str = metadata["latest_open_time"]
+                        from datetime import datetime, timezone
+                        try:
+                            latest_dt = datetime.fromisoformat(latest_open_time_str.replace("Z", "+00:00"))
+                            if latest_dt.tzinfo is None:
+                                latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+                            now = datetime.now(timezone.utc)
+                            age_minutes = (now - latest_dt).total_seconds() / 60.0
+                            logger.info(
+                                f"Metadata updated for {interval} after curation",
+                                extra=sanitize_log_extra({
+                                    "interval": interval,
+                                    "venue": venue,
+                                    "symbol": symbol,
+                                    "latest_open_time": latest_open_time_str,
+                                    "age_minutes": round(age_minutes, 2),
+                                    "generated_at": metadata.get("generated_at"),
+                                }),
+                            )
+                        except Exception as parse_exc:
+                            logger.warning(
+                                f"Failed to parse latest_open_time for {interval} after curation: {parse_exc}",
+                                extra=sanitize_log_extra({
+                                    "interval": interval,
+                                    "venue": venue,
+                                    "symbol": symbol,
+                                    "error": str(parse_exc),
+                                }),
+                            )
+                except Exception as meta_exc:
+                    logger.debug(
+                        f"Could not read metadata for {interval} after curation: {meta_exc}",
+                        extra=sanitize_log_extra({
+                            "interval": interval,
+                            "venue": venue,
+                            "symbol": symbol,
+                        }),
+                    )
     except Exception as exc:  # rate limits, timeouts, etc.
         duration = time.time() - start_time
         db = SessionLocal()
