@@ -239,7 +239,9 @@ function RecommendationCard() {
   const backtestMetricsSource = (data as any)?.risk_metrics?.backtest_metrics_source
   const backtestMetricsStatus = (data as any)?.risk_metrics?.backtest_metrics_status
   const backtestNoTrades = (data as any)?.risk_metrics?.backtest_no_trades === true
-  const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades
+  // FE-RISK-02: Check for NO_TRADES or FALLBACK_NO_TRADES status
+  const hasNoTradesStatus = backtestMetricsStatus === 'NO_TRADES' || backtestMetricsStatus === 'FALLBACK_NO_TRADES'
+  const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades || hasNoTradesStatus
 
   // Type guard: Check if this is a fallback response without required fields
   const isFallbackResponse = (data: any): boolean => {
@@ -861,28 +863,51 @@ function RecommendationCard() {
   }
 
   return (
-    <div className="recommendation-card">
+    <div className={`recommendation-card ${hasNoTradesStatus ? 'recommendation-card-no-trades' : ''}`}>
       <div className="recommendation-header" aria-label="Señal actual">
         <h2>Recomendación de Hoy</h2>
         <span className={`signal-badge ${signalClass}`}>{signal}</span>
       </div>
       
-      {/* Decision-support label */}
+      {/* FE-RISK-02: Decision-support label - enhanced when NO_TRADES */}
       <div className="decision-support-label" role="note" aria-label="Disclaimer" style={{
         margin: '0.5rem 0',
         padding: '0.5rem',
-        backgroundColor: 'rgba(147, 51, 234, 0.1)',
-        border: '1px solid rgba(147, 51, 234, 0.3)',
+        backgroundColor: hasNoTradesStatus ? 'rgba(239, 68, 68, 0.15)' : 'rgba(147, 51, 234, 0.1)',
+        border: `1px solid ${hasNoTradesStatus ? 'rgba(239, 68, 68, 0.4)' : 'rgba(147, 51, 234, 0.3)'}`,
         borderRadius: '0.375rem',
         fontSize: '0.75rem',
-        color: '#a855f7',
+        color: hasNoTradesStatus ? '#ef4444' : '#a855f7',
         fontStyle: 'italic',
+        fontWeight: hasNoTradesStatus ? 600 : 'normal',
       }}>
-        ⚠️ Experimental signal – decision-support only, NOT trading advice.
+        {hasNoTradesStatus 
+          ? '⚠️ PAPER TRADING ONLY – Esta recomendación no tiene respaldo de backtest ejecutado. NO usar para trading real.'
+          : '⚠️ Experimental signal – decision-support only, NOT trading advice.'}
       </div>
       
-      {/* Backtest metrics fallback indicator */}
-      {isMetricsFallback && (
+      {/* FE-RISK-02: Backtest metrics fallback indicator with clear paper trading copy */}
+      {hasNoTradesStatus && (
+        <div className="no-trades-warning-banner" role="alert" style={{
+          padding: '1rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          border: '2px solid rgba(239, 68, 68, 0.4)',
+          borderRadius: '0.5rem',
+          marginBottom: '1rem',
+          fontSize: '0.875rem',
+        }}>
+          <p style={{ margin: 0, color: '#ef4444', fontWeight: 700, fontSize: '0.9375rem', marginBottom: '0.5rem' }}>
+            ⚠️ Recomendación sin soporte de backtest ejecutado; use con precaución
+          </p>
+          <p style={{ margin: 0, color: 'rgba(255, 255, 255, 0.9)', fontSize: '0.875rem', lineHeight: '1.5' }}>
+            El backtest no ejecutó trades ({backtestMetricsStatus === 'FALLBACK_NO_TRADES' ? 'FALLBACK_NO_TRADES' : 'NO_TRADES'}). 
+            Esta recomendación no tiene respaldo estadístico de backtesting y debe usarse <strong>únicamente para paper trading</strong> o análisis educativo. 
+            No se recomienda usar esta señal para trading real.
+          </p>
+        </div>
+      )}
+      {/* Legacy fallback indicator for other fallback cases */}
+      {isMetricsFallback && !hasNoTradesStatus && (
         <div style={{
           padding: '0.75rem',
           backgroundColor: 'rgba(239, 68, 68, 0.1)',

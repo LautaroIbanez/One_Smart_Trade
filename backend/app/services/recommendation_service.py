@@ -408,6 +408,50 @@ class RecommendationService:
         # Add disclaimer
         result.setdefault("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk. Position sizing requires your portfolio data or explicit capital input via /api/v1/risk/sizing.")
         
+        # BE-RSK-03: Normalize risk_metrics when backtest_metrics_status is NO_TRADES
+        # Ensure metrics_hidden=true and remove numeric metrics (Sharpe/CAGR/DD)
+        risk_metrics = result.get("risk_metrics", {})
+        backtest_metrics_status = risk_metrics.get("backtest_metrics_status")
+        if backtest_metrics_status == "NO_TRADES":
+            # BE-RSK-03: Mark metrics as hidden and remove numeric metrics
+            risk_metrics["metrics_hidden"] = True
+            risk_metrics["backtest_metrics_source"] = "unavailable"  # Change from "fallback" if present
+            # BE-RSK-03: Remove any numeric metrics that might have been persisted
+            risk_metrics.pop("backtest_sharpe", None)
+            risk_metrics.pop("backtest_cagr", None)
+            risk_metrics.pop("backtest_max_drawdown", None)
+            risk_metrics.pop("backtest_win_rate", None)
+            risk_metrics.pop("backtest_risk_reward_ratio", None)
+            risk_metrics.pop("backtest_slippage_bps", None)
+            # BE-RSK-03: Ensure status is insufficient_history and add message to analysis
+            if result.get("status") != "insufficient_history":
+                result["status"] = "insufficient_history"
+                result["insufficient_history_reason"] = risk_metrics.get("backtest_no_trades_reason") or "No trades executed during backtest - performance metrics unavailable"
+                # BE-RSK-03: Add clear message to analysis about absence of trades if not already present
+                analysis = result.get("analysis", "")
+                if "No se ejecutaron trades durante el backtest" not in analysis:
+                    no_trades_message = f"\n\n⚠️ ADVERTENCIA: No se ejecutaron trades durante el backtest. Las métricas de performance (Sharpe, CAGR, Max Drawdown) no están disponibles. Esta recomendación no tiene soporte de backtest para evaluación de riesgo."
+                    root_cause = risk_metrics.get("backtest_no_trades_root_cause")
+                    if root_cause:
+                        root_cause_msg = {
+                            "no_signals_generated": "No se generaron señales durante el período del backtest.",
+                            "no_enter_signals": "Se generaron señales pero ninguna fue de entrada (BUY/SELL).",
+                            "enter_signals_zero_size": "Se generaron señales de entrada pero el calculador de tamaño de posición devolvió tamaño cero.",
+                            "orders_rejected": "Se generaron señales de entrada pero las órdenes fueron rechazadas por el simulador de ejecución.",
+                        }.get(root_cause, "")
+                        if root_cause_msg:
+                            no_trades_message += f" Causa: {root_cause_msg}"
+                    result["analysis"] = analysis + no_trades_message
+            result["risk_metrics"] = risk_metrics
+            logger.info(
+                "BE-RSK-03: Normalized cached recommendation with NO_TRADES - metrics_hidden=true, removed numeric metrics",
+                extra={
+                    "backtest_metrics_status": backtest_metrics_status,
+                    "metrics_hidden": True,
+                    "status": result.get("status"),
+                },
+            )
+        
         # Build execution plan
         sizing_for_plan = result.get("suggested_sizing")
         execution_plan = self._build_execution_plan(result, sizing_result=sizing_for_plan, user_id=user_id)
@@ -2037,8 +2081,8 @@ class RecommendationService:
                 
                 if trade_count == 0:
                     logger.warning(
-                        f"Backtest returned NO_TRADES (root_cause: {no_trade_diagnostics.get('root_cause', 'unknown')}). "
-                        f"Will persist HOLD recommendation for today.",
+                        f"BE-RSK-03: Backtest returned NO_TRADES (root_cause: {no_trade_diagnostics.get('root_cause', 'unknown')}). "
+                        f"Will persist HOLD recommendation for today with metrics_hidden=true.",
                         extra={
                             "root_cause": no_trade_diagnostics.get("root_cause", "unknown"),
                             "reason": no_trade_diagnostics.get("reason", "No trades executed"),
@@ -2047,18 +2091,44 @@ class RecommendationService:
                             "rejected_orders_count": no_trade_diagnostics.get("rejected_orders_count", 0),
                             "signals_with_zero_size": no_trade_diagnostics.get("signals_with_zero_size", 0),
                             "invalid_stop_loss_count": no_trade_diagnostics.get("invalid_stop_loss_count", 0),
+                            "metrics_hidden": True,
                         }
                     )
-                    # Degrade signal to HOLD but continue to persist recommendation
+                    # BE-RSK-03: Degrade signal to HOLD but continue to persist recommendation
+                    # Mark that metrics are hidden and no backtest support is available
                     signal["signal"] = "HOLD"
                     risk_metrics = signal.setdefault("risk_metrics", {})
                     risk_metrics["backtest_no_trades"] = True
                     risk_metrics["backtest_no_trades_root_cause"] = no_trade_diagnostics.get("root_cause", "unknown")
                     risk_metrics["backtest_no_trades_reason"] = no_trade_diagnostics.get("reason", "No trades executed during backtest")
-                    risk_metrics["backtest_metrics_source"] = "fallback"
+                    # BE-RSK-03: Change from "fallback" to "unavailable" - no metrics available, not fallback
+                    risk_metrics["backtest_metrics_source"] = "unavailable"
                     risk_metrics["backtest_metrics_status"] = "NO_TRADES"
-                    signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
-                    logger.info("Signal degraded to HOLD due to NO_TRADES, but recommendation will be persisted for today")
+                    # BE-RSK-03: Mark that metrics are hidden - no numeric metrics should be shown
+                    risk_metrics["metrics_hidden"] = True
+                    # BE-RSK-03: Explicitly remove any numeric metrics that might have been set
+                    risk_metrics.pop("backtest_sharpe", None)
+                    risk_metrics.pop("backtest_cagr", None)
+                    risk_metrics.pop("backtest_max_drawdown", None)
+                    risk_metrics.pop("backtest_win_rate", None)
+                    risk_metrics.pop("backtest_risk_reward_ratio", None)
+                    risk_metrics.pop("backtest_slippage_bps", None)
+                    # BE-RSK-03: Mark recommendation status as insufficient_history
+                    signal["status"] = "insufficient_history"
+                    signal["insufficient_history_reason"] = "No trades executed during backtest - performance metrics unavailable"
+                    # BE-RSK-03: Add clear message to analysis about absence of trades
+                    no_trades_message = f"\n\n⚠️ ADVERTENCIA: No se ejecutaron trades durante el backtest. Las métricas de performance (Sharpe, CAGR, Max Drawdown) no están disponibles. Esta recomendación no tiene soporte de backtest para evaluación de riesgo."
+                    if no_trade_diagnostics.get("root_cause"):
+                        root_cause_msg = {
+                            "no_signals_generated": "No se generaron señales durante el período del backtest.",
+                            "no_enter_signals": "Se generaron señales pero ninguna fue de entrada (BUY/SELL).",
+                            "enter_signals_zero_size": "Se generaron señales de entrada pero el calculador de tamaño de posición devolvió tamaño cero.",
+                            "orders_rejected": "Se generaron señales de entrada pero las órdenes fueron rechazadas por el simulador de ejecución.",
+                        }.get(no_trade_diagnostics.get("root_cause"), "")
+                        if root_cause_msg:
+                            no_trades_message += f" Causa: {root_cause_msg}"
+                    signal["analysis"] = signal.get("analysis", "") + no_trades_message
+                    logger.info("BE-RSK-03: Signal degraded to HOLD due to NO_TRADES, metrics_hidden=true, status=insufficient_history")
                 
                 if sharpe < settings.BACKTEST_MIN_SHARPE:
                     logger.warning(
@@ -2090,45 +2160,61 @@ class RecommendationService:
                     signal["status"] = "ok"  # Ensure status is ok so recommendation is persisted
                     logger.info("Signal degraded to HOLD due to high drawdown, but recommendation will be persisted for today")
                 
-                # Save backtest result and get run_id
-                saved_result = save_backtest_result(backtest_result)
-                backtest_run_id = saved_result.get("run_id")
-                
-                logger.info(
-                    f"Backtest validation passed: Sharpe={sharpe:.2f}, Max DD={max_dd:.2f}%, run_id={backtest_run_id}",
-                    extra={"sharpe": sharpe, "max_drawdown": max_dd, "run_id": backtest_run_id},
-                )
-                
-                # Extract and add backtest metrics to signal for persistence
-                signal["backtest_metrics"] = metrics
-                signal["backtest_run_id"] = backtest_run_id
-                
-                # Extract key KPIs for persistence
-                signal["backtest_cagr"] = metrics.get("cagr")
-                signal["backtest_win_rate"] = metrics.get("win_rate")
-                signal["backtest_max_drawdown"] = metrics.get("max_drawdown")
-                
-                # Mark that backtest metrics are real (not fallback)
-                risk_metrics = signal.setdefault("risk_metrics", {})
-                risk_metrics["backtest_metrics_source"] = "real"
-                risk_metrics["backtest_metrics_status"] = "PASS"
-                
-                # Calculate risk/reward ratio from profit_factor or avg_win/avg_loss
-                profit_factor = metrics.get("profit_factor", 0.0)
-                if profit_factor > 0:
-                    # Risk/reward ratio is approximately the inverse of profit_factor when win_rate is considered
-                    # For simplicity, use profit_factor as RR ratio (it's gross_profit/gross_loss)
-                    signal["backtest_risk_reward_ratio"] = round(profit_factor, 2)
+                # BE-RSK-03: Only extract numeric metrics if we have trades (not NO_TRADES)
+                # When NO_TRADES, metrics_hidden=true and no numeric metrics should be extracted
+                if trade_count == 0:
+                    # BE-RSK-03: Skip extraction of numeric metrics when NO_TRADES
+                    # Only save minimal backtest result info
+                    saved_result = save_backtest_result(backtest_result)
+                    backtest_run_id = saved_result.get("run_id")
+                    signal["backtest_run_id"] = backtest_run_id
+                    # BE-RSK-03: Do NOT extract numeric metrics - they are hidden
+                    # Do NOT set backtest_cagr, backtest_win_rate, backtest_max_drawdown
+                    logger.info(
+                        "BE-RSK-03: Skipping numeric metrics extraction for NO_TRADES - metrics_hidden=true",
+                        extra={"trade_count": trade_count, "backtest_run_id": backtest_run_id},
+                    )
                 else:
-                    signal["backtest_risk_reward_ratio"] = None
+                    # Save backtest result and get run_id
+                    saved_result = save_backtest_result(backtest_result)
+                    backtest_run_id = saved_result.get("run_id")
+                    
+                    logger.info(
+                        f"Backtest validation passed: Sharpe={sharpe:.2f}, Max DD={max_dd:.2f}%, run_id={backtest_run_id}",
+                        extra={"sharpe": sharpe, "max_drawdown": max_dd, "run_id": backtest_run_id},
+                    )
+                    
+                    # Extract and add backtest metrics to signal for persistence
+                    signal["backtest_metrics"] = metrics
+                    signal["backtest_run_id"] = backtest_run_id
+                    
+                    # Extract key KPIs for persistence
+                    signal["backtest_cagr"] = metrics.get("cagr")
+                    signal["backtest_win_rate"] = metrics.get("win_rate")
+                    signal["backtest_max_drawdown"] = metrics.get("max_drawdown")
+                    
+                    # Mark that backtest metrics are real (not fallback)
+                    risk_metrics = signal.setdefault("risk_metrics", {})
+                    risk_metrics["backtest_metrics_source"] = "real"
+                    risk_metrics["backtest_metrics_status"] = "PASS"
                 
-                # Extract slippage from execution metrics if available
-                execution_metrics = backtest_result.get("execution_stats", {})
-                if execution_metrics and "avg_slippage_bps" in execution_metrics:
-                    signal["backtest_slippage_bps"] = execution_metrics.get("avg_slippage_bps")
-                else:
-                    # Use configured slippage as fallback
-                    signal["backtest_slippage_bps"] = settings.BACKTEST_SLIPPAGE_BPS
+                    # Calculate risk/reward ratio from profit_factor or avg_win/avg_loss
+                    profit_factor = metrics.get("profit_factor", 0.0)
+                    if profit_factor > 0:
+                        # Risk/reward ratio is approximately the inverse of profit_factor when win_rate is considered
+                        # For simplicity, use profit_factor as RR ratio (it's gross_profit/gross_loss)
+                        signal["backtest_risk_reward_ratio"] = round(profit_factor, 2)
+                    else:
+                        signal["backtest_risk_reward_ratio"] = None
+                    
+                    # Extract slippage from execution metrics if available
+                    execution_metrics = backtest_result.get("execution_stats", {})
+                    if execution_metrics and "avg_slippage_bps" in execution_metrics:
+                        signal["backtest_slippage_bps"] = execution_metrics.get("avg_slippage_bps")
+                    else:
+                        # Use configured slippage as fallback
+                        signal["backtest_slippage_bps"] = settings.BACKTEST_SLIPPAGE_BPS
+                # BE-RSK-03: When NO_TRADES, do NOT extract risk/reward ratio or slippage (metrics are hidden)
                 
             except Exception as e:
                 logger.error(f"Backtest execution failed: {e}", exc_info=True)

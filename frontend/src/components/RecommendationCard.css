@@ -6,6 +6,45 @@
   margin-bottom: 2rem;
 }
 
+/* FE-RISK-02: Dim recommendation card when backtest has no trades */
+.recommendation-card-no-trades {
+  opacity: 0.85;
+  position: relative;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.recommendation-card-no-trades::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(239, 68, 68, 0.05);
+  pointer-events: none;
+  border-radius: 1rem;
+  z-index: 0;
+}
+
+.recommendation-card-no-trades > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* FE-RISK-02: No trades warning banner styles */
+.no-trades-warning-banner {
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0);
+  }
+}
+
 .recommendation-header {
   display: flex;
   justify-content: space-between;

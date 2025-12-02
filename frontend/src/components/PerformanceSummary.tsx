@@ -322,6 +322,10 @@ function PerformanceSummary() {
   const dataSource = effectiveData?.has_realistic_data === true ? 'Backtest con ejecución realista' : 'Backtest teórico'
   const isInsufficientHistory = data?.status === 'insufficient_history' || metricsStatus === 'NO_TRADES' || metricsStatus === 'INSUFFICIENT_DATA'
   const shouldHideMetrics = isInsufficientHistory && (!hasMetrics || tradeCount === 0)
+  
+  // FE-RISK-01: Hide numeric KPIs when metrics_status is not PASS
+  // This prevents false precision from being displayed
+  const shouldHideNumericKPIs = metricsStatus && metricsStatus !== 'PASS'
 
   return (
     <div className="performance-summary">
@@ -546,61 +550,96 @@ function PerformanceSummary() {
         </div>
       ) : hasMetrics ? (
         <>
-          {shouldDeemphasizeKPIs && (
-            <div className="metrics-degraded-warning" role="alert" aria-live="assertive" style={{
-              padding: '1rem',
-              backgroundColor: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
+          {/* FE-RISK-01: Show mandatory banner when metrics_status !== PASS - hide numeric KPIs */}
+          {shouldHideNumericKPIs ? (
+            <div className="metrics-unreliable-banner" role="alert" aria-live="assertive" style={{
+              padding: '1.5rem',
+              backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              border: '2px solid rgba(239, 68, 68, 0.5)',
               borderRadius: '0.5rem',
               marginBottom: '1rem',
+              textAlign: 'center',
             }}>
-              <p style={{ margin: 0, fontWeight: 600, color: '#ef4444', fontSize: '0.875rem' }}>
-                ⚠️ Backtest Invalid or Incomplete
-              </p>
-              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.9)' }}>
+              <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⚠️</div>
+              <h3 style={{ margin: '0 0 0.75rem 0', color: '#ef4444', fontSize: '1.25rem', fontWeight: 600 }}>
+                No hay suficientes trades para métricas confiables
+              </h3>
+              <p style={{ margin: '0 0 0.75rem 0', fontSize: '1rem', color: 'rgba(255, 255, 255, 0.9)', lineHeight: '1.6' }}>
                 {degradedMessage}
               </p>
-              {fallbackReason && (
-                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
-                  Reason: {fallbackReason}
+              {noTradeRootCause && (
+                <div style={{ 
+                  margin: '0.75rem 0', 
+                  padding: '0.75rem', 
+                  backgroundColor: 'rgba(0, 0, 0, 0.2)', 
+                  borderRadius: '0.5rem',
+                  textAlign: 'left',
+                }}>
+                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, color: 'rgba(255, 255, 255, 0.9)' }}>
+                    Causa raíz:
+                  </p>
+                  <p style={{ margin: 0, fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+                    {noTradeRootCause === 'no_signals_generated' && 'No se generaron señales durante el período del backtest.'}
+                    {noTradeRootCause === 'no_enter_signals' && 'Se generaron señales pero ninguna fue de entrada (BUY/SELL).'}
+                    {noTradeRootCause === 'enter_signals_zero_size' && 'Se generaron señales de entrada pero el calculador de tamaño de posición devolvió tamaño cero.'}
+                    {noTradeRootCause === 'orders_rejected' && 'Se generaron señales de entrada pero las órdenes fueron rechazadas por el simulador de ejecución.'}
+                    {noTradeRootCause === 'unknown' && 'Causa desconocida - revisar logs del backtest.'}
+                    {!['no_signals_generated', 'no_enter_signals', 'enter_signals_zero_size', 'orders_rejected', 'unknown'].includes(noTradeRootCause) && noTradeRootCause}
+                  </p>
+                </div>
+              )}
+              {fallbackReason && !noTradeRootCause && (
+                <p style={{ margin: '0.75rem 0 0 0', fontSize: '0.875rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
+                  <strong>Razón:</strong> {fallbackReason}
                 </p>
               )}
-              {devBypass && (
-                <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', fontStyle: 'italic', color: 'rgba(255, 255, 255, 0.7)' }}>
-                  Dev bypass: {devBypass}
+              {tradeCount !== undefined && tradeCount !== null && (
+                <p style={{ margin: '0.75rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.8)' }}>
+                  <strong>Trades en backtest:</strong> {tradeCount}
                 </p>
               )}
+              <p style={{ margin: '1rem 0 0 0', fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.7)', fontStyle: 'italic', fontWeight: 500 }}>
+                ⚠️ Las métricas numéricas (CAGR, Sharpe, Max Drawdown, Win Rate, Profit Factor) están ocultas porque no son confiables.
+              </p>
+              {/* FE-RISK-01: Show only Total Trades count (non-numeric metric) */}
+              <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                <div style={{ display: 'inline-block', padding: '0.75rem 1.5rem', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: '0.5rem' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'rgba(255, 255, 255, 0.6)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Total Trades</span>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 600, marginTop: '0.25rem' }}>{metrics.total_trades || 0}</div>
+                </div>
+              </div>
             </div>
+          ) : (
+            <>
+              {/* FE-RISK-01: Only show numeric KPIs when metrics_status === PASS */}
+              <div className="metrics-grid">
+                <div className="metric-item">
+                  <span className="metric-label">CAGR</span>
+                  <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>
+                </div>
+                <div className="metric-item">
+                  <span className="metric-label">Sharpe</span>
+                  <span className="metric-value">{metrics.sharpe?.toFixed(2)}</span>
+                </div>
+                <div className="metric-item">
+                  <span className="metric-label">Max DD</span>
+                  <span className="metric-value">{metrics.max_drawdown?.toFixed(2)}%</span>
+                </div>
+                <div className="metric-item">
+                  <span className="metric-label">Win Rate</span>
+                  <span className="metric-value">{metrics.win_rate?.toFixed(1)}%</span>
+                </div>
+                <div className="metric-item">
+                  <span className="metric-label">Profit Factor</span>
+                  <span className="metric-value">{metrics.profit_factor?.toFixed(2)}</span>
+                </div>
+                <div className="metric-item">
+                  <span className="metric-label">Total Trades</span>
+                  <span className="metric-value">{metrics.total_trades || 0}</span>
+                </div>
+              </div>
+            </>
           )}
-          <div className="metrics-grid" style={shouldDeemphasizeKPIs ? {
-            opacity: 0.6,
-            filter: 'grayscale(20%)',
-          } : undefined}>
-            <div className="metric-item">
-              <span className="metric-label">CAGR</span>
-              <span className="metric-value">{metrics.cagr?.toFixed(2)}%</span>
-            </div>
-            <div className="metric-item">
-              <span className="metric-label">Sharpe</span>
-              <span className="metric-value">{metrics.sharpe?.toFixed(2)}</span>
-            </div>
-            <div className="metric-item">
-              <span className="metric-label">Max DD</span>
-              <span className="metric-value">{metrics.max_drawdown?.toFixed(2)}%</span>
-            </div>
-            <div className="metric-item">
-              <span className="metric-label">Win Rate</span>
-              <span className="metric-value">{metrics.win_rate?.toFixed(1)}%</span>
-            </div>
-            <div className="metric-item">
-              <span className="metric-label">Profit Factor</span>
-              <span className="metric-value">{metrics.profit_factor?.toFixed(2)}</span>
-            </div>
-            <div className="metric-item">
-              <span className="metric-label">Total Trades</span>
-              <span className="metric-value">{metrics.total_trades || 0}</span>
-            </div>
-          </div>
           {effectiveData?.report_path ? (
             <div className="report-link">
               <a href={effectiveData.report_path} target="_blank" rel="noreferrer">

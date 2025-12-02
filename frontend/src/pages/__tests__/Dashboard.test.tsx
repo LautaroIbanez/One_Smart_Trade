@@ -8,7 +8,6 @@ vi.mock('../../components/RecommendationCard', () => ({ default: () => <div data
 vi.mock('../../components/HistoryExplorer', () => ({ default: () => <div data-testid="history-explorer" /> }))
 vi.mock('../../components/IndicatorsPanel', () => ({ default: () => <div data-testid="indicators-panel" /> }))
 vi.mock('../../components/RiskPanel', () => ({ default: () => <div data-testid="risk-panel" /> }))
-vi.mock('../../components/PriceLevelsChart', () => ({ PriceLevelsChart: () => <div data-testid="price-chart" /> }))
 vi.mock('../../components/AppLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <div data-testid="app-layout">{children}</div> }))
 vi.mock('../../components/PerformanceSummary', () => ({ default: () => <div data-testid="performance-summary" /> }))
 vi.mock('../../features/performance/SignalCompliance', () => ({ default: () => <div data-testid="signal-compliance" /> }))

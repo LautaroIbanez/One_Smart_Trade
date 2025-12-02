@@ -354,30 +354,53 @@ class PerformanceService:
             dev_mode = settings.is_dev_mode()
             degraded_reason = None
             if trade_count == 0:
-                # No trades executed - return NO_TRADES status without synthetic metrics
+                # BE-BKT-01: No trades executed - return NO_TRADES status without ANY synthetic metrics
+                # Never generate fallback metrics when trade_count=0 - only return basic counts
                 root_cause = "unknown"
                 if no_trade_diagnostics:
                     root_cause = no_trade_diagnostics.get("root_cause", "unknown")
-                    logger.info(
-                        "No trades executed during backtest - returning NO_TRADES status",
-                        extra={
+                    logger.warning(
+                        "BE-BKT-01: No trades executed during backtest - returning NO_TRADES status with minimal metrics only",
+                        extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "root_cause": root_cause,
                             "signal_counts": no_trade_diagnostics.get("signal_counts", {}),
                             "reason": no_trade_diagnostics.get("reason", ""),
-                        },
+                            "metrics_status": "NO_TRADES",
+                            "degraded_mode": True,
+                        }),
                     )
                 else:
-                    logger.info(
-                        "No trades executed during backtest - returning NO_TRADES status",
-                        extra={"trade_count": trade_count},
+                    logger.warning(
+                        "BE-BKT-01: No trades executed during backtest - returning NO_TRADES status with minimal metrics only",
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "metrics_status": "NO_TRADES",
+                            "degraded_mode": True,
+                        }),
                     )
-                # Set minimal metrics structure (no synthetic values)
+                # BE-BKT-01: Set minimal metrics structure - ONLY basic counts, NO numeric metrics (Sharpe/CAGR/DD)
                 metrics = {
                     "total_trades": 0,
                     "winning_trades": 0,
                     "losing_trades": 0,
                 }
+                # BE-BKT-01: Explicitly remove any numeric metrics that might have been set
+                # This ensures no Sharpe, CAGR, Max Drawdown, or other synthetic values are returned
+                metrics.pop("cagr", None)
+                metrics.pop("sharpe_ratio", None)
+                metrics.pop("sharpe", None)
+                metrics.pop("max_drawdown", None)
+                metrics.pop("calmar_ratio", None)
+                metrics.pop("sortino_ratio", None)
+                metrics.pop("total_return", None)
+                metrics.pop("total_return_pct", None)
+                metrics.pop("win_rate", None)
+                metrics.pop("profit_factor", None)
+                metrics.pop("expectancy", None)
+                metrics.pop("expectancy_pct", None)
+                metrics.pop("risk_of_ruin", None)
+                metrics.pop("avg_trade_return", None)
                 metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
@@ -417,34 +440,45 @@ class PerformanceService:
                 # Default to PASS if guardrails passed and no special conditions
                 metrics_status = "PASS"
             
-            # Ensure metrics_status is never None or UNKNOWN - map to deterministic fallback
-            # ROOT CAUSE FIX BE-METRICS-01: When metrics_status is missing, distinguish between:
-            # - NO_TRADES: Minimal metrics only (just total_trades=0, winning_trades=0, losing_trades=0)
-            # - FALLBACK_NO_TRADES: Fallback/synthetic metrics exist (has CAGR, Sharpe, etc. even if trade_count=0)
+            # BE-PERF-02: Ensure metrics_status is never None or UNKNOWN - map to deterministic fallback
+            # When metrics_status is missing, NEVER use FALLBACK_NO_TRADES (which allows synthetic metrics)
+            # - If trade_count=0: use NO_TRADES (minimal metrics only)
+            # - If trade_count>0: use FAIL (metrics not validated, must be ignored)
             if not metrics_status or metrics_status == "UNKNOWN":
                 if trade_count == 0:
-                    # Check if metrics contain fallback/synthetic values vs minimal structure only
-                    has_fallback_metrics = bool(
-                        metrics.get("cagr") is not None
-                        or metrics.get("sharpe_ratio") is not None
-                        or metrics.get("max_drawdown") is not None
-                        or len(metrics) > 3  # More than just total_trades, winning_trades, losing_trades
-                    )
-                    if has_fallback_metrics:
-                        # Fallback metrics were generated despite zero trades
-                        metrics_status = "FALLBACK_NO_TRADES"
-                        if not degraded_reason:
-                            degraded_reason = "no_trades_executed_with_fallback_metrics"
-                    else:
-                        # Minimal metrics only - no fallback/synthetic values
-                        metrics_status = "NO_TRADES"
-                        if not degraded_reason:
-                            degraded_reason = "no_trades_executed_unknown"
-                else:
-                    # For non-zero trades but missing status, use conservative fallback
-                    metrics_status = "FALLBACK_NO_TRADES"
+                    # BE-BKT-01: When trade_count=0, ALWAYS use NO_TRADES, never FALLBACK_NO_TRADES
+                    # Remove any fallback/synthetic metrics that might have been set
+                    metrics = {
+                        "total_trades": 0,
+                        "winning_trades": 0,
+                        "losing_trades": 0,
+                    }
+                    metrics_status = "NO_TRADES"
                     if not degraded_reason:
-                        degraded_reason = "metrics_status_missing"
+                        degraded_reason = "no_trades_executed_unknown"
+                    logger.warning(
+                        "BE-BKT-01: Normalized metrics_status to NO_TRADES for trade_count=0, removed any fallback metrics",
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "metrics_status": metrics_status,
+                            "degraded_reason": degraded_reason,
+                        }),
+                    )
+                else:
+                    # BE-PERF-02: For non-zero trades but missing status, use FAIL (never FALLBACK_NO_TRADES)
+                    # This blocks synthetic metrics from flowing to frontend when status is missing
+                    metrics_status = "FAIL"
+                    if not degraded_reason:
+                        degraded_reason = "metrics_status_missing_validation_failed"
+                    logger.error(
+                        "BE-PERF-02: metrics_status is missing/UNKNOWN for non-zero trades - marking as FAIL to block synthetic metrics",
+                        extra=sanitize_log_extra({
+                            "trade_count": trade_count,
+                            "metrics_status": metrics_status,
+                            "degraded_reason": degraded_reason,
+                            "action": "Metrics must be ignored until status is corrected at source",
+                        }),
+                    )
 
             # Extract tracking error and execution data for response
             tracking_error = tracking_error_summary
@@ -483,6 +517,18 @@ class PerformanceService:
                 initial_capital = metrics.get("initial_capital", 10000.0)
                 equity_curve = [float(initial_capital)] * max(10, min(100, total_days))
                 equity_theoretical = equity_curve.copy()
+            
+            # BE-BKT-01: When trade_count=0, ensure metrics only contain basic counts
+            if trade_count == 0 and metrics_status == "NO_TRADES":
+                # Remove any numeric metrics that might have been set
+                minimal_metrics = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+                metrics = minimal_metrics
+                # BE-BKT-01: Add clear message to chart_banners
+                chart_banners.append("Sin trades ejecutados - métricas numéricas no disponibles (Sharpe/CAGR/DD)")
             
             # Store metrics_status and tracking_error_status in metrics dict for persistence
             metrics["metrics_status"] = metrics_status
@@ -823,12 +869,12 @@ class PerformanceService:
             dev_mode = settings.is_dev_mode()
             degraded_reason = None
             if trade_count == 0:
-                # No trades executed - return NO_TRADES status without synthetic metrics
+                # BE-BKT-01: No trades executed - return NO_TRADES status without ANY synthetic metrics
                 root_cause = "unknown"
                 if no_trade_diagnostics:
                     root_cause = no_trade_diagnostics.get("root_cause", "unknown")
-                    logger.info(
-                        "No trades executed during backtest in background backfill - returning NO_TRADES status",
+                    logger.warning(
+                        "BE-BKT-01: No trades executed during backtest in background backfill - returning NO_TRADES status with minimal metrics only",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "root_cause": root_cause,
@@ -836,22 +882,39 @@ class PerformanceService:
                             "no_trade_root_cause": root_cause,
                             "no_trade_diagnostics": no_trade_diagnostics,
                             "metrics_status": "NO_TRADES",
+                            "degraded_mode": True,
                         }),
                     )
                 else:
-                    logger.info(
-                        "No trades executed during backtest in background backfill - returning NO_TRADES status",
+                    logger.warning(
+                        "BE-BKT-01: No trades executed during backtest in background backfill - returning NO_TRADES status with minimal metrics only",
                         extra=sanitize_log_extra({
                             "trade_count": trade_count,
                             "metrics_status": "NO_TRADES",
+                            "degraded_mode": True,
                         }),
                     )
-                # Set minimal metrics structure (no synthetic values)
+                # BE-BKT-01: Set minimal metrics structure - ONLY basic counts, NO numeric metrics
                 metrics = {
                     "total_trades": 0,
                     "winning_trades": 0,
                     "losing_trades": 0,
                 }
+                # BE-BKT-01: Explicitly remove any numeric metrics
+                metrics.pop("cagr", None)
+                metrics.pop("sharpe_ratio", None)
+                metrics.pop("sharpe", None)
+                metrics.pop("max_drawdown", None)
+                metrics.pop("calmar_ratio", None)
+                metrics.pop("sortino_ratio", None)
+                metrics.pop("total_return", None)
+                metrics.pop("total_return_pct", None)
+                metrics.pop("win_rate", None)
+                metrics.pop("profit_factor", None)
+                metrics.pop("expectancy", None)
+                metrics.pop("expectancy_pct", None)
+                metrics.pop("risk_of_ruin", None)
+                metrics.pop("avg_trade_return", None)
                 metrics_status = "NO_TRADES"
                 degraded_reason = f"no_trades_executed_{root_cause}"
             elif dev_mode and trade_count < 50:
@@ -889,6 +952,18 @@ class PerformanceService:
                     degraded_reason = "guardrail_validation_failed"
             else:
                 metrics_status = "PASS"
+            
+            # BE-BKT-01: When trade_count=0, ensure metrics only contain basic counts
+            if trade_count == 0 and metrics_status == "NO_TRADES":
+                # Remove any numeric metrics that might have been set
+                minimal_metrics = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+                metrics = minimal_metrics
+                # BE-BKT-01: Add clear message to chart_banners
+                chart_banners.append("Sin trades ejecutados - métricas numéricas no disponibles (Sharpe/CAGR/DD)")
             
             # Store metrics_status and tracking_error_status in metrics dict for persistence
             metrics["metrics_status"] = metrics_status
@@ -978,40 +1053,46 @@ class PerformanceService:
             metrics = cached.metrics or {}
             tracking_error_metrics = metrics.get("tracking_error_metrics")
             
-            # Extract metrics_status from metrics dict (stored there for persistence)
-            # ROOT CAUSE FIX BE-METRICS-01: When metrics_status is missing from cache, distinguish between:
-            # - NO_TRADES: Minimal metrics only (just total_trades=0, winning_trades=0, losing_trades=0)
-            # - FALLBACK_NO_TRADES: Fallback/synthetic metrics exist (has CAGR, Sharpe, etc. even if trade_count=0)
+            # BE-BKT-01: Extract metrics_status from metrics dict (stored there for persistence)
+            # When trade_count=0, ALWAYS use NO_TRADES (never FALLBACK_NO_TRADES) and normalize metrics
             metrics_status = metrics.get("metrics_status")
             degraded_reason = None
-            if not metrics_status or metrics_status == "UNKNOWN":
-                trade_count = metrics.get("total_trades", 0)
-                if trade_count == 0:
-                    # Check if metrics contain fallback/synthetic values vs minimal structure only
-                    has_fallback_metrics = bool(
-                        metrics.get("cagr") is not None
-                        or metrics.get("sharpe_ratio") is not None
-                        or metrics.get("max_drawdown") is not None
-                        or len(metrics) > 3  # More than just total_trades, winning_trades, losing_trades
-                    )
-                    if has_fallback_metrics:
-                        # Fallback metrics were generated despite zero trades
-                        metrics_status = "FALLBACK_NO_TRADES"
-                        degraded_reason = "no_trades_executed_with_fallback_metrics"
-                    else:
-                        # Minimal metrics only - no fallback/synthetic values
-                        metrics_status = "NO_TRADES"
-                        degraded_reason = "no_trades_executed_unknown"
-                else:
-                    # For non-zero trades but missing status, use DEV_FALLBACK if in dev mode
-                    dev_mode = settings.is_dev_mode()
-                    if dev_mode:
-                        metrics_status = "DEV_FALLBACK"
-                        degraded_reason = "metrics_status_missing_dev_fallback"
-                    else:
-                        metrics_status = "FALLBACK_NO_TRADES"  # Conservative fallback
-                        degraded_reason = "metrics_status_missing"
-            degraded_reason = metrics.get("degraded_reason") or degraded_reason
+            trade_count = metrics.get("total_trades", 0)
+            
+            if trade_count == 0:
+                # BE-BKT-01: When trade_count=0, ALWAYS use NO_TRADES, never FALLBACK_NO_TRADES
+                # Normalize metrics to only contain basic counts
+                metrics = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                }
+                metrics_status = "NO_TRADES"
+                degraded_reason = metrics.get("degraded_reason") or "no_trades_executed_unknown"
+                logger.warning(
+                    "BE-BKT-01: Normalized cached metrics for trade_count=0 to NO_TRADES with minimal metrics only",
+                    extra=sanitize_log_extra({
+                        "trade_count": trade_count,
+                        "metrics_status": metrics_status,
+                        "degraded_reason": degraded_reason,
+                    }),
+                )
+            elif not metrics_status or metrics_status == "UNKNOWN":
+                # BE-PERF-02: For non-zero trades but missing status, use FAIL (never FALLBACK_NO_TRADES)
+                # Even in dev mode, missing status indicates validation failure
+                metrics_status = "FAIL"
+                degraded_reason = "metrics_status_missing_validation_failed"
+                logger.error(
+                    "BE-PERF-02: metrics_status is missing/UNKNOWN in cached data for non-zero trades - marking as FAIL to block synthetic metrics",
+                    extra=sanitize_log_extra({
+                        "trade_count": trade_count,
+                        "metrics_status": metrics_status,
+                        "degraded_reason": degraded_reason,
+                        "action": "Metrics must be ignored until status is corrected at source",
+                    }),
+                )
+            else:
+                degraded_reason = metrics.get("degraded_reason") or degraded_reason
             
             # Try to extract equity data from metrics if available
             equity_theoretical = metrics.get("equity_theoretical", [])

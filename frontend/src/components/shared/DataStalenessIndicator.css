@@ -109,6 +109,17 @@
   color: var(--accent-danger, #ef4444);
 }
 
+/* FE-CHART-03: Error state - red/danger (for invalid as_of) */
+.data-staleness-indicator.staleness-error {
+  background-color: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  border-left: 4px solid var(--accent-danger, #ef4444);
+}
+
+.data-staleness-indicator.staleness-error .staleness-label strong {
+  color: var(--accent-danger, #ef4444);
+}
+
 /* Responsive adjustments */
 @media (max-width: 640px) {
   .data-staleness-indicator {

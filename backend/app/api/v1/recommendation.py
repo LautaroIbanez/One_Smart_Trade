@@ -317,31 +317,71 @@ async def get_today_recommendation(
                     "tolerance_candles": data.get("tolerance_candles"),
                 },
             )
+        # BE-RSK-03: Handle insufficient_history status - check if it's due to NO_TRADES
+        risk_metrics_check = data.get("risk_metrics", {})
+        backtest_metrics_status_check = risk_metrics_check.get("backtest_metrics_status")
+        is_no_trades = backtest_metrics_status_check == "NO_TRADES"
+        
         if data.get("status") == "insufficient_history":
-            # In dev/test the pipeline can return an insufficient history guardrail without
-            # the fields required by RecommendationResponse (entry_range, SL/TP, etc.).
-            # Return a structured error instead of falling through and triggering a 500/422.
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "status": "insufficient_history",
-                    "reason": data.get("reason", "Insufficient performance history for risk assessment"),
-                    "required_trades": data.get("risk_metrics", {})
-                    .get("shutdown_status", {})
-                    .get("required_trades"),
-                    "lookback_trades": data.get("risk_metrics", {})
-                    .get("shutdown_status", {})
-                    .get("lookback_trades"),
-                    "message": data.get(
-                        "message",
-                        "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
-                    ),
-                },
-            )
+            # BE-RSK-03: If insufficient_history is due to NO_TRADES, allow the recommendation to be returned
+            # with status=insufficient_history and clear message about absence of trades
+            if is_no_trades:
+                # BE-RSK-03: Return recommendation with insufficient_history status and NO_TRADES message
+                # The recommendation will be returned below with filtered numeric metrics
+                logger.info(
+                    "BE-RSK-03: Returning recommendation with insufficient_history status due to NO_TRADES",
+                    extra={
+                        "status": "insufficient_history",
+                        "backtest_metrics_status": "NO_TRADES",
+                        "metrics_hidden": True,
+                    },
+                )
+            else:
+                # In dev/test the pipeline can return an insufficient history guardrail without
+                # the fields required by RecommendationResponse (entry_range, SL/TP, etc.).
+                # Return a structured error instead of falling through and triggering a 500/422.
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "status": "insufficient_history",
+                        "reason": data.get("reason", "Insufficient performance history for risk assessment"),
+                        "required_trades": data.get("risk_metrics", {})
+                        .get("shutdown_status", {})
+                        .get("required_trades"),
+                        "lookback_trades": data.get("risk_metrics", {})
+                        .get("shutdown_status", {})
+                        .get("lookback_trades"),
+                        "message": data.get(
+                            "message",
+                            "Se necesitan más trades históricos para generar una recomendación con métricas de riesgo válidas.",
+                        ),
+                    },
+                )
         if data.get("status") == "no_data":
             return RecommendationFallbackResponse(**data)
         if data.get("status") == "invalid":
             raise HTTPException(status_code=422, detail=data.get("reason", "Invalid recommendation"))
+        
+        # BE-RSK-03: When backtest_metrics_status is NO_TRADES, do not include numeric metrics
+        risk_metrics = data.get("risk_metrics", {})
+        backtest_metrics_status = risk_metrics.get("backtest_metrics_status")
+        metrics_hidden = risk_metrics.get("metrics_hidden", False)
+        
+        # BE-RSK-03: Filter out numeric metrics when NO_TRADES or metrics_hidden=true
+        backtest_cagr = None
+        backtest_win_rate = None
+        backtest_max_drawdown = None
+        backtest_risk_reward_ratio = None
+        backtest_slippage_bps = None
+        
+        if backtest_metrics_status != "NO_TRADES" and not metrics_hidden:
+            # Only include numeric metrics when NOT NO_TRADES and metrics are not hidden
+            backtest_cagr = data.get("backtest_cagr")
+            backtest_win_rate = data.get("backtest_win_rate")
+            backtest_max_drawdown = data.get("backtest_max_drawdown")
+            backtest_risk_reward_ratio = data.get("backtest_risk_reward_ratio")
+            backtest_slippage_bps = data.get("backtest_slippage_bps")
+        
         return RecommendationResponse(
             signal=data["signal"],
             entry_range=data["entry_range"],
@@ -351,7 +391,7 @@ async def get_today_recommendation(
             current_price=data["current_price"],
             analysis=data["analysis"],
             indicators=data["indicators"],
-            risk_metrics=data["risk_metrics"],
+            risk_metrics=risk_metrics,
             factors=data.get("factors", {}),
             signal_breakdown=data.get("signal_breakdown", {}),
             timestamp=data["timestamp"],
@@ -368,11 +408,11 @@ async def get_today_recommendation(
             disclaimer=data.get("disclaimer", "This is not financial advice. Trading cryptocurrencies involves significant risk."),
             suggested_sizing=data.get("suggested_sizing"),
             backtest_run_id=data.get("backtest_run_id"),
-            backtest_cagr=data.get("backtest_cagr"),
-            backtest_win_rate=data.get("backtest_win_rate"),
-            backtest_risk_reward_ratio=data.get("backtest_risk_reward_ratio"),
-            backtest_max_drawdown=data.get("backtest_max_drawdown"),
-            backtest_slippage_bps=data.get("backtest_slippage_bps"),
+            backtest_cagr=backtest_cagr,
+            backtest_win_rate=backtest_win_rate,
+            backtest_risk_reward_ratio=backtest_risk_reward_ratio,
+            backtest_max_drawdown=backtest_max_drawdown,
+            backtest_slippage_bps=backtest_slippage_bps,
             tracking_error_bps=data.get("tracking_error_bps"),
             execution_plan=data.get("execution_plan"),
             is_stale=data.get("is_stale", False),

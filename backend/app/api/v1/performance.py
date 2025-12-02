@@ -551,10 +551,10 @@ async def get_performance_summary(
             no_trade_root_cause = metadata.get("no_trade_root_cause")
             no_trade_reason = metadata.get("no_trade_reason")
             
-            # Build human-readable status messages for explicit statuses
+            # BE-PERF-02: Build human-readable status messages for explicit statuses
             status_messages = {
                 "FALLBACK_NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Conservative fallback metrics provided.",
-                "FAIL": "Metrics validation failed. Data shown for informational purposes only.",
+                "FAIL": "BE-PERF-02: Validación de métricas falló o metrics_status está faltando. Las métricas numéricas (Sharpe/CAGR/DD) NO deben usarse hasta corregir la fuente. Ignore todas las métricas numéricas mostradas.",
                 "DEV_FALLBACK": f"Development mode: Fallback metrics generated due to insufficient trades ({trade_count} < 50). Data shown for informational purposes only.",
                 "NO_TRADES": no_trade_reason if no_trade_reason else f"No trades executed during backtest period (trade_count: {trade_count}). Performance metrics unavailable.",
                 "INSUFFICIENT_DATA": f"Fewer trades than minimum guardrail ({trade_count} < 50). Metrics informational only.",
@@ -571,10 +571,11 @@ async def get_performance_summary(
                     "no_trades_executed_no_enter_signals": "Strategy generated signals but none were 'enter' actions. Strategy may be in a hold/wait state.",
                     "no_trades_executed_enter_signals_zero_size": "Strategy generated enter signals but position sizer calculated zero size. This may indicate insufficient capital, risk limits, or invalid stop loss distances.",
                     "no_trades_executed_orders_rejected": "Strategy generated enter signals but orders were rejected by execution simulator (insufficient depth, price moved, etc.).",
-                    "no_trades_executed_unknown": "Zero trades despite enter signals. Root cause unknown - check signal counts and execution logs.",
+                    "no_trades_executed_unknown": "Sin trades ejecutados durante el backtest. Métricas numéricas (Sharpe/CAGR/DD) no disponibles.",
                     "insufficient_trades_dev_mode": f"Development mode: Insufficient trades ({trade_count} < 50). Fallback metrics generated.",
                     "insufficient_trades_guardrail_bypass": f"Development mode: Guardrail bypassed due to insufficient trades ({trade_count} < 50). Fallback metrics generated.",
                     "guardrail_validation_failed": "Guardrail validation failed. Metrics shown for informational purposes only.",
+                    "metrics_status_missing_validation_failed": "BE-PERF-02: metrics_status está faltando o es UNKNOWN. Las métricas numéricas (Sharpe/CAGR/DD) NO están validadas y NO deben usarse. Ignore todas las métricas numéricas mostradas hasta corregir la fuente del backtest.",
                 }
                 status_message = reason_messages.get(degraded_reason, f"Metrics status: {metrics_status}. {degraded_reason}")
             else:
@@ -601,16 +602,34 @@ async def get_performance_summary(
                         "dev_mode": True,
                     }
             
-            # Build chart banner with status info
-            chart_banner = f"Metrics status: {metrics_status}"
-            if degraded_reason:
-                chart_banner += f" ({degraded_reason})"
-            if metrics_status == "NO_TRADES" and no_trade_root_cause:
-                chart_banner += f" - Root cause: {no_trade_root_cause}"
-            chart_banner += " - data shown for informational purposes"
+            # BE-BKT-01: Build chart banner with clear message when NO_TRADES
+            # BE-PERF-02: Build clear message when FAIL (missing metrics_status)
+            if metrics_status == "NO_TRADES":
+                chart_banner = "Sin trades ejecutados - métricas numéricas no disponibles (Sharpe/CAGR/DD)"
+                if no_trade_root_cause:
+                    chart_banner += f" - Causa: {no_trade_root_cause}"
+            elif metrics_status == "FAIL":
+                # BE-PERF-02: Clear message when metrics_status is missing/UNKNOWN
+                chart_banner = "BE-PERF-02: metrics_status faltante - métricas numéricas NO validadas - IGNORAR hasta corregir fuente"
+                if degraded_reason:
+                    chart_banner += f" ({degraded_reason})"
+            else:
+                chart_banner = f"Metrics status: {metrics_status}"
+                if degraded_reason:
+                    chart_banner += f" ({degraded_reason})"
+                if metrics_status == "NO_TRADES" and no_trade_root_cause:
+                    chart_banner += f" - Root cause: {no_trade_root_cause}"
+                chart_banner += " - data shown for informational purposes"
             
             # BE-PERF-01: Expose explicit insufficient_history status when trades are missing/insufficient
-            api_status = "insufficient_history" if metrics_status in ("NO_TRADES", "INSUFFICIENT_DATA") else "degraded"
+            # BE-PERF-02: When metrics_status is FAIL (missing/UNKNOWN), always use degraded status
+            if metrics_status in ("NO_TRADES", "INSUFFICIENT_DATA"):
+                api_status = "insufficient_history"
+            elif metrics_status == "FAIL":
+                # BE-PERF-02: Missing metrics_status always results in degraded status
+                api_status = "degraded"
+            else:
+                api_status = "degraded"
             response = PerformanceSummaryResponse(
                 status=api_status,
                 message=status_message,

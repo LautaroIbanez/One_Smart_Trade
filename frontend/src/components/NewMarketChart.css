@@ -1,0 +1,375 @@
+.new-market-chart {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.stale-data-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(249, 115, 22, 0.1);
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  border-radius: 0.5rem;
+  color: #f97316;
+}
+
+.stale-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.stale-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.stale-age {
+  font-size: 0.875rem;
+  opacity: 0.9;
+}
+
+.stale-reason {
+  font-size: 0.875rem;
+  opacity: 0.8;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  gap: 1rem;
+}
+
+.chart-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chart-title h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.latest-candle-info {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.timestamp-mismatch-warning {
+  color: #f97316;
+  font-weight: 500;
+}
+
+.chart-refresh-button {
+  padding: 0.5rem 1rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.chart-refresh-button:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  border-color: var(--accent-primary);
+}
+
+.chart-refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.empty-chart-state {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.chart-footer {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chart-footer p {
+  margin: 0;
+}
+
+.data-fresh-badge {
+  color: #22c55e;
+}
+
+.data-stale-badge {
+  color: #f97316;
+  font-weight: 500;
+}
+
+.data-error-badge {
+  color: #ef4444;
+  font-weight: 500;
+}
+
+.metadata-label {
+  opacity: 0.8;
+  font-size: 0.875rem;
+}
+
+.candle-count {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+/* FE-CHART-03: Dim chart when data is invalid or stale */
+.new-market-chart.chart-dimmed {
+  opacity: 0.7;
+  position: relative;
+}
+
+.new-market-chart.chart-dimmed::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.1);
+  pointer-events: none;
+  border-radius: 1rem;
+  z-index: 1;
+}
+
+.chart-container-dimmed {
+  opacity: 0.6;
+  filter: grayscale(20%);
+  transition: opacity 0.3s ease, filter 0.3s ease;
+  position: relative;
+}
+
+.chart-container-dimmed::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.05);
+  pointer-events: none;
+  border-radius: 0.5rem;
+  z-index: 1;
+}
+
+/* FE-CHART-04: Misalignment banner */
+.misalignment-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 0.5rem;
+  color: #fbbf24;
+}
+
+.misalignment-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.misalignment-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.misalignment-content strong {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.misalignment-details {
+  font-size: 0.875rem;
+  opacity: 0.95;
+  line-height: 1.5;
+}
+
+.misalignment-action {
+  font-size: 0.875rem;
+  opacity: 0.9;
+  font-style: italic;
+  margin-top: 0.25rem;
+}
+
+/* FE-CHART-04: Empty state styles */
+.empty-chart-state {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.empty-state-icon {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+}
+
+.empty-chart-state h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-chart-state > p {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.empty-state-reasons {
+  text-align: left;
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+  display: inline-block;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+.empty-state-reasons li {
+  margin: 0.5rem 0;
+  line-height: 1.5;
+}
+
+.empty-state-metadata {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  margin-top: 0.5rem;
+}
+
+.chart-retry-button {
+  padding: 0.75rem 1.5rem;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 0.5rem;
+  color: white;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: all 0.2s;
+  margin-top: 1rem;
+}
+
+.chart-retry-button:hover:not(:disabled) {
+  background: var(--accent-primary-hover, #2563eb);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.chart-retry-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* FE-CHART-04: Error state styles */
+.error-chart-state {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.error-state-icon {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+}
+
+.error-chart-state h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #ef4444;
+}
+
+.error-message {
+  margin: 0.5rem 0;
+  padding: 0.75rem 1rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 0.5rem;
+  color: #fca5a5;
+  font-size: 0.9375rem;
+  max-width: 600px;
+}
+
+.error-details {
+  text-align: left;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0.5rem;
+  max-width: 600px;
+}
+
+.error-details p {
+  margin: 0 0 0.5rem 0;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.error-state-reasons {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.5rem;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+.error-state-reasons li {
+  margin: 0.5rem 0;
+  line-height: 1.5;
+}
+
+/* FE-CHART-04: Highlight refresh button when misalignment detected */
+.chart-refresh-button-highlight {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: #fbbf24;
+  color: #fbbf24;
+  animation: pulse-highlight 2s ease-in-out infinite;
+}
+
+@keyframes pulse-highlight {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0);
+  }
+}
+

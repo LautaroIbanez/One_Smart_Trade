@@ -49,9 +49,15 @@ export default function RiskPanel({ risk }: Props) {
   const backtestNoTradesRootCause = (safeRisk as any)?.backtest_no_trades_root_cause
   const showDegradedBanner = error && data && ((data as any).metadata?.served_from_cache || isDevFallback || backtestMetricsSource === 'fallback')
   
+  // FE-RISK-02: Check for NO_TRADES or FALLBACK_NO_TRADES status
+  const hasNoTradesStatus = backtestMetricsStatus === 'NO_TRADES' || backtestMetricsStatus === 'FALLBACK_NO_TRADES'
+  
   // Determine if metrics are from fallback or demo
-  const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades
+  const isMetricsFallback = backtestMetricsSource === 'fallback' || backtestMetricsStatus === 'NO_TRADES' || backtestNoTrades || hasNoTradesStatus
   const isMetricsDemo = isDevFallback && !backtestMetricsSource
+  
+  // FE-RISK-02: Hide KPIs when backtest has no trades status
+  const shouldHideKPIs = hasNoTradesStatus
   
   // Check for conservative TP probability (when trade count < N)
   const conservativeTpProb = (safeRisk as any)?.conservative_tp_probability
@@ -104,7 +110,37 @@ export default function RiskPanel({ risk }: Props) {
           cachedAt={(data as any)?.metadata?.generated_at}
         />
       )}
-      {isMetricsFallback && !showDegradedBanner && (
+      {/* FE-RISK-02: Show warning when NO_TRADES or FALLBACK_NO_TRADES */}
+      {hasNoTradesStatus && !showDegradedBanner && (
+        <div style={{
+          padding: '1rem',
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          border: '2px solid rgba(239, 68, 68, 0.4)',
+          borderRadius: '0.5rem',
+          marginBottom: '1rem',
+          fontSize: '0.875rem',
+        }}>
+          <p style={{ margin: 0, color: '#ef4444', fontWeight: 700, fontSize: '0.9375rem', marginBottom: '0.5rem' }}>
+            ⚠️ Recomendación sin soporte de backtest ejecutado
+          </p>
+          <p style={{ margin: 0, color: 'rgba(255, 255, 255, 0.9)', fontSize: '0.875rem', lineHeight: '1.5' }}>
+            El backtest no ejecutó trades ({backtestMetricsStatus}). Los KPIs de riesgo no están disponibles y han sido ocultados. 
+            Esta recomendación debe usarse <strong>únicamente para paper trading</strong> o análisis educativo.
+          </p>
+          {backtestNoTradesRootCause && (
+            <p style={{ margin: '0.5rem 0 0 0', color: 'rgba(255, 255, 255, 0.8)', fontSize: '0.75rem', fontStyle: 'italic' }}>
+              Causa: {backtestNoTradesRootCause === 'invalid_stop_loss' ? 'Stop loss inválido' :
+                      backtestNoTradesRootCause === 'enter_signals_zero_size' ? 'Tamaño de posición cero' :
+                      backtestNoTradesRootCause === 'orders_rejected' ? 'Órdenes rechazadas' :
+                      backtestNoTradesRootCause === 'no_signals_generated' ? 'Sin señales generadas' :
+                      backtestNoTradesRootCause === 'no_enter_signals' ? 'Sin señales de entrada' :
+                      'Causa desconocida'}
+            </p>
+          )}
+        </div>
+      )}
+      {/* Legacy fallback indicator for other fallback cases */}
+      {isMetricsFallback && !hasNoTradesStatus && !showDegradedBanner && (
         <div style={{
           padding: '0.75rem',
           backgroundColor: 'rgba(239, 68, 68, 0.1)',
@@ -167,17 +203,31 @@ export default function RiskPanel({ risk }: Props) {
           )}
         </div>
       )}
-      <div className="risk-grid">
-        {items.map((it) => (
-          <div key={it.label} className="risk-item">
-            <span className="risk-label">{it.label}</span>
-            <span className="risk-value" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              {String(it.value)}
-              {it.badge}
-            </span>
-          </div>
-        ))}
-      </div>
+      {/* FE-RISK-02: Hide KPIs when backtest has no trades status */}
+      {shouldHideKPIs ? (
+        <div style={{
+          padding: '2rem',
+          textAlign: 'center',
+          color: 'rgba(255, 255, 255, 0.6)',
+          fontStyle: 'italic',
+        }}>
+          <p style={{ margin: 0 }}>
+            Los KPIs de riesgo no están disponibles porque el backtest no ejecutó trades.
+          </p>
+        </div>
+      ) : (
+        <div className="risk-grid">
+          {items.map((it) => (
+            <div key={it.label} className="risk-item">
+              <span className="risk-label">{it.label}</span>
+              <span className="risk-value" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {String(it.value)}
+                {it.badge}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -27,12 +27,18 @@ export function DataStalenessIndicator({
 }: DataStalenessIndicatorProps) {
   const stalenessInfo = useMemo(() => {
     // Determine staleness level
-    let level: 'fresh' | 'recent' | 'aging' | 'stale' = 'fresh'
+    let level: 'fresh' | 'recent' | 'aging' | 'stale' | 'error' = 'fresh'
     let label = 'Datos frescos'
     let icon = '✅'
     let className = 'staleness-fresh'
 
-    if (isStale || status === 'data_stale') {
+    // FE-CHART-03: Show error state when status is 'error' or asOf is invalid
+    if (status === 'error' || (!asOf && status !== 'success' && status !== 'data_stale')) {
+      level = 'error'
+      label = 'Error en datos de frescura'
+      icon = '❌'
+      className = 'staleness-error'
+    } else if (isStale || status === 'data_stale') {
       level = 'stale'
       label = 'Datos desactualizados'
       icon = '⚠️'
@@ -125,9 +131,10 @@ export function DataStalenessIndicator({
     }
   }, [asOf, ageMinutes, isStale, status])
 
+  // FE-CHART-03: Show indicator if there's an error status, even without asOf
   // FE-UX-02: Don't render if no data available, but show placeholder if we're waiting for data
   // This ensures the indicator appears as soon as data is available
-  if (!asOf && (ageMinutes === null || ageMinutes === undefined)) {
+  if (!asOf && (ageMinutes === null || ageMinutes === undefined) && status !== 'error') {
     return null
   }
 
