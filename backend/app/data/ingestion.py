@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import pandas as pd
@@ -147,6 +148,9 @@ class DataIngestion:
         """
         Ingest all supported timeframes for a specific venue/symbol.
         
+        Uses backfill_to_today to ensure we fetch from the last stored timestamp to now,
+        preventing BE-DATA-02 errors when no new rows are returned.
+        
         Args:
             symbol: Trading symbol (default: "BTCUSDT")
             venue: Trading venue (default: "binance")
@@ -159,9 +163,14 @@ class DataIngestion:
         results: list[dict[str, Any]] = []
         for interval in INTERVALS:
             try:
-                result = await self.ingest_timeframe(
-                    interval, symbol=symbol, venue=venue, end=end
+                # BE-DATA-02: Use backfill_to_today to ensure we fetch from last stored timestamp
+                # This prevents fetching duplicate data when start is None
+                result = await self.backfill_to_today(
+                    interval, symbol=symbol, venue=venue
                 )
+                # Ensure end timestamp is included in result metadata for consistency
+                if "meta" in result:
+                    result["meta"]["requested_end"] = end.isoformat()
             except Exception as exc:  # pragma: no cover - bubbled to caller
                 result = {
                     "status": "error",
@@ -272,7 +281,8 @@ class DataIngestion:
         Returns:
             Dict with status, rows ingested, and metadata including fetched_at
         """
-        # Get latest available timestamp from curated data
+        # BE-DATA-02: Get latest available timestamp from curated data, fallback to raw if needed
+        start = None
         try:
             from app.data.curation import DataCuration
             curator = DataCuration()
@@ -291,17 +301,102 @@ class DataIngestion:
                         start = pd.to_datetime(latest_timestamp).to_pydatetime()
                         if start.tzinfo is None:
                             start = start.replace(tzinfo=timezone.utc)
+                    logger.debug(
+                        f"BE-DATA-02: Found latest curated timestamp for {interval}: {start.isoformat()}",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat()},
+                    )
                 else:
-                    start = None
+                    logger.debug(
+                        f"BE-DATA-02: No curated data found for {interval}, checking raw data",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol},
+                    )
             except FileNotFoundError:
-                # No curated data exists, start from None (will fetch from beginning)
-                start = None
+                # No curated data exists, try raw data as fallback
+                logger.debug(
+                    f"BE-DATA-02: Curated data not found for {interval}, checking raw data",
+                    extra={"interval": interval, "venue": venue, "symbol": symbol},
+                )
         except Exception as exc:
-            logger.warning(f"Could not determine latest timestamp, starting from beginning: {exc}")
-            start = None
+            logger.warning(
+                f"BE-DATA-02: Could not determine latest curated timestamp for {interval}, checking raw data: {exc}",
+                extra={"interval": interval, "venue": venue, "symbol": symbol, "error": str(exc)},
+            )
+        
+        # BE-DATA-02: Fallback to raw data if curated data not available
+        if start is None:
+            try:
+                from app.data.storage import get_raw_path, read_parquet
+                import glob
+                raw_path = get_raw_path(venue, symbol, interval).parent
+                if raw_path.exists():
+                    raw_files = sorted(raw_path.glob("*.parquet"))
+                    if raw_files:
+                        # Read the most recent raw file
+                        last_raw = await asyncio.to_thread(read_parquet, raw_files[-1])
+                        if not last_raw.empty and "open_time" in last_raw.columns:
+                            latest_timestamp = last_raw["open_time"].max()
+                            if isinstance(latest_timestamp, pd.Timestamp):
+                                if latest_timestamp.tz is None:
+                                    latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                                else:
+                                    latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                                start = latest_timestamp.to_pydatetime()
+                            else:
+                                start = pd.to_datetime(latest_timestamp).to_pydatetime()
+                                if start.tzinfo is None:
+                                    start = start.replace(tzinfo=timezone.utc)
+                            logger.debug(
+                                f"BE-DATA-02: Found latest raw timestamp for {interval}: {start.isoformat()}",
+                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat()},
+                            )
+            except Exception as exc:
+                logger.debug(
+                    f"BE-DATA-02: Could not determine latest raw timestamp for {interval}: {exc}",
+                    extra={"interval": interval, "venue": venue, "symbol": symbol, "error": str(exc)},
+                )
+        
+        # BE-DATA-02: Calculate the start of the next candle after the last stored one
+        # This ensures we fetch new candles and avoid duplicates
+        if start is not None:
+            # Calculate the interval duration
+            interval_delta = _interval_to_timedelta(interval)
+            
+            # Validate that start is not in the future (data corruption check)
+            now = datetime.now(timezone.utc)
+            if start > now:
+                logger.warning(
+                    f"BE-DATA-02: Last stored timestamp ({start.isoformat()}) is in the future for {interval}. "
+                    f"Resetting to fetch from beginning.",
+                    extra={"interval": interval, "venue": venue, "symbol": symbol, "last_timestamp": start.isoformat(), "now": now.isoformat()},
+                )
+                start = None
+            else:
+                # Calculate the start of the next candle by adding the interval duration
+                # This ensures we fetch the next candle after the last one stored
+                start = start + interval_delta
+                
+                # Ensure we don't request data in the future
+                if start > now:
+                    logger.debug(
+                        f"BE-DATA-02: Calculated start ({start.isoformat()}) is in the future for {interval}. "
+                        f"Using current time minus interval as start.",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol, "calculated_start": start.isoformat(), "now": now.isoformat()},
+                    )
+                    # Use a safe start time: current time minus interval duration
+                    start = now - interval_delta
+            
+            logger.info(
+                f"BE-DATA-02: Calculated next candle start for {interval}: {start.isoformat()}",
+                extra={"interval": interval, "venue": venue, "symbol": symbol, "next_candle_start": start.isoformat()},
+            )
         
         # Compute end as current UTC time
         end = datetime.now(timezone.utc)
+        
+        logger.debug(
+            f"BE-DATA-02: Backfilling {interval} from {start.isoformat() if start else 'beginning'} to {end.isoformat()}",
+            extra={"interval": interval, "venue": venue, "symbol": symbol, "start": start.isoformat() if start else None, "end": end.isoformat()},
+        )
         
         # Ingest data up to now
         result = await self.ingest_timeframe(

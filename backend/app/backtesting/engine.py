@@ -581,6 +581,44 @@ class BacktestEngine:
                 f"Available data range: {df.index.min()} to {df.index.max()}"
             )
 
+        # BE-DATA-02: Validate data freshness - check if latest candle is recent
+        now = pd.Timestamp.now(tz="UTC")
+        if not df_filtered.empty:
+            latest_candle_time = df_filtered.index.max()
+            data_age_hours = (now - latest_candle_time).total_seconds() / 3600
+            
+            # For 1h interval, data should be within last 2 hours; for 1d, within last 2 days
+            max_age_hours = 2 if interval == "1h" else (48 if interval == "1d" else 24)
+            
+            if data_age_hours > max_age_hours:
+                logger.warning(
+                    f"BE-DATA-02: Candle data appears stale for {interval}. "
+                    f"Latest candle: {latest_candle_time.isoformat()}, "
+                    f"Age: {data_age_hours:.1f} hours (max allowed: {max_age_hours}h). "
+                    f"Consider running ingestion/curation to update data.",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "latest_candle_time": latest_candle_time.isoformat(),
+                        "data_age_hours": data_age_hours,
+                        "max_age_hours": max_age_hours,
+                        "now": now.isoformat(),
+                    },
+                )
+            else:
+                logger.info(
+                    f"BE-DATA-02: Candle data is fresh for {interval}. "
+                    f"Latest candle: {latest_candle_time.isoformat()}, Age: {data_age_hours:.1f} hours",
+                    extra={
+                        "interval": interval,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "latest_candle_time": latest_candle_time.isoformat(),
+                        "data_age_hours": data_age_hours,
+                    },
+                )
+        
         logger.info(
             f"Candle data loaded and ready: {len(df_filtered)} candles from {df_filtered.index.min()} to {df_filtered.index.max()}",
             extra={

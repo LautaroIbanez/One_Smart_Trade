@@ -158,6 +158,13 @@ export function NewMarketChart({ interval = '1h', window = 200 }: NewMarketChart
     return Math.abs(latestTimestampMs - apiLatestTimestampMs) < 60000 // Within 1 minute
   }, [latestCandle, apiLatestTimestamp, isAsOfValid, timestampMisalignment])
   
+  // FE-CHART-02: Check if data exceeds staleness threshold (must be defined before shouldDimChart)
+  const ageMinutes = marketData?.metadata?.age_minutes
+  const isStale = useMemo(() => {
+    return marketData?.status === 'data_stale' || marketData?.metadata?.is_stale || (ageMinutes !== null && ageMinutes !== undefined && ageMinutes > 60)
+  }, [marketData?.status, marketData?.metadata?.is_stale, ageMinutes])
+  const isStaleExceeded = ageMinutes !== null && ageMinutes !== undefined && ageMinutes > 60
+
   // FE-CHART-03: Determine if chart should be dimmed (invalid as_of or stale data)
   const shouldDimChart = useMemo(() => {
     return !isAsOfValid || isStale || (ageMinutes !== null && ageMinutes !== undefined && ageMinutes > 60)
@@ -178,11 +185,6 @@ export function NewMarketChart({ interval = '1h', window = 200 }: NewMarketChart
     }
     return 'success'
   }, [isMarketLoading, marketError, marketData, candleData.length])
-
-  // FE-CHART-02: Check if data exceeds staleness threshold
-  const ageMinutes = marketData?.metadata?.age_minutes
-  const isStale = marketData?.status === 'data_stale' || marketData?.metadata?.is_stale || (ageMinutes !== null && ageMinutes !== undefined && ageMinutes > 60)
-  const isStaleExceeded = ageMinutes !== null && ageMinutes !== undefined && ageMinutes > 60
 
   // FE-CHART-02: Get recommendation data for markers
   const stopLoss = recommendationData?.stop_loss_take_profit?.stop_loss
