@@ -674,17 +674,47 @@ async def job_daily_pipeline() -> None:
                 )
 
         outcome_details["steps"]["ingestion_freshness"] = {
-            "status": "ok" if critical_ok else "failed",
+            "status": "ok" if critical_ok else "degraded",
             "checks": freshness_checks,
         }
 
-        # If critical intervals did not advance, abort before generating a new recommendation.
-        # This enforces that signals are only generated when 1h/1d candles progressed.
+        # If critical intervals did not advance, skip signal generation but continue pipeline.
+        # This allows the server to remain operational and jobs to continue trying.
         if not critical_ok:
-            raise RuntimeError(
-                f"BE-DATA-02: Critical ingestion did not advance latest_open_time for intervals: "
-                f"{', '.join(tf for tf, chk in freshness_checks.items() if not chk['advanced'] or chk['rows_ingested'] == 0)}"
+            failed_intervals = [tf for tf, chk in freshness_checks.items() if not chk['advanced'] or chk['rows_ingested'] == 0]
+            logger.warning(
+                f"BE-DATA-02: Critical ingestion did not advance latest_open_time for intervals: {', '.join(failed_intervals)}. "
+                f"Skipping signal generation but continuing pipeline execution.",
+                extra=sanitize_log_extra({
+                    "run_id": run_id,
+                    "failed_intervals": failed_intervals,
+                    "freshness_checks": freshness_checks,
+                }),
             )
+            # Skip signal generation - mark pipeline as degraded but allow completion
+            outcome_details["steps"]["signal_generation"] = {
+                "status": "skipped",
+                "reason": "BE-DATA-02: Critical intervals did not advance",
+                "failed_intervals": failed_intervals,
+            }
+            # Continue to pipeline completion without generating signals
+            total_duration = time.time() - start_time
+            outcome_details["pipeline_end"] = datetime.utcnow().isoformat()
+            outcome_details["total_duration_seconds"] = round(total_duration, 2)
+            outcome_details["outcome"] = "degraded"
+            outcome_details["reason"] = f"Critical intervals did not advance: {', '.join(failed_intervals)}"
+            
+            # Log pipeline completion with degraded status
+            log_run(db, "daily_pipeline", "degraded", outcome_details.get("reason", "Unknown"), outcome_details)
+            logger.info(f"Pipeline {run_id}: Completed with degraded status - {outcome_details.get('reason', 'Unknown')} in {total_duration:.2f}s")
+            
+            # Invalidate market data cache even on degraded status
+            from app.utils.cache import clear_cache
+            cleared_count = clear_cache("market_data")
+            if cleared_count > 0:
+                logger.info(f"Pipeline {run_id}: Invalidated {cleared_count} market_data cache entries")
+            
+            return
         
         # Invalidate market data cache after curation completes
         from app.utils.cache import clear_cache

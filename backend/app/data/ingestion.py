@@ -269,8 +269,9 @@ class DataIngestion:
         """
         Backfill data from the latest available timestamp to today (now).
         
-        This method computes end=datetime.utcnow() and ensures the fetched_at
-        metadata is stored for tracking when data was last updated.
+        This method prioritizes reading from raw data (always up-to-date) and validates
+        timestamps to detect stale data. If the latest timestamp is too old, it resets
+        to fetch from a recent window.
         
         Args:
             interval: Timeframe to backfill (e.g., '1h', '1d')
@@ -281,114 +282,141 @@ class DataIngestion:
         Returns:
             Dict with status, rows ingested, and metadata including fetched_at
         """
-        # BE-DATA-02: Get latest available timestamp from curated data, fallback to raw if needed
+        # BE-DATA-02: Prioritize reading from raw data first (always up-to-date)
+        # Raw data is the source of truth for latest available timestamp
         start = None
+        now = datetime.now(timezone.utc)
+        interval_delta = _interval_to_timedelta(interval)
+        
+        # Define stale thresholds: if latest timestamp is older than this, reset
+        stale_thresholds = {
+            "15m": timedelta(hours=2),
+            "30m": timedelta(hours=4),
+            "1h": timedelta(hours=4),
+            "4h": timedelta(hours=12),
+            "1d": timedelta(days=3),
+            "1w": timedelta(days=10),
+        }
+        stale_threshold = stale_thresholds.get(interval, timedelta(days=1))
+        
         try:
-            from app.data.curation import DataCuration
-            curator = DataCuration()
-            try:
-                df_latest = curator.get_latest_curated(interval, venue=venue, symbol=symbol)
-                if not df_latest.empty and "open_time" in df_latest.columns:
-                    latest_timestamp = df_latest["open_time"].max()
-                    # Ensure timestamp is timezone-aware UTC
-                    if isinstance(latest_timestamp, pd.Timestamp):
-                        if latest_timestamp.tz is None:
-                            latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+            from app.data.storage import get_raw_path, read_parquet
+            raw_path = get_raw_path(venue, symbol, interval).parent
+            if raw_path.exists():
+                raw_files = sorted(raw_path.glob("*.parquet"))
+                if raw_files:
+                    # Read the most recent raw file to get the latest timestamp
+                    last_raw = await asyncio.to_thread(read_parquet, raw_files[-1])
+                    if not last_raw.empty and "open_time" in last_raw.columns:
+                        latest_timestamp = last_raw["open_time"].max()
+                        # Ensure timestamp is timezone-aware UTC
+                        if isinstance(latest_timestamp, pd.Timestamp):
+                            if latest_timestamp.tz is None:
+                                latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
+                            else:
+                                latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                            start = latest_timestamp.to_pydatetime()
                         else:
-                            latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
-                        start = latest_timestamp.to_pydatetime()
-                    else:
-                        start = pd.to_datetime(latest_timestamp).to_pydatetime()
-                        if start.tzinfo is None:
-                            start = start.replace(tzinfo=timezone.utc)
-                    logger.debug(
-                        f"BE-DATA-02: Found latest curated timestamp for {interval}: {start.isoformat()}",
-                        extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat()},
-                    )
-                else:
-                    logger.debug(
-                        f"BE-DATA-02: No curated data found for {interval}, checking raw data",
-                        extra={"interval": interval, "venue": venue, "symbol": symbol},
-                    )
-            except FileNotFoundError:
-                # No curated data exists, try raw data as fallback
-                logger.debug(
-                    f"BE-DATA-02: Curated data not found for {interval}, checking raw data",
-                    extra={"interval": interval, "venue": venue, "symbol": symbol},
-                )
+                            start = pd.to_datetime(latest_timestamp).to_pydatetime()
+                            if start.tzinfo is None:
+                                start = start.replace(tzinfo=timezone.utc)
+                        
+                        # Validate timestamp freshness
+                        age = now - start
+                        if age > stale_threshold:
+                            logger.warning(
+                                f"BE-DATA-02: Latest raw timestamp for {interval} is stale ({age.total_seconds()/3600:.1f}h old, threshold: {stale_threshold.total_seconds()/3600:.1f}h). "
+                                f"Resetting to fetch from recent window.",
+                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat(), "age_hours": age.total_seconds()/3600, "threshold_hours": stale_threshold.total_seconds()/3600},
+                            )
+                            start = None
+                        else:
+                            logger.debug(
+                                f"BE-DATA-02: Found latest raw timestamp for {interval}: {start.isoformat()} (age: {age.total_seconds()/3600:.1f}h)",
+                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat(), "age_hours": age.total_seconds()/3600},
+                            )
         except Exception as exc:
-            logger.warning(
-                f"BE-DATA-02: Could not determine latest curated timestamp for {interval}, checking raw data: {exc}",
+            logger.debug(
+                f"BE-DATA-02: Could not determine latest raw timestamp for {interval}: {exc}",
                 extra={"interval": interval, "venue": venue, "symbol": symbol, "error": str(exc)},
             )
         
-        # BE-DATA-02: Fallback to raw data if curated data not available
+        # Fallback to curated data if raw data not available
         if start is None:
             try:
-                from app.data.storage import get_raw_path, read_parquet
-                import glob
-                raw_path = get_raw_path(venue, symbol, interval).parent
-                if raw_path.exists():
-                    raw_files = sorted(raw_path.glob("*.parquet"))
-                    if raw_files:
-                        # Read the most recent raw file
-                        last_raw = await asyncio.to_thread(read_parquet, raw_files[-1])
-                        if not last_raw.empty and "open_time" in last_raw.columns:
-                            latest_timestamp = last_raw["open_time"].max()
-                            if isinstance(latest_timestamp, pd.Timestamp):
-                                if latest_timestamp.tz is None:
-                                    latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
-                                else:
-                                    latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
-                                start = latest_timestamp.to_pydatetime()
+                from app.data.curation import DataCuration
+                curator = DataCuration()
+                try:
+                    df_latest = curator.get_latest_curated(interval, venue=venue, symbol=symbol)
+                    if not df_latest.empty and "open_time" in df_latest.columns:
+                        latest_timestamp = df_latest["open_time"].max()
+                        # Ensure timestamp is timezone-aware UTC
+                        if isinstance(latest_timestamp, pd.Timestamp):
+                            if latest_timestamp.tz is None:
+                                latest_timestamp = latest_timestamp.tz_localize(timezone.utc)
                             else:
-                                start = pd.to_datetime(latest_timestamp).to_pydatetime()
-                                if start.tzinfo is None:
-                                    start = start.replace(tzinfo=timezone.utc)
-                            logger.debug(
-                                f"BE-DATA-02: Found latest raw timestamp for {interval}: {start.isoformat()}",
-                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat()},
+                                latest_timestamp = latest_timestamp.tz_convert(timezone.utc)
+                            start = latest_timestamp.to_pydatetime()
+                        else:
+                            start = pd.to_datetime(latest_timestamp).to_pydatetime()
+                            if start.tzinfo is None:
+                                start = start.replace(tzinfo=timezone.utc)
+                        
+                        # Validate timestamp freshness (even for curated)
+                        age = now - start
+                        if age > stale_threshold:
+                            logger.warning(
+                                f"BE-DATA-02: Latest curated timestamp for {interval} is stale ({age.total_seconds()/3600:.1f}h old). Resetting.",
+                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat(), "age_hours": age.total_seconds()/3600},
                             )
+                            start = None
+                        else:
+                            logger.debug(
+                                f"BE-DATA-02: Found latest curated timestamp for {interval}: {start.isoformat()} (age: {age.total_seconds()/3600:.1f}h)",
+                                extra={"interval": interval, "venue": venue, "symbol": symbol, "latest_timestamp": start.isoformat(), "age_hours": age.total_seconds()/3600},
+                            )
+                except FileNotFoundError:
+                    logger.debug(
+                        f"BE-DATA-02: No curated data found for {interval}",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol},
+                    )
             except Exception as exc:
                 logger.debug(
-                    f"BE-DATA-02: Could not determine latest raw timestamp for {interval}: {exc}",
+                    f"BE-DATA-02: Could not determine latest curated timestamp for {interval}: {exc}",
                     extra={"interval": interval, "venue": venue, "symbol": symbol, "error": str(exc)},
                 )
         
         # BE-DATA-02: Calculate the start of the next candle after the last stored one
         # This ensures we fetch new candles and avoid duplicates
         if start is not None:
-            # Calculate the interval duration
-            interval_delta = _interval_to_timedelta(interval)
-            
             # Validate that start is not in the future (data corruption check)
-            now = datetime.now(timezone.utc)
             if start > now:
                 logger.warning(
-                    f"BE-DATA-02: Last stored timestamp ({start.isoformat()}) is in the future for {interval}. "
-                    f"Resetting to fetch from beginning.",
+                    f"BE-DATA-02: Last stored timestamp ({start.isoformat()}) is in the future for {interval}. Resetting to fetch from beginning.",
                     extra={"interval": interval, "venue": venue, "symbol": symbol, "last_timestamp": start.isoformat(), "now": now.isoformat()},
                 )
                 start = None
             else:
                 # Calculate the start of the next candle by adding the interval duration
                 # This ensures we fetch the next candle after the last one stored
-                start = start + interval_delta
+                next_candle_start = start + interval_delta
                 
                 # Ensure we don't request data in the future
-                if start > now:
+                if next_candle_start > now:
                     logger.debug(
-                        f"BE-DATA-02: Calculated start ({start.isoformat()}) is in the future for {interval}. "
-                        f"Using current time minus interval as start.",
-                        extra={"interval": interval, "venue": venue, "symbol": symbol, "calculated_start": start.isoformat(), "now": now.isoformat()},
+                        f"BE-DATA-02: Calculated next candle start ({next_candle_start.isoformat()}) is in the future for {interval}. Using current time minus interval as start.",
+                        extra={"interval": interval, "venue": venue, "symbol": symbol, "calculated_start": next_candle_start.isoformat(), "now": now.isoformat()},
                     )
                     # Use a safe start time: current time minus interval duration
                     start = now - interval_delta
+                else:
+                    start = next_candle_start
             
-            logger.info(
-                f"BE-DATA-02: Calculated next candle start for {interval}: {start.isoformat()}",
-                extra={"interval": interval, "venue": venue, "symbol": symbol, "next_candle_start": start.isoformat()},
-            )
+            if start is not None:
+                logger.info(
+                    f"BE-DATA-02: Calculated next candle start for {interval}: {start.isoformat()}",
+                    extra={"interval": interval, "venue": venue, "symbol": symbol, "next_candle_start": start.isoformat()},
+                )
         
         # Compute end as current UTC time
         end = datetime.now(timezone.utc)
